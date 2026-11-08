@@ -139,6 +139,15 @@ impl PortSpec {
     }
 }
 
+/// Frequency-dependent wall losses (opt-in, `AirwayNetwork::sqrt_losses`): the boundary-layer
+/// resistance of a duct grows as √f, but the engine's default evaluates it at one frequency
+/// (`viscous_omega`), so the upper resonances are too lightly damped (Doc/reviews/
+/// 2026-11-08-tract-resonance-origin, -anatomy). With the option on, a series branch's resistance
+/// r (at `viscous_omega`) becomes r·[c0 + Σ cᵢ·s/(s + pᵢ)], which follows r·√(ω/ω_ref) within
+/// 3.5 % from 60 Hz to 14 kHz. Each high-pass term is integrated implicitly (it can only damp).
+pub const SQRT_LOSS_POLES_HZ: [f64; 4] = [150.0, 600.0, 2400.0, 9600.0];
+pub const SQRT_LOSS_C: [f64; 5] = [0.2487, 0.3467, 0.561, 1.0757, 3.1176];
+
 /// Linearised element values for frequency-domain analysis.
 #[derive(Clone, Debug)]
 pub struct LinearElements {
@@ -158,6 +167,10 @@ pub struct LinearElements {
     pub fixed: Vec<bool>,
     pub rad_nodes: Vec<usize>,
     pub rad_area: Vec<f64>,
+    /// branches whose resistance follows the √f model (empty when it is off)
+    pub sqrt_loss: Vec<bool>,
+    /// × on the upper √f terms (AirwayNetwork::hf_loss)
+    pub hf_loss: f64,
 }
 
 /// A turbulence noise source request (control rate).
@@ -323,6 +336,12 @@ pub struct AirwayNetwork {
     pub viscous_scale: f64,
     /// reference angular frequency for frequency-independent viscous loss
     pub viscous_omega: f64,
+    /// √f wall losses on series branches (see SQRT_LOSS_POLES_HZ); off by default
+    pub sqrt_losses: bool,
+    /// × on the upper √f term (9.6 kHz pole): the extra high-frequency damping a
+    /// real tract gets from what a 1D duct lacks (cross-modes, soft rough surfaces). 1 = physics.
+    pub hf_loss: f64,
+    sq_y: Vec<[f64; 4]>,
     /// scale on turbulence noise gain
     pub noise_scale: f64,
     /// last output sample (radiated pressure derivative)
@@ -418,6 +437,9 @@ impl AirwayNetwork {
             min_node_area: 0.02,
             viscous_scale: 1.0,
             viscous_omega: 2.0 * PI * 700.0,
+            sqrt_losses: false,
+            hf_loss: 1.0,
+            sq_y: Vec::new(),
             noise_scale: 1.0,
             out: 0.0,
         }
@@ -553,6 +575,7 @@ impl AirwayNetwork {
         self.u = zf(b);
         self.mom = zf(b);
         self.l_prev = zf(b);
+        self.sq_y = vec![[0.0; 4]; b];
         let mut degree = vec![0usize; n];
         for j in 0..b {
             degree[self.b_a[j]] += 1;
@@ -868,6 +891,9 @@ impl AirwayNetwork {
         let half_rho = 0.5 * RHO;
         let enable_energy_safe = self.energy_safe;
         let symmetric = self.symmetric_kinetic;
+        let sqrt_on = self.sqrt_losses;
+        let hf_loss = self.hf_loss;
+        let sq_alpha = SQRT_LOSS_POLES_HZ.map(|f| 1.0 - exp(-2.0 * PI * f * t));
         {
             // the arrays the branch loop reads, borrowed once (checked indexing costs nothing
             // measurable here, against get_unchecked)
@@ -884,13 +910,17 @@ impl AirwayNetwork {
             let (b_a, b_b, b_kind) = (&self.b_a[..nb], &self.b_b[..nb], &self.b_kind[..nb]);
             let (u_arr, mom, l_prev, psrc) = (&mut self.u[..nb], &mut self.mom[..nb], &mut self.l_prev[..nb], &self.psrc[..nb]);
             let branch_area = &mut self.branch_area[..nb];
+            let sq_y = &mut self.sq_y[..];
             let port_area = &mut self.port_area[..nb];
             let (port_area_step, port_len, port_half, port_slit, port_extra_r, port_kin, port_kex) = (&self.port_area_step[..nb], &self.port_len[..nb], &self.port_half[..nb], &self.port_slit[..nb], &self.port_extra_r[..nb], &self.port_kin[..nb], &self.port_kex[..nb]);
             for j in 0..nb {
                 let a = b_a[j];
                 let b = b_b[j];
                 let l: f64;
-                let r: f64;
+                let mut r: f64;
+                let mut sq_g = 0.0;
+                let mut sq_c = 0.0;
+                let mut sq_on = false;
                 let mut kf: f64;
                 let mut kb: f64;
                 let a_eff: f64;
@@ -904,6 +934,9 @@ impl AirwayNetwork {
                         u_arr[j] = 0.0;
                         mom[j] = 0.0;
                         branch_area[j] = a_eff;
+                        if sqrt_on {
+                            sq_y[j] = [0.0; 4];
+                        }
                         continue;
                     }
                     let ia = inv_a[a];
@@ -911,6 +944,18 @@ impl AirwayNetwork {
                     l = half_rho * (half_l[a] + half_l[b]);
                     // viscous: R = S·l/A² · sqrt(ρμω/2) with S = perimeter of each half-section
                     r = 0.5 * visc * (half_r[a] + half_r[b]);
+                    if sqrt_on {
+                        // r is the resistance at viscous_omega; split it into c0 + high-pass terms
+                        let base = r;
+                        r = base * SQRT_LOSS_C[0];
+                        for i in 0..4 {
+                            let hf = if i >= 3 { hf_loss } else { 1.0 };
+                            let g = base * SQRT_LOSS_C[i + 1] * hf * (1.0 - sq_alpha[i]);
+                            sq_g += g;
+                            sq_c += g * sq_y[j][i];
+                        }
+                        sq_on = true;
+                    }
                     // Borda–Carnot: the jet leaving the narrowest point of the upstream node expands into
                     // the downstream node (sub-section minima make short constrictions lossy as they should be)
                     let ima = inv_amin[a];
@@ -970,8 +1015,8 @@ impl AirwayNetwork {
                 }
                 let lp = l_prev[j];
                 let m0 = if enable_energy_safe && l < lp { l * u_arr[j] } else { mom[j] };
-                let c = p[a] - p[b] + psrc[j] + m0 * inv_t;
-                let bq = l * inv_t + r;
+                let c = p[a] - p[b] + psrc[j] + m0 * inv_t + sq_c;
+                let bq = l * inv_t + r + sq_g;
                 let u = if c >= 0.0 {
                     if kf > 0.0 { (2.0 * c) / (bq + sqrt(bq * bq + 4.0 * kf * c)) } else { c / bq }
                 } else if kb > 0.0 {
@@ -980,6 +1025,11 @@ impl AirwayNetwork {
                     c / bq
                 };
                 u_arr[j] = u;
+                if sq_on {
+                    for i in 0..4 {
+                        sq_y[j][i] += sq_alpha[i] * (u - sq_y[j][i]);
+                    }
+                }
                 mom[j] = l * u;
                 l_prev[j] = l;
                 flow_sum[a] -= u;
@@ -1196,6 +1246,8 @@ impl AirwayNetwork {
             fixed: self.fixed.clone(),
             rad_nodes: self.rad_nodes.clone(),
             rad_area: self.rad_nodes.iter().map(|&k| js_max(a_t[k], 1e-4)).collect(),
+            hf_loss: self.hf_loss,
+            sqrt_loss: if self.sqrt_losses { self.b_kind.iter().map(|&k| k == KIND_SERIES).collect() } else { Vec::new() },
         }
     }
 
@@ -1208,6 +1260,7 @@ impl AirwayNetwork {
     pub fn reset(&mut self) {
         self.p.fill(0.0);
         self.u.fill(0.0);
+        self.sq_y.fill([0.0; 4]);
         self.mom.fill(0.0);
         self.l_prev.fill(0.0);
         self.wall_y.fill(0.0);

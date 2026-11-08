@@ -271,11 +271,15 @@ pub struct HumanBody {
     pub tongue_radius: f64,
     /// max lip width (cm, before scale)
     pub lip_width: f64,
+    /// cross-section of the epilaryngeal tube (ventricle, ventricular level and the tube above),
+    /// × the reference profile. A trained singer's narrow epilarynx (about a sixth of the pharynx
+    /// above it) is what clusters F3–F5 into the singer's formant (Sundberg 1974).
+    pub epi_area: f64,
 }
 
-pub const BODY_MALE: HumanBody = HumanBody { name: "Adult male", scale: 1.0, pharynx: 1.0, tongue_radius: 2.25, lip_width: 4.6 };
-pub const BODY_FEMALE: HumanBody = HumanBody { name: "Adult female", scale: 0.9, pharynx: 0.88, tongue_radius: 2.2, lip_width: 4.4 };
-pub const BODY_CHILD: HumanBody = HumanBody { name: "Child", scale: 0.74, pharynx: 0.8, tongue_radius: 2.15, lip_width: 4.0 };
+pub const BODY_MALE: HumanBody = HumanBody { name: "Adult male", scale: 1.0, pharynx: 1.0, tongue_radius: 2.25, lip_width: 4.6, epi_area: 1.0 };
+pub const BODY_FEMALE: HumanBody = HumanBody { name: "Adult female", scale: 0.9, pharynx: 0.88, tongue_radius: 2.2, lip_width: 4.4, epi_area: 1.0 };
+pub const BODY_CHILD: HumanBody = HumanBody { name: "Child", scale: 0.74, pharynx: 0.8, tongue_radius: 2.15, lip_width: 4.0, epi_area: 1.0 };
 
 /// The three human bodies by their short names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -377,6 +381,7 @@ impl BodyMix {
             pharynx: self.blend(|b| b.body().pharynx),
             tongue_radius: self.blend(|b| b.body().tongue_radius),
             lip_width: self.blend(|b| b.body().lip_width),
+            epi_area: self.blend(|b| b.body().epi_area),
         }
     }
 }
@@ -1278,7 +1283,7 @@ impl HumanVocalTract {
                 area = lerp(f(u0 - r), f(u0 + r), (u - (u0 - r)) / (2.0 * r));
             }
         }
-        area * self.k * self.k
+        area * self.body.epi_area * self.k * self.k
     }
 
     /// Resample the tract into two uniform tubes (pharynx: glottis→velum, oral: velum→lips).

@@ -5,7 +5,7 @@
 //! Complex arithmetic is written out on separate real/imaginary parts exactly as the
 //! TypeScript did, so every operation (and its rounding) is the same.
 
-use crate::airway::network::LinearElements;
+use crate::airway::network::{LinearElements, SQRT_LOSS_C, SQRT_LOSS_POLES_HZ};
 use crate::math::{PI, hypot, js_max, log10, sqrt};
 use crate::physics::{C_SOUND, RHO};
 
@@ -16,6 +16,27 @@ pub struct TransferResult {
     pub mag: Vec<f64>,
     /// radiated pressure ∝ |jω·U_rad/U_in| (dB, arbitrary reference)
     pub pressure_db: Vec<f64>,
+}
+
+/// A branch's series impedance R + jωL, with the √f wall-loss model when it is on: the same
+/// rational form the time-domain network integrates, r·[c0 + Σ cᵢ·jω/(jω + pᵢ)].
+#[inline]
+fn branch_z(el: &LinearElements, j: usize, w: f64) -> (f64, f64) {
+    let r = el.r[j];
+    if el.sqrt_loss.get(j).copied().unwrap_or(false) {
+        let mut zr = r * SQRT_LOSS_C[0];
+        let mut zi = w * el.l[j];
+        for i in 0..4 {
+            let p = 2.0 * PI * SQRT_LOSS_POLES_HZ[i];
+            let d = w * w + p * p;
+            let hf = if i >= 3 { el.hf_loss } else { 1.0 };
+            zr += r * SQRT_LOSS_C[i + 1] * hf * w * w / d;
+            zi += r * SQRT_LOSS_C[i + 1] * hf * w * p / d;
+        }
+        (zr, zi)
+    } else {
+        (r, w * el.l[j])
+    }
 }
 
 /// Transfer function from a volume-velocity source injected at `inject` to total radiated
@@ -128,8 +149,7 @@ pub fn transfer_function(el: &LinearElements, inject: usize, freqs: &[f64], cut:
             let k = order[q];
             let j = parent_branch[k];
             // Y_eq = Y / (1 + Z·Y), Z = R + jωL
-            let zr = el.r[j];
-            let zi = w * el.l[j];
+            let (zr, zi) = branch_z(el, j, w);
             let dr = 1.0 + zr * yr[k] - zi * yi[k];
             let di = zr * yi[k] + zi * yr[k];
             let dd = dr * dr + di * di;
@@ -154,8 +174,7 @@ pub fn transfer_function(el: &LinearElements, inject: usize, freqs: &[f64], cut:
                 let j = parent_branch[k];
                 let ir = pr[m] * er[k] - pi[m] * ei[k];
                 let ii = pr[m] * ei[k] + pi[m] * er[k];
-                let zr = el.r[j];
-                let zi = w * el.l[j];
+                let (zr, zi) = branch_z(el, j, w);
                 pr[k] = pr[m] - (zr * ir - zi * ii);
                 pi[k] = pi[m] - (zr * ii + zi * ir);
             }
