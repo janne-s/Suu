@@ -3,7 +3,7 @@
 use crate::js::{fixed, num, pad_end, pad_start};
 use crate::{Ctx, FS, arg, body, body_mix, peak, repo_path, wav_name};
 use chimera::analysis::lpc::{FormantOpts, estimate_formants};
-use chimera::anatomy::human::{ArticKey, BodyMix, N_ARTIC};
+use chimera::anatomy::human::{ArticKey, ArticPatch, BodyMix, N_ARTIC};
 use chimera::analysis::pitch::{YinOpts, yin_pitch};
 use chimera::control::beat_player::BeatPlayer;
 use chimera::control::score::Gesture;
@@ -490,7 +490,22 @@ pub fn notes(ctx: &Ctx, a: &[String]) -> Result<(), String> {
     let vibrato = j["vibrato"].as_f64().unwrap_or(35.0);
     let raw: Vec<[f64; 2]> = serde_json::from_value(j["notes"].clone()).map_err(|e| format!("notes: {e}"))?;
     let g = g2p()?;
-    let syl = lyrics_to_syllables(j["lyrics"].as_str().ok_or("lyrics missing")?, &g);
+    let mut syl = lyrics_to_syllables(j["lyrics"].as_str().ok_or("lyrics missing")?, &g);
+    // experiment: "nucleus": "o" sings every syllable on that vowel (lyrics give the consonants)
+    if let Some(v) = j.get("nucleus").and_then(|v| v.as_str()) {
+        for s in &mut syl {
+            s.nucleus.ipa = v.to_string();
+        }
+    }
+    // experiment: "nuclei": ["o", "u", …] gives each syllable its own vowel (sung Latin with
+    // English helper words for the consonants)
+    if let Some(list) = j.get("nuclei").and_then(|v| v.as_array()) {
+        for (s, v) in syl.iter_mut().zip(list) {
+            if let Some(v) = v.as_str() {
+                s.nucleus.ipa = v.to_string();
+            }
+        }
+    }
     let sounding = raw.iter().filter(|n| n[0] > 0.0).count();
     if syl.len() != sounding {
         return Err(format!("{} syllables for {sounding} notes: {}", syl.len(),
@@ -498,6 +513,31 @@ pub fn notes(ctx: &Ctx, a: &[String]) -> Result<(), String> {
     }
     let t0 = j["t0"].as_f64().unwrap_or(0.3);
     let beat = 60.0 / bpm;
+    // experiment: "bodyFemale": x renders on a blended body (0 male … 1 female); the vowel table
+    // stays the named body's
+    let b = match j.get("bodyFemale").and_then(|x| x.as_f64()) {
+        Some(x) => BodyMix::new(x, 0.0).body(),
+        None => b,
+    };
+    // experiment: "body": {"scale", "pharynx", "tongueRadius", "lipWidth"} renders on a custom
+    // anatomy (Doc/reviews/2026-11-08-anatomy)
+    let b = match j.get("body") {
+        Some(o) => chimera::anatomy::human::HumanBody {
+            name: "custom",
+            scale: o["scale"].as_f64().unwrap_or(b.scale),
+            pharynx: o["pharynx"].as_f64().unwrap_or(b.pharynx),
+            tongue_radius: o["tongueRadius"].as_f64().unwrap_or(b.tongue_radius),
+            lip_width: o["lipWidth"].as_f64().unwrap_or(b.lip_width),
+            epi_area: o["epiArea"].as_f64().unwrap_or(b.epi_area),
+        },
+        None => b,
+    };
+    // experiment: "vowelTable": path to a table written by `calibrate choral`; its vowels replace
+    // the calibrated articulation in the planned vowel gestures
+    let vowel_override: Option<serde_json::Value> = match j.get("vowelTable").and_then(|x| x.as_str()) {
+        Some(path) => Some(serde_json::from_str(&std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?).map_err(|e| format!("{path}: {e}"))?),
+        None => None,
+    };
     let mut v = HumanVoice::new(FS, b, 2);
     let first = raw.iter().find(|n| n[0] > 0.0).ok_or("no notes")?;
     v.set_source(&SourcePatch {
@@ -507,6 +547,75 @@ pub fn notes(ctx: &Ctx, a: &[String]) -> Result<(), String> {
         tension: Some(0.55),
         ..Default::default()
     });
+    // experiments (see also "airway" below): "source" overrides the performer's source (a SourcePatch), "articOffset"
+    // ({"larynx": -0.5, …}) shifts those articulators in the rest posture and in every planned
+    // gesture that targets them. Neither changes the engine's defaults.
+    if let Some(src) = j.get("source") {
+        let p: SourcePatch = serde_json::from_value(src.clone()).map_err(|e| format!("source: {e}"))?;
+        v.set_source(&p);
+    }
+    // experiment: "airway": {"viscousScale": 5, "viscousRefHz": 1500} scales the boundary-layer
+    // loss of every duct (the engine's default is 1 at 700 Hz)
+    if let Some(air) = j.get("airway") {
+        if let Some(x) = air.get("viscousScale").and_then(|x| x.as_f64()) {
+            v.airway.net.viscous_scale = x;
+        }
+        if let Some(hz) = air.get("viscousRefHz").and_then(|x| x.as_f64()) {
+            v.airway.net.viscous_omega = 2.0 * chimera::math::PI * hz;
+        }
+        if let Some(on) = air.get("sqrtLosses").and_then(|x| x.as_bool()) {
+            v.airway.net.sqrt_losses = on;
+        }
+        if let Some(k) = air.get("hfLoss").and_then(|x| x.as_f64()) {
+            v.airway.net.hf_loss = k;
+        }
+    }
+    // experiment: "noise": {"glottis": k, "constriction": k, "teeth": k} scales the turbulence sources
+    if let Some(nz) = j.get("noise") {
+        let g = &mut v.airway.noise_gain;
+        if let Some(k) = nz.get("glottis").and_then(|x| x.as_f64()) { g.glottis *= k; }
+        if let Some(k) = nz.get("constriction").and_then(|x| x.as_f64()) { g.constriction *= k; }
+        if let Some(k) = nz.get("teeth").and_then(|x| x.as_f64()) { g.teeth *= k; }
+        if let Some(hz) = nz.get("glottisLowpass").and_then(|x| x.as_f64()) { g.glottis_lowpass = hz; }
+        if let Some(hz) = nz.get("glottisHighpass").and_then(|x| x.as_f64()) { g.glottis_highpass = hz; }
+    }
+    // experiment: "articWander": k turns on the tract's slow micro-movement at k × reference
+    if let Some(k) = j.get("articWander").and_then(|x| x.as_f64()) {
+        v.artic.wander = k;
+    }
+    if let Some(k) = j.get("articWanderUpper").and_then(|x| x.as_f64()) {
+        v.artic.wander_upper = k;
+    }
+    // experiment: "glottis": {"vibIrregular", "vibBandwidth", "ampWander", "oqWander", "sharpWander", "lfRd", "seed"}
+    if let Some(gl) = j.get("glottis") {
+        let f = |k: &str| gl.get(k).and_then(|x| x.as_f64());
+        if let Some(seed) = f("seed") {
+            v.glottis.reseed(seed as u32);
+        }
+        let p = &mut v.glottis.params;
+        if let Some(x) = f("vibIrregular") { p.vib_irregular = x; }
+        if let Some(x) = f("vibBandwidth") { p.vib_bandwidth = x; }
+        if let Some(x) = f("ampWander") { p.amp_wander = x; }
+        if let Some(x) = f("oqWander") { p.oq_wander = x; }
+        if let Some(x) = f("sharpWander") { p.sharp_wander = x; }
+        if let Some(x) = f("lfRd") { p.lf_rd = x; }
+        if let Some(x) = f("flutter") { p.flutter = x; }
+        if let Some(x) = f("sharpFlutter") { p.sharp_flutter = x; }
+        if let Some(x) = f("rdWander") { p.rd_wander = x; }
+    }
+    let mut offsets: Vec<(ArticKey, f64)> = Vec::new();
+    if let Some(o) = j.get("articOffset").and_then(|o| o.as_object()) {
+        for (name, d) in o {
+            let k = ArticKey::from_name(name).ok_or_else(|| format!("articOffset: unknown articulator {name:?}"))?;
+            offsets.push((k, d.as_f64().ok_or_else(|| format!("articOffset.{name}: not a number"))?));
+        }
+        let rest = v.artic.target.to_array();
+        let mut patch = ArticPatch::default();
+        for (k, d) in &offsets {
+            patch.values[k.index()] = Some(rest[k.index()] + d);
+        }
+        v.set_articulation(&patch, None);
+    }
     let (mut t, mut k, mut end) = (t0, 0usize, 0.0f64);
     let mut phrase: Vec<SungNote> = Vec::new();
     let mut start = t;
@@ -514,7 +623,27 @@ pub fn notes(ctx: &Ctx, a: &[String]) -> Result<(), String> {
         if phrase.is_empty() {
             return;
         }
-        let plan = plan_song(phrase, &SongOptions { body: body_name.into(), bpm, t0: start, vibrato });
+        let mut plan = plan_song(phrase, &SongOptions { body: body_name.into(), bpm, t0: start, vibrato });
+        if let Some(t) = &vowel_override {
+            for g in &mut plan.gestures {
+                let Some(lab) = g.label.as_ref() else { continue };
+                let Some(artic) = t.get(lab.as_str()).and_then(|v| v.get("artic")).and_then(|a| a.as_object()) else { continue };
+                for (name, v) in artic {
+                    if let (Some(k), Some(x)) = (ArticKey::from_name(name), v.as_f64()) {
+                        if g.targets.get(k).is_some() {
+                            g.targets.set(k, x);
+                        }
+                    }
+                }
+            }
+        }
+        for g in &mut plan.gestures {
+            for (k, d) in &offsets {
+                if let Some(x) = g.targets.get(*k) {
+                    g.targets.set(*k, x + d);
+                }
+            }
+        }
         v.schedule(&plan.gestures);
         *end = js_max(*end, plan.end);
         phrase.clear();

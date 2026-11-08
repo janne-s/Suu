@@ -343,3 +343,125 @@ pub fn consonants(a: &[String]) -> Result<(), String> {
     std::fs::write(&out, Json::Obj(result).stringify(1)).map_err(|e| format!("{out}: {e}"))?;
     Ok(())
 }
+
+/// Sung vowels on a chosen body: the articulation of each vowel fitted to measured F1–F4 of
+/// singers (Doc/reviews/2026-11-08-anatomy/targets.json, from VocalSet), for calibrating the
+/// anatomy against singing. Prints each vowel's fit and the mean |error| of F3 and F4; with
+/// `--out` writes the vowels as a table (same shape as the vowel table).
+/// `calibrate choral <targets.json> <group> <scale> <pharynx> <tongue_radius> <lip_width> [epi_area] [--sqrt-losses] [--viscous=x] [--out file]`
+pub fn choral(a: &[String]) -> Result<(), String> {
+    let mut out: Option<String> = None;
+    let mut sqrt_losses = false;
+    let mut viscous: Option<f64> = None;
+    let mut rest = Vec::new();
+    let mut it = a.iter();
+    while let Some(x) = it.next() {
+        if x == "--out" {
+            out = Some(it.next().ok_or("--out needs a file")?.clone());
+        } else if x == "--sqrt-losses" {
+            sqrt_losses = true;
+        } else if let Some(v) = x.strip_prefix("--viscous=") {
+            viscous = Some(v.parse::<f64>().map_err(|e| format!("{x}: {e}"))?);
+        } else {
+            rest.push(x.clone());
+        }
+    }
+    let usage = "calibrate choral <targets.json> <group> <scale> <pharynx> <tongue_radius> <lip_width> [--out file]";
+    if rest.len() < 6 {
+        return Err(usage.into());
+    }
+    let text = std::fs::read_to_string(&rest[0]).map_err(|e| format!("{}: {e}", rest[0]))?;
+    let targets: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", rest[0]))?;
+    let group = &targets[rest[1].as_str()];
+    let num = |i: usize| rest[i].parse::<f64>().map_err(|e| format!("{}: {e}", rest[i]));
+    let body = HumanBody { name: "choral", scale: num(2)?, pharynx: num(3)?, tongue_radius: num(4)?, lip_width: num(5)?, epi_area: if rest.len() > 6 { num(6)? } else { 1.0 } };
+    let mut air = HumanAirway::new(96000.0, body);
+    air.net.sqrt_losses = sqrt_losses;
+    if let Some(v) = viscous {
+        air.net.viscous_scale = v;
+    }
+    let k = body.scale;
+    let n = 700;
+    let freqs: Vec<f64> = (0..n).map(|i| 120.0 * pow(5800.0 / 120.0, i as f64 / (n - 1) as f64)).collect();
+    // sung vowel (VocalSet name) → the IPA vowel whose shape priors and table slot it takes
+    let map = [("a", "ɑ"), ("e", "e"), ("i", "i"), ("o", "o"), ("u", "u")];
+    let mut table: Vec<(String, Json)> = Vec::new();
+    let (mut e3, mut e4, mut e5, mut nv) = (0.0, 0.0, 0.0, 0.0);
+    for (sung, ipa) in map {
+        let Some(tv) = group[sung]["F"].as_array() else { continue };
+        let t: Vec<f64> = tv.iter().filter_map(|x| x.as_f64()).collect();
+        let vw = VOWELS.iter().find(|v| v.ipa == ipa).ok_or("vowel missing")?;
+        let x0 = vec![
+            3.5 - 1.3 * vw.back + 0.2 * vw.height * (1.0 - vw.back),
+            8.0 - 2.0 * vw.height - 0.25 * vw.back,
+            0.25 + 1.4 * vw.height,
+            if vw.round { 0.35 + 0.6 * vw.height } else { 0.6 + 1.0 * vw.height },
+            if vw.round { 0.9 } else { 0.1 },
+            if vw.round { 0.12 } else { 0.85 },
+            0.4 * (1.0 - vw.back) - 0.5 * vw.height * vw.back,
+            0.4 * (1.0 - vw.height) * (1.0 - vw.back) - if vw.round { 0.4 } else { 0.0 },
+            0.0,
+        ];
+        let jaw_prior = 0.2 + 1.5 * vw.height;
+        let mut cost = |p: &[f64]| -> f64 {
+            let a = to_artic(p);
+            let (f, min_area) = formants(&mut air, &freqs, &a);
+            let nt = t.len().min(5);
+            if f.len() < nt {
+                return 50.0;
+            }
+            let w = [1.0, 1.0, 0.6, 0.4, 0.3];
+            let mut c = 0.0;
+            for i in 0..nt {
+                c += w[i] * pow(ln(f[i] / t[i]), 2.0);
+            }
+            let min_ok = 0.22 * k * k;
+            if min_area < min_ok {
+                c += 0.4 * pow((min_ok - min_area) / min_ok, 2.0);
+            }
+            c += 0.004 * pow(p[2] - jaw_prior, 2.0);
+            c += 0.002 * p[6] * p[6] + 0.006 * p[7] * p[7];
+            c += 0.006 * (pow(p[0] - x0[0], 2.0) + pow(p[1] - x0[1], 2.0));
+            c += 0.5 * p[8] * p[8];
+            c
+        };
+        let opts = |step: [f64; 9], max_iter: usize| NelderMeadOpts { lo: Some(LO.to_vec()), hi: Some(HI.to_vec()), step: Some(step.to_vec()), max_iter: Some(max_iter), tol: None };
+        let mut best = nelder_mead(&mut cost, &x0, opts([0.4, 0.4, 0.3, 0.25, 0.3, 0.25, 0.3, 0.3, 0.2], 1500));
+        let nb = nelder_mead(&mut cost, &best.x, opts([0.2, 0.2, 0.15, 0.12, 0.15, 0.12, 0.15, 0.15, 0.1], 800));
+        if nb.fx < best.fx {
+            best = nb;
+        }
+        let a = to_artic(&best.x);
+        let (f, _) = formants(&mut air, &freqs, &a);
+        let nt = t.len().min(5);
+        let err: Vec<f64> = (0..nt).map(|i| f.get(i).map_or(f64::NAN, |fi| 100.0 * (fi - t[i]) / t[i])).collect();
+        e3 += err[2].abs();
+        e4 += err[3].abs();
+        if nt > 4 {
+            e5 += err[4].abs();
+        }
+        nv += 1.0;
+        println!(
+            "{sung}/{ipa}  F={}  T={}  err%={}  larynx={} root={}",
+            f.iter().take(5).map(|x| pad_start(&fixed(*x, 0), 6)).collect::<String>(),
+            t.iter().map(|x| pad_start(&fixed(*x, 0), 6)).collect::<String>(),
+            err.iter().map(|e| pad_start(&fixed(*e, 1), 6)).collect::<String>(),
+            fixed(a.larynx, 2),
+            fixed(a.root, 2)
+        );
+        let artic = [("tbX", a.tb_x), ("tbY", a.tb_y), ("jaw", a.jaw), ("lipAp", a.lip_ap), ("lipProt", a.lip_prot), ("lipWidth", a.lip_width), ("root", a.root), ("larynx", a.larynx), ("ttX", a.tt_x), ("ttY", a.tt_y), ("ttCurl", a.tt_curl)];
+        table.push((
+            ipa.to_string(),
+            Json::Obj(vec![
+                ("artic".into(), Json::Obj(artic.iter().map(|(k, x)| (k.to_string(), Json::Num(round3(*x)))).collect())),
+                ("formants".into(), Json::Arr(f.iter().take(5).map(|&x| Json::Num(js_round(x))).collect())),
+            ]),
+        ));
+    }
+    println!("mean |err| F3 {}%  F4 {}%  F5 {}%", fixed(e3 / nv, 1), fixed(e4 / nv, 1), fixed(e5 / nv, 1));
+    if let Some(path) = out {
+        std::fs::write(&path, Json::Obj(table).stringify(1)).map_err(|e| format!("{path}: {e}"))?;
+        println!("wrote {path}");
+    }
+    Ok(())
+}

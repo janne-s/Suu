@@ -29,6 +29,8 @@ usage: chimera <command> [args] [--float]
                  [--against earlier/score.json]  (score.json: distance to the singer, and the verdict)
   calibrate vowels     [male|female|child|all] [--out file]
   calibrate consonants [--out file]
+  calibrate choral <targets.json> <group> <scale> <pharynx> <tongue_radius> <lip_width> [--out file]
+                 (sung vowels a e i o u fitted to singers' F1–F4 on that body; experimental)
 
 Output names are stems (<out>.wav). --float writes 32-bit float WAVs instead of 16-bit PCM.
 Calibration writes the tables the engine embeds, in crates/chimera/src/phonetics/.";
@@ -110,6 +112,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         ["compare", "csd", ..] => compare::csd(&ctx, &args[2..]),
         ["diagnose", ..] => diagnose::run(&ctx, &args[1..]),
         ["calibrate", "vowels", ..] => calibrate::vowels(&args[2..]),
+        ["calibrate", "choral", ..] => calibrate::choral(&args[2..]),
         ["calibrate", "consonants", ..] => calibrate::consonants(&args[2..]),
         ["help" | "--help" | "-h", ..] => {
             println!("{USAGE}");
