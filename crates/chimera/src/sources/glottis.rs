@@ -7,7 +7,11 @@
 //!  - transglottal pressure must exceed the phonation threshold (≈2–3 cmH₂O),
 //!  - wide abduction (voiceless consonants, /h/) stops vibration.
 
-use crate::math::{Drift, PI, Rng, TAU, clamp, cos, exp, js_max, js_min, pow, sin, smoothstep};
+use crate::sources::lf::LfShape;
+
+/// LF shapes tabulated at Rd 0.3 … 2.7 in steps of 0.01
+const LF_TABLE: usize = 241;
+use crate::math::{Drift, PI, Rng, TAU, clamp, cos, exp, js_max, js_min, js_round, pow, sin, smoothstep, sqrt};
 use crate::physics::CM_H2O;
 
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +50,34 @@ pub struct GlottisParams {
     /// bifurcation 0..1: a logistic map drives per-cycle period and amplitude. Rising values walk
     /// through period doubling (subharmonics, ~0.3), period four (~0.55) into deterministic chaos (>0.62).
     pub chaos: f64,
+    /// Liveliness, 0 = off (the defaults keep the voice as it was). Human singers wander on
+    /// several time scales at once (Ternström & Friberg 1989; measured against the Choral
+    /// Singing Dataset in Doc/reviews/2026-11-08-spectral-match):
+    /// vibrato as noise through a resonator at `vibrato_rate` instead of a sine, 0..1 mix
+    pub vib_irregular: f64,
+    /// bandwidth of that resonator (Hz): wider = less regular
+    pub vib_bandwidth: f64,
+    /// slow amplitude wander (fraction SD, 0.12 ≈ 1 dB)
+    pub amp_wander: f64,
+    /// slow open-quotient wander (SD), which moves the partials' levels independently
+    pub oq_wander: f64,
+    /// slow wander of the closure's sharpness (SD), which moves the upper partials' levels
+    pub sharp_wander: f64,
+    /// > 0: the area pulse takes the shape of the Liljencrants–Fant glottal flow with this Rd
+    /// (0.3 pressed … 2.7 breathy; see `sources::lf`), replacing open_quotient, skew and
+    /// closure_sharpness. 0 keeps the default pulse.
+    pub lf_rd: f64,
+    /// fast irregular pitch movement (cents SD), band ~4–40 Hz: Ternström & Friberg's flutter.
+    /// Spreads each partial by k·cents, so upper partials turn blunt without filling the gaps
+    /// between them (white per-cycle jitter does fill them).
+    pub flutter: f64,
+    /// fast, correlated variation of the closure's sharpness (SD), band ~3–30 Hz, latched per
+    /// cycle: the upper partials' levels move and blur ("cloudy" top) while the low ones stay
+    pub sharp_flutter: f64,
+    /// LF mode: slow wander of Rd (fraction SD, band ~0.5–5 Hz). The pulse's shape and so the
+    /// spectral tilt drift: the upper partials move against the lower ones, as in sung tones
+    /// measured in VocalSet and the Choral Singing Dataset.
+    pub rd_wander: f64,
 }
 
 pub const DEFAULT_GLOTTIS: GlottisParams = GlottisParams {
@@ -66,6 +98,15 @@ pub const DEFAULT_GLOTTIS: GlottisParams = GlottisParams {
     diplophonia: 0.0,
     closure: 0.0,
     chaos: 0.0,
+    vib_irregular: 0.0,
+    vib_bandwidth: 1.5,
+    amp_wander: 0.0,
+    oq_wander: 0.0,
+    sharp_wander: 0.0,
+    lf_rd: 0.0,
+    flutter: 0.0,
+    sharp_flutter: 0.0,
+    rd_wander: 0.0,
 };
 
 #[derive(Clone, Debug)]
@@ -83,6 +124,28 @@ pub struct ParametricGlottis {
     drift_value: f64,
     drift_counter: i32,
     pitch_factor: f64,
+    // liveliness state (control rate, its own random streams so the defaults stay bit-exact)
+    live_rng: Rng,
+    vib_y: [f64; 2],
+    amp_drift: Drift,
+    oq_drift: Drift,
+    amp_live: f64,
+    oq_live: f64,
+    /// oq_live latched at the start of each cycle (a pulse changing shape mid-cycle is noise)
+    oq_cycle: f64,
+    sharp_drift: Drift,
+    sharp_live: f64,
+    sharp_cycle: f64,
+    /// the fast part alone (sharp_flutter), latched per cycle: in LF mode it moves Rd
+    rd_fast_live: f64,
+    rd_fast_cycle: f64,
+    rd_drift: Drift,
+    /// LF pulse of the current cycle
+    lf: LfShape,
+    /// LF pulses at Rd 0.3, 0.31 … 2.7, built on first use (no allocation: a fixed array)
+    lf_table: [Option<LfShape>; LF_TABLE],
+    flutter_drift: Drift,
+    sharp_flutter_drift: Drift,
     /// smoothed voicing gate 0..1 (telemetry)
     pub voicing: f64,
     voicing_sm: f64,
@@ -120,6 +183,23 @@ impl ParametricGlottis {
             drift_value: 0.0,
             drift_counter: 0,
             pitch_factor: 1.0,
+            live_rng: Rng::new(9001),
+            vib_y: [0.0; 2],
+            amp_drift: Drift::new(fs / 32.0, 0.25, 5150),
+            oq_drift: Drift::new(fs / 32.0, 0.4, 6260),
+            amp_live: 1.0,
+            oq_live: 0.0,
+            oq_cycle: 0.0,
+            sharp_drift: Drift::new(fs / 32.0, 0.35, 7370),
+            sharp_live: 0.0,
+            sharp_cycle: 0.0,
+            rd_fast_live: 0.0,
+            rd_fast_cycle: 0.0,
+            rd_drift: Drift::new(fs / 32.0, 0.5, 10_301),
+            lf: LfShape::new(1.0),
+            lf_table: [None; LF_TABLE],
+            flutter_drift: Drift::new(fs / 32.0, 4.0, 8181),
+            sharp_flutter_drift: Drift::new(fs / 32.0, 3.0, 9292),
             voicing: 0.0,
             voicing_sm: 0.0,
             dp_sm: 0.0,
@@ -133,6 +213,27 @@ impl ParametricGlottis {
             amp_sm: 0.0,
             sm_coef: 1.0 - exp(-1.0 / (0.004 * fs)),
         }
+    }
+
+    /// Give one physical singer an independent, deterministic micro-variation stream.
+    /// Choir voices use distinct seeds so jitter, shimmer, drift, vibrato phase and the
+    /// initial fold phase do not line up like duplicated audio tracks.
+    pub fn reseed(&mut self, seed: u32) {
+        let mut phase_rng = Rng::new(seed ^ 0xa511_e9b3);
+        self.phase = phase_rng.next();
+        self.vib_phase = phase_rng.next();
+        self.rng = Rng::new(seed ^ 0x63d8_3595);
+        self.drift = Drift::new(self.fs / 32.0, 0.3, seed ^ 0x9e37_79b9);
+        self.drift_value = 0.0;
+        self.drift_counter = 0;
+        self.live_rng = Rng::new(seed ^ 0x2545_f491);
+        self.vib_y = [0.0; 2];
+        self.amp_drift = Drift::new(self.fs / 32.0, 0.25, seed ^ 0x6c07_8965);
+        self.oq_drift = Drift::new(self.fs / 32.0, 0.4, seed ^ 0x5851_f42d);
+        self.sharp_drift = Drift::new(self.fs / 32.0, 0.35, seed ^ 0x1b87_3593);
+        self.flutter_drift = Drift::new(self.fs / 32.0, 4.0, seed ^ 0x3c6e_f372);
+        self.sharp_flutter_drift = Drift::new(self.fs / 32.0, 3.0, seed ^ 0x6a09_e667);
+        self.rd_drift = Drift::new(self.fs / 32.0, 0.5, seed ^ 0x510e_527f);
     }
 
     /// Reset phase etc.
@@ -158,7 +259,36 @@ impl ParametricGlottis {
             if self.vib_phase > 1.0 {
                 self.vib_phase -= 1.0;
             }
-            let cents = p.vibrato_depth * sin(TAU * self.vib_phase) + p.drift * self.drift_value;
+            let mut vib = sin(TAU * self.vib_phase);
+            if p.vib_irregular > 0.0 {
+                // AR(2) resonator driven by white noise, scaled to the sine's RMS (1/√2)
+                let cr = self.fs / 32.0;
+                let r = exp(-PI * p.vib_bandwidth / cr);
+                let (a1, a2) = (2.0 * r * cos(TAU * p.vibrato_rate / cr), -r * r);
+                let y = a1 * self.vib_y[0] + a2 * self.vib_y[1] + self.live_rng.gauss();
+                self.vib_y = [y, self.vib_y[0]];
+                let var = (1.0 - a2) / ((1.0 + a2) * ((1.0 - a2) * (1.0 - a2) - a1 * a1));
+                let res = y / sqrt(2.0 * var);
+                vib = (1.0 - p.vib_irregular) * vib + p.vib_irregular * res;
+            }
+            if p.rd_wander > 0.0 || p.sharp_flutter > 0.0 {
+                let fast = if p.sharp_flutter > 0.0 { p.sharp_flutter * self.sharp_flutter_drift.step() } else { 0.0 };
+                let slow = if p.rd_wander > 0.0 { p.rd_wander * self.rd_drift.step() } else { 0.0 };
+                self.rd_fast_live = fast + slow;
+            }
+            if p.sharp_wander > 0.0 || p.sharp_flutter > 0.0 {
+                let slow = if p.sharp_wander > 0.0 { p.sharp_wander * self.sharp_drift.step() } else { 0.0 };
+                let fast = if p.sharp_flutter > 0.0 { p.sharp_flutter * self.sharp_flutter_drift.step() } else { 0.0 };
+                self.sharp_live = slow + fast;
+            }
+            if p.amp_wander > 0.0 || p.oq_wander > 0.0 {
+                self.amp_live = js_max(0.2, 1.0 + p.amp_wander * self.amp_drift.step());
+                self.oq_live = p.oq_wander * self.oq_drift.step();
+            }
+            let mut cents = p.vibrato_depth * vib + p.drift * self.drift_value;
+            if p.flutter > 0.0 {
+                cents += p.flutter * self.flutter_drift.step();
+            }
             self.pitch_factor = pow(2.0, cents / 1200.0);
         }
         let mut f0 = p.f0 * self.pitch_factor;
@@ -180,6 +310,25 @@ impl ParametricGlottis {
         if self.phase >= 1.0 {
             self.phase -= 1.0;
             self.cycle_index += 1;
+            self.oq_cycle = self.oq_live;
+            self.sharp_cycle = self.sharp_live;
+            self.rd_fast_cycle = self.rd_fast_live;
+            if p.lf_rd > 0.0 {
+                if self.rd_fast_cycle != 0.0 {
+                    // fast closure variation in LF mode moves Rd cycle by cycle (tabulated shapes)
+                    let rd = clamp(p.lf_rd * (1.0 + self.rd_fast_cycle), crate::sources::lf::RD_MIN, crate::sources::lf::RD_MAX);
+                    let i = js_round((rd - crate::sources::lf::RD_MIN) / 0.01) as usize;
+                    let i = if i >= LF_TABLE { LF_TABLE - 1 } else { i };
+                    if self.lf_table[i].is_none() {
+                        self.lf_table[i] = Some(LfShape::new(crate::sources::lf::RD_MIN + 0.01 * i as f64));
+                    }
+                    if let Some(s) = self.lf_table[i] {
+                        self.lf = s;
+                    }
+                } else if (p.lf_rd - self.lf.rd).abs() > 1e-9 {
+                    self.lf = LfShape::new(p.lf_rd);
+                }
+            }
             let alt = if self.cycle_index & 1 == 1 { 1.0 } else { -1.0 };
             let mut chaos_p = 0.0;
             let mut chaos_a = 0.0;
@@ -199,21 +348,22 @@ impl ParametricGlottis {
         }
 
         // pulse shape within the cycle
-        let mut oq = clamp(p.open_quotient - 0.18 * (p.effort - 0.5), 0.25, 0.98);
+        let mut oq = clamp(p.open_quotient - 0.18 * (p.effort - 0.5) + self.oq_cycle, 0.25, 0.98);
         if p.fry > 0.0 {
             oq = oq * (1.0 - p.fry) + 0.28 * p.fry;
         }
-        let mut pulse = shape(self.phase, oq, p.skew, p.closure_sharpness);
+        let sharp = clamp(p.closure_sharpness + self.sharp_cycle, 0.0, 1.0);
+        let mut pulse = if p.lf_rd > 0.0 { self.lf.flow(self.phase) } else { shape(self.phase, oq, p.skew, sharp) };
         if p.fry > 0.3 {
             // second, weaker pulse shortly after the first (double pulsing typical of fry)
             let ph2 = self.phase - 0.38;
             if ph2 > 0.0 {
-                pulse += 0.55 * smoothstep(0.3, 0.8, p.fry) * shape(ph2, oq * 0.8, p.skew, p.closure_sharpness);
+                pulse += 0.55 * smoothstep(0.3, 0.8, p.fry) * shape(ph2, oq * 0.8, p.skew, sharp);
             }
         }
         let effort_scale = 0.45 + 0.75 * p.effort;
         let sc = self.sm_coef;
-        self.amp_sm += sc * (p.amplitude * effort_scale - self.amp_sm);
+        self.amp_sm += sc * (p.amplitude * effort_scale * self.amp_live - self.amp_sm);
         self.closure_sm += sc * (p.closure - self.closure_sm);
         self.static_sm += sc * (p.abduction + p.chink - self.static_sm);
         let vib = self.amp_sm * self.cycle_amp * self.voicing_sm * pulse;

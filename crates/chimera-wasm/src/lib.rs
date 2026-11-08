@@ -267,6 +267,15 @@ pub unsafe extern "C" fn engine_set_gate(h: *mut Handle, level: f64) {
     handle!(h).engine.set_gate(level);
 }
 
+/// Give this engine its own deterministic singer variation stream.
+///
+/// # Safety
+/// `h` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn engine_seed(h: *mut Handle, seed: u32) {
+    handle!(h).engine.reseed(seed);
+}
+
 /// Switch body: `female` 0 (male) … 1 (female), `child` 0 (adult) … 1 (child); see `BodyMix`.
 /// Allocates. The new voice's node counts can be read with `engine_n_ph`/`engine_n_or`.
 ///

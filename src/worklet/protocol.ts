@@ -14,6 +14,17 @@ export interface PhraseMsg {
 
 export type BodyName = "male" | "female" | "child";
 
+export interface ChoirVoiceConfig {
+  body: BodyMix;
+  source: Partial<VoiceSource>;
+  /** deterministic physical variation stream */
+  seed: number;
+  /** stereo position, -1 … 1 */
+  pan: number;
+  /** linear contribution to the ensemble mix */
+  gain: number;
+}
+
 export type ToWorklet =
   | { type: "body"; body: BodyMix }
   | { type: "artic"; values: Partial<HumanArtic>; tipFree?: boolean }
@@ -33,7 +44,10 @@ export type ToWorklet =
   /** end the open-ended gestures with this tag now (a sung note released) */
   | { type: "release"; tag: number }
   /** play one beatbox sound as soon as the mouth can make it */
-  | { type: "beatHit"; id: string; note?: number; accent?: number };
+  | { type: "beatHit"; id: string; note?: number; accent?: number }
+  | { type: "choirSetup"; voices: ChoirVoiceConfig[] }
+  | { type: "choirSchedule"; voice: number; gestures: Gesture[]; segments: PlannedSegment[]; end: number; id: number; lead?: number }
+  | { type: "choirStop" };
 
 export interface TelemetryMessage {
   type: "telemetry";

@@ -116,6 +116,11 @@ impl Engine {
         self.voice.set_source(values);
     }
 
+    /// Make this engine an independent deterministic singer in an ensemble.
+    pub fn reseed(&mut self, seed: u32) {
+        self.voice.glottis.reseed(seed);
+    }
+
     pub fn set_gate(&mut self, level: f64) {
         self.gate_level = level;
         self.voice.set_gate(level);

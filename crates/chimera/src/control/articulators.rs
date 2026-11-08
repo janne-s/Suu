@@ -5,7 +5,7 @@
 
 use super::score::Blended;
 use crate::anatomy::human::{ArticKey, ArticPatch, HumanArtic, N_ARTIC, NEUTRAL, rest_tip};
-use crate::math::{PI, js_max, js_min};
+use crate::math::{Drift, PI, js_max, js_min};
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -67,7 +67,39 @@ pub struct ArticulatorBank {
     omega: [f64; N_ARTIC],
     /// effective targets used in the last step (base blended with gestures), for telemetry
     pub effective: HumanArtic,
+    /// Slow, irregular micro-movement of the tract (0 = off, the default; 1 = the reference
+    /// amplitudes in WANDER_CM). A held vowel is never frozen: jaw, tongue, lips and larynx drift
+    /// by a millimetre or so, which moves the formants a few per cent and the partials' levels
+    /// with them (Doc/reviews/2026-11-08-choral-vowel).
+    pub wander: f64,
+    /// micro-movement of the upper-formant shapers (0 = off), × WANDER_UPPER
+    pub wander_upper: f64,
+    wander_drift: Option<[Drift; N_ARTIC]>,
+    wander_seed: u32,
 }
+
+/// Reference micro-movement per articulator (cm, or the articulator's own unit), canonical order.
+const WANDER_CM: [f64; N_ARTIC] = {
+    let mut a = [0.0; N_ARTIC];
+    a[0] = 0.06; // jaw
+    a[1] = 0.05; // tbX
+    a[2] = 0.05; // tbY
+    a[6] = 0.04; // root
+    a[7] = 0.04; // lipAp
+    a[8] = 0.03; // lipProt
+    a[12] = 0.05; // larynx
+    a
+};
+
+/// Micro-movement of the parts that shape the upper formants (epilarynx, lip spreading), scaled
+/// by `wander_upper` separately: they move the singer's-formant cluster and the radiation, so
+/// the upper partials vary while the low ones stay.
+const WANDER_UPPER: [f64; N_ARTIC] = {
+    let mut a = [0.0; N_ARTIC];
+    a[9] = 0.04; // lipWidth
+    a[13] = 0.06; // epilarynx
+    a
+};
 
 impl Default for ArticulatorBank {
     fn default() -> Self {
@@ -77,7 +109,7 @@ impl Default for ArticulatorBank {
 
 impl ArticulatorBank {
     pub fn new() -> Self {
-        let mut b = ArticulatorBank { x: NEUTRAL, v: [0.0; N_ARTIC], target: NEUTRAL, tip_free: true, speed: [1.0; N_ARTIC], omega: ARTIC_SPECS.map(|s| 2.0 * PI * s.hz), effective: NEUTRAL };
+        let mut b = ArticulatorBank { x: NEUTRAL, v: [0.0; N_ARTIC], target: NEUTRAL, tip_free: true, speed: [1.0; N_ARTIC], omega: ARTIC_SPECS.map(|s| 2.0 * PI * s.hz), effective: NEUTRAL, wander: 0.0, wander_upper: 0.0, wander_drift: None, wander_seed: 0x77a1 };
         let tip = rest_tip(NEUTRAL.jaw, NEUTRAL.tb_x, NEUTRAL.tb_y);
         b.x.tt_x = tip.x;
         b.target.tt_x = tip.x;
@@ -106,7 +138,17 @@ impl ArticulatorBank {
     /// Advance the dynamics. `blend[k]` (when given) is the gesture blend for each key: weighted
     /// mean value, total weight and a speed multiplier. The performer's base target joins with
     /// weight `base_weight`.
+    /// Give the micro-movement its own deterministic stream (one singer of a choir).
+    pub fn reseed_wander(&mut self, seed: u32) {
+        self.wander_seed = seed;
+        self.wander_drift = None;
+    }
+
     pub fn step(&mut self, dt: f64, blend: Option<&[Blended]>, base_weight: f64) {
+        if (self.wander > 0.0 || self.wander_upper > 0.0) && self.wander_drift.is_none() {
+            let seed = self.wander_seed;
+            self.wander_drift = Some(core::array::from_fn(|i| Drift::new(1.0 / dt, 0.35, seed.wrapping_mul(2654435761).wrapping_add(i as u32 * 7919))));
+        }
         if self.tip_free {
             let tip = rest_tip(self.x.jaw, self.x.tb_x, self.x.tb_y);
             self.target.tt_x = tip.x;
@@ -129,6 +171,12 @@ impl ArticulatorBank {
                         tgt = (tgt * bw + b.value * b.weight) / (bw + b.weight);
                     }
                     sp *= b.speed;
+                }
+            }
+            let amp = self.wander * WANDER_CM[i] + self.wander_upper * WANDER_UPPER[i];
+            if amp > 0.0 {
+                if let Some(d) = self.wander_drift.as_mut() {
+                    tgt += amp * d[i].step();
                 }
             }
             let s = ARTIC_SPECS[i];
