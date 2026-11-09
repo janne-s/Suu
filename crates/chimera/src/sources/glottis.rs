@@ -78,6 +78,20 @@ pub struct GlottisParams {
     /// spectral tilt drift: the upper partials move against the lower ones, as in sung tones
     /// measured in VocalSet and the Choral Singing Dataset.
     pub rd_wander: f64,
+    /// LF mode: × on the return phase ta (closure abruptness) independent of Rd's open phase;
+    /// 1 = Fant's regression (LfShape::with_ra_scale)
+    pub lf_ra_scale: f64,
+    /// slow random swing of the cycle-to-cycle jitter and shimmer (log-scale, 1 ≈ ×e per unit
+    /// drift; 0 = steady). Real sung tones fill the gaps between partials in bursts (peak-hold
+    /// gap fill 12–19 dB above the median frame, the engine's 3–7 dB): their irregularity comes
+    /// and goes (Doc/design/2026-11-08-aantovaylan-haviot).
+    pub aperiodic_wander: f64,
+    /// pitch at the start of each voiced stretch (cents, 0 = off): the note starts this far
+    /// sharp and settles as A·e^(−t/τ)·cos(2πt/T), τ = onset_time, T = 4·onset_time. CSD
+    /// singers start ≈ +90 c and settle in ≈ 0.3 s; held over a note it widens each
+    /// partial's base in a peak-hold view (Doc/design/2026-11-08-aantovaylan-haviot).
+    pub onset_cents: f64,
+    pub onset_time: f64,
 }
 
 pub const DEFAULT_GLOTTIS: GlottisParams = GlottisParams {
@@ -107,6 +121,10 @@ pub const DEFAULT_GLOTTIS: GlottisParams = GlottisParams {
     flutter: 0.0,
     sharp_flutter: 0.0,
     rd_wander: 0.0,
+    lf_ra_scale: 1.0,
+    aperiodic_wander: 0.0,
+    onset_cents: 0.0,
+    onset_time: 0.15,
 };
 
 #[derive(Clone, Debug)]
@@ -146,6 +164,11 @@ pub struct ParametricGlottis {
     lf_table: [Option<LfShape>; LF_TABLE],
     flutter_drift: Drift,
     sharp_flutter_drift: Drift,
+    aper_drift: Drift,
+    /// time since the voicing gate opened (s), for onset_cents
+    onset_t: f64,
+    /// current multiplier on jitter and shimmer from aperiodic_wander
+    aper_live: f64,
     /// smoothed voicing gate 0..1 (telemetry)
     pub voicing: f64,
     voicing_sm: f64,
@@ -200,6 +223,9 @@ impl ParametricGlottis {
             lf_table: [None; LF_TABLE],
             flutter_drift: Drift::new(fs / 32.0, 4.0, 8181),
             sharp_flutter_drift: Drift::new(fs / 32.0, 3.0, 9292),
+            aper_drift: Drift::new(fs / 32.0, 1.5, 11_411),
+            onset_t: 0.0,
+            aper_live: 1.0,
             voicing: 0.0,
             voicing_sm: 0.0,
             dp_sm: 0.0,
@@ -234,6 +260,7 @@ impl ParametricGlottis {
         self.flutter_drift = Drift::new(self.fs / 32.0, 4.0, seed ^ 0x3c6e_f372);
         self.sharp_flutter_drift = Drift::new(self.fs / 32.0, 3.0, seed ^ 0x6a09_e667);
         self.rd_drift = Drift::new(self.fs / 32.0, 0.5, seed ^ 0x510e_527f);
+        self.aper_drift = Drift::new(self.fs / 32.0, 1.5, seed ^ 0x9b05_688c);
     }
 
     /// Reset phase etc.
@@ -285,7 +312,19 @@ impl ParametricGlottis {
                 self.amp_live = js_max(0.2, 1.0 + p.amp_wander * self.amp_drift.step());
                 self.oq_live = p.oq_wander * self.oq_drift.step();
             }
+            if p.aperiodic_wander > 0.0 {
+                self.aper_live = exp(p.aperiodic_wander * self.aper_drift.step());
+            }
             let mut cents = p.vibrato_depth * vib + p.drift * self.drift_value;
+            if p.onset_cents != 0.0 {
+                if self.voicing_sm < 0.2 {
+                    self.onset_t = 0.0;
+                } else {
+                    self.onset_t += 32.0 / self.fs;
+                }
+                let tau = js_max(p.onset_time, 0.01);
+                cents += p.onset_cents * exp(-self.onset_t / tau) * cos(TAU * self.onset_t / (4.0 * tau));
+            }
             if p.flutter > 0.0 {
                 cents += p.flutter * self.flutter_drift.step();
             }
@@ -319,14 +358,14 @@ impl ParametricGlottis {
                     let rd = clamp(p.lf_rd * (1.0 + self.rd_fast_cycle), crate::sources::lf::RD_MIN, crate::sources::lf::RD_MAX);
                     let i = js_round((rd - crate::sources::lf::RD_MIN) / 0.01) as usize;
                     let i = if i >= LF_TABLE { LF_TABLE - 1 } else { i };
-                    if self.lf_table[i].is_none() {
-                        self.lf_table[i] = Some(LfShape::new(crate::sources::lf::RD_MIN + 0.01 * i as f64));
+                    if self.lf_table[i].map_or(true, |s| s.ra_scale != p.lf_ra_scale) {
+                        self.lf_table[i] = Some(LfShape::with_ra_scale(crate::sources::lf::RD_MIN + 0.01 * i as f64, p.lf_ra_scale));
                     }
                     if let Some(s) = self.lf_table[i] {
                         self.lf = s;
                     }
-                } else if (p.lf_rd - self.lf.rd).abs() > 1e-9 {
-                    self.lf = LfShape::new(p.lf_rd);
+                } else if (p.lf_rd - self.lf.rd).abs() > 1e-9 || self.lf.ra_scale != p.lf_ra_scale {
+                    self.lf = LfShape::with_ra_scale(p.lf_rd, p.lf_ra_scale);
                 }
             }
             let alt = if self.cycle_index & 1 == 1 { 1.0 } else { -1.0 };
@@ -342,9 +381,10 @@ impl ParametricGlottis {
                 chaos_p = 0.45 * p.chaos * dev;
                 chaos_a = 1.1 * p.chaos * dev;
             }
-            self.cycle_period_scale = 1.0 + p.jitter * self.rng.gauss() + p.diplophonia * 0.08 * alt + chaos_p;
+            let aper = self.aper_live;
+            self.cycle_period_scale = 1.0 + p.jitter * aper * self.rng.gauss() + p.diplophonia * 0.08 * alt + chaos_p;
             self.cycle_period_scale = clamp(self.cycle_period_scale, 0.55, 1.8);
-            self.cycle_amp = js_max(0.12, 1.0 + p.shimmer * self.rng.gauss() - p.diplophonia * 0.35 * (if alt > 0.0 { 1.0 } else { 0.0 }) + chaos_a);
+            self.cycle_amp = js_max(0.12, 1.0 + p.shimmer * aper * self.rng.gauss() - p.diplophonia * 0.35 * (if alt > 0.0 { 1.0 } else { 0.0 }) + chaos_a);
         }
 
         // pulse shape within the cycle

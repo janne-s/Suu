@@ -196,6 +196,16 @@ pub struct HumanVoice {
     lim_release: f64,
     /// tissue may compress this far (cm) before the palate stops the articulator
     pub max_penetration: f64,
+    /// experiment (default 1 = engine as calibrated): scales the cycle-to-cycle jitter and
+    /// shimmer the source derives from roughness, floor included. At a soprano's 525 Hz the
+    /// floor (0.21 % jitter, 2 % shimmer) alone spreads a skirt 8–15 dB above real singers'
+    /// between H1 and H2 (Doc/reviews/2026-11-08-choral-vowel).
+    pub jitter_scale: f64,
+    pub shimmer_scale: f64,
+    /// experiment (default 1): × on the folds' vibrating area (peak glottal area). A low, full
+    /// voice opens the glottis wider; the open glottis then damps and widens F1 and carries more
+    /// flow into H1–H2 (Doc/design/2026-11-08-aantovaylan-haviot).
+    pub glottal_area_scale: f64,
 }
 
 impl HumanVoice {
@@ -250,6 +260,9 @@ impl HumanVoice {
             lim_hold_n: crate::math::js_round(0.025 * fs_out) as i64,
             lim_release: exp(-1.0 / (0.2 * fs_out)),
             max_penetration: 0.1,
+            jitter_scale: 1.0,
+            shimmer_scale: 1.0,
+            glottal_area_scale: 1.0,
         };
         let x = v.artic.x;
         v.airway.apply(&x, 0.0);
@@ -309,7 +322,7 @@ impl HumanVoice {
         let s = self.source;
         let g = &mut self.glottis.params;
         let k2 = self.airway.body.scale * self.airway.body.scale;
-        g.amplitude = 0.17 * k2 * (if s.voiced { 1.0 } else { 0.0 });
+        g.amplitude = 0.17 * k2 * self.glottal_area_scale * (if s.voiced { 1.0 } else { 0.0 });
         g.abduction = (if s.voiced { 0.1 * s.breathiness * s.breathiness } else { 0.2 + 0.1 * s.breathiness }) * k2;
         self.base_abduction = g.abduction;
         self.base_closure = 0.0;
@@ -331,8 +344,8 @@ impl HumanVoice {
         g.fry = s.fry;
         // Jitter of a healthy, trained voice at the default roughness (0.1): about 0.45 %, well
         // under the clinical threshold (MDVP: 1.04 %).
-        g.jitter = 0.0021 + 0.0245 * s.roughness;
-        g.shimmer = 0.02 + 0.22 * s.roughness;
+        g.jitter = (0.0021 + 0.0245 * s.roughness) * self.jitter_scale;
+        g.shimmer = (0.02 + 0.22 * s.roughness) * self.shimmer_scale;
         g.diplophonia = if s.roughness > 0.5 { (s.roughness - 0.5) * 1.4 } else { 0.0 };
         g.vibrato_depth = s.vibrato_depth;
         g.vibrato_rate = s.vibrato_rate;

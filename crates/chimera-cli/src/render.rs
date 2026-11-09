@@ -569,6 +569,21 @@ pub fn notes(ctx: &Ctx, a: &[String]) -> Result<(), String> {
         if let Some(k) = air.get("hfLoss").and_then(|x| x.as_f64()) {
             v.airway.net.hf_loss = k;
         }
+        if let Some(k) = air.get("midLoss").and_then(|x| x.as_f64()) {
+            v.airway.net.mid_loss = k;
+        }
+        if let Some(on) = air.get("thermalLosses").and_then(|x| x.as_bool()) {
+            v.airway.net.thermal_losses = on;
+        }
+        if let Some(k) = air.get("wallRScale").and_then(|x| x.as_f64()) {
+            v.airway.net.wall_r_scale = k;
+        }
+        if let Some(k) = air.get("chestRadiation").and_then(|x| x.as_f64()) {
+            match air.get("chestDelayMs").and_then(|x| x.as_f64()) {
+                Some(ms) => v.airway.set_chest_radiation_delayed(k, ms / 1000.0),
+                None => v.airway.set_chest_radiation(k),
+            }
+        }
     }
     // experiment: "noise": {"glottis": k, "constriction": k, "teeth": k} scales the turbulence sources
     if let Some(nz) = j.get("noise") {
@@ -602,6 +617,18 @@ pub fn notes(ctx: &Ctx, a: &[String]) -> Result<(), String> {
         if let Some(x) = f("flutter") { p.flutter = x; }
         if let Some(x) = f("sharpFlutter") { p.sharp_flutter = x; }
         if let Some(x) = f("rdWander") { p.rd_wander = x; }
+        if let Some(x) = f("lfRaScale") { p.lf_ra_scale = x; }
+        if let Some(x) = f("aperiodicWander") { p.aperiodic_wander = x; }
+        if let Some(x) = f("onsetCents") { p.onset_cents = x; }
+        if let Some(x) = f("onsetTime") { p.onset_time = x; }
+        // scales of the source's cycle-to-cycle jitter / shimmer (re-derived on every source change)
+        if let Some(x) = f("jitterScale") { v.jitter_scale = x; }
+        if let Some(x) = f("shimmerScale") { v.shimmer_scale = x; }
+        if let Some(x) = f("areaScale") { v.glottal_area_scale = x; }
+        if f("jitterScale").is_some() || f("shimmerScale").is_some() || f("areaScale").is_some() {
+            let s = v.source;
+            v.set_source(&SourcePatch { roughness: Some(s.roughness), ..Default::default() });
+        }
     }
     let mut offsets: Vec<(ArticKey, f64)> = Vec::new();
     if let Some(o) = j.get("articOffset").and_then(|o| o.as_object()) {

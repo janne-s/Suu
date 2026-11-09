@@ -146,6 +146,10 @@ impl PortSpec {
 /// r (at `viscous_omega`) becomes r·[c0 + Σ cᵢ·s/(s + pᵢ)], which follows r·√(ω/ω_ref) within
 /// 3.5 % from 60 Hz to 14 kHz. Each high-pass term is integrated implicitly (it can only damp).
 pub const SQRT_LOSS_POLES_HZ: [f64; 4] = [150.0, 600.0, 2400.0, 9600.0];
+/// Heat conduction into the walls, relative to the viscous boundary-layer loss: (γ−1)/√Pr for
+/// air (γ = 1.4, Pr = 0.71). Both scale with perimeter/area, so for each formant's bandwidth the
+/// thermal shunt loss G/(2πC) adds this fraction to the viscous R/(2πL) (Flanagan 1972, §3.2).
+pub const THERMAL_FACTOR: f64 = 0.475;
 pub const SQRT_LOSS_C: [f64; 5] = [0.2487, 0.3467, 0.561, 1.0757, 3.1176];
 
 /// Linearised element values for frequency-domain analysis.
@@ -171,6 +175,8 @@ pub struct LinearElements {
     pub sqrt_loss: Vec<bool>,
     /// × on the upper √f terms (AirwayNetwork::hf_loss)
     pub hf_loss: f64,
+    /// × on the 2.4 kHz √f term (AirwayNetwork::mid_loss)
+    pub mid_loss: f64,
 }
 
 /// A turbulence noise source request (control rate).
@@ -341,6 +347,23 @@ pub struct AirwayNetwork {
     /// × on the upper √f term (9.6 kHz pole): the extra high-frequency damping a
     /// real tract gets from what a 1D duct lacks (cross-modes, soft rough surfaces). 1 = physics.
     pub hf_loss: f64,
+    /// × on the 2.4 kHz √f term: broadens F3–F5 without touching F1–F2. The engine's upper
+    /// formants are 25–35 Hz wide where real ones are 100–250 Hz, so the singer's formant is
+    /// separate spikes with 15–20 dB valleys instead of one hump (Doc/reviews/
+    /// 2026-11-08-choral-vowel). 1 = physics. Needs `sqrt_losses`.
+    pub mid_loss: f64,
+    /// heat-conduction loss, folded into the boundary-layer resistance as ×(1 + THERMAL_FACTOR);
+    /// off by default (the engine had no thermal loss; Doc/design/2026-11-08-aantovaylan-haviot)
+    pub thermal_losses: bool,
+    /// chest path (experiment, empty = off): per-node fraction of wall volume velocity radiated
+    /// from the neck/chest surface, which reaches the listener later than the mouth's sound
+    chest_rad: Vec<f64>,
+    /// delay line for the chest path (length = delay in samples + 1; sized when set, not per step)
+    chest_buf: Vec<f64>,
+    chest_pos: usize,
+    /// × on every wall's resistance: the soft-tissue values are cheek values (Ishizaka et al.
+    /// 1975), which damp F1 more than a sung vowel's closed-glottis bandwidth allows. 1 = as before.
+    pub wall_r_scale: f64,
     sq_y: Vec<[f64; 4]>,
     /// scale on turbulence noise gain
     pub noise_scale: f64,
@@ -439,6 +462,12 @@ impl AirwayNetwork {
             viscous_omega: 2.0 * PI * 700.0,
             sqrt_losses: false,
             hf_loss: 1.0,
+            mid_loss: 1.0,
+            thermal_losses: false,
+            chest_rad: Vec::new(),
+            chest_buf: Vec::new(),
+            chest_pos: 0,
+            wall_r_scale: 1.0,
             sq_y: Vec::new(),
             noise_scale: 1.0,
             out: 0.0,
@@ -486,6 +515,29 @@ impl AirwayNetwork {
     }
 
     /// Attach a radiation load at an open end node. Returns radiator index.
+    /// Chest path: `fraction` of `node`'s wall volume velocity radiated, `delay_s` later than the
+    /// mouth (path difference to the listener). Allocates (configuration time, not per step).
+    pub fn set_chest_radiation(&mut self, node: usize, fraction: f64, delay_s: f64) {
+        if self.chest_rad.len() != self.wall_rad.len() {
+            self.chest_rad = vec![0.0; self.wall_rad.len()];
+        }
+        if node < self.chest_rad.len() {
+            self.chest_rad[node] = fraction;
+        }
+        let n = js_max(1.0, (delay_s * self.fs).round()) as usize + 1;
+        if self.chest_buf.len() != n {
+            self.chest_buf = vec![0.0; n];
+            self.chest_pos = 0;
+        }
+    }
+
+    /// Fraction of a node's wall volume velocity radiated as sound (after finalize; no allocation).
+    pub fn set_wall_radiation(&mut self, node: usize, f: f64) {
+        if node < self.wall_rad.len() {
+            self.wall_rad[node] = f;
+        }
+    }
+
     pub fn add_radiation(&mut self, node: usize) -> usize {
         self.rad_nodes.push(node);
         self.rad_nodes.len() - 1
@@ -886,13 +938,14 @@ impl AirwayNetwork {
         }
 
         // 3) branches
-        let visc = sqrt((RHO * MU * self.viscous_omega) / 2.0) * self.viscous_scale;
+        let visc = sqrt((RHO * MU * self.viscous_omega) / 2.0) * self.viscous_scale * if self.thermal_losses { 1.0 + THERMAL_FACTOR } else { 1.0 };
         let closed = self.closed_area;
         let half_rho = 0.5 * RHO;
         let enable_energy_safe = self.energy_safe;
         let symmetric = self.symmetric_kinetic;
         let sqrt_on = self.sqrt_losses;
         let hf_loss = self.hf_loss;
+        let mid_loss = self.mid_loss;
         let sq_alpha = SQRT_LOSS_POLES_HZ.map(|f| 1.0 - exp(-2.0 * PI * f * t));
         {
             // the arrays the branch loop reads, borrowed once (checked indexing costs nothing
@@ -949,7 +1002,7 @@ impl AirwayNetwork {
                         let base = r;
                         r = base * SQRT_LOSS_C[0];
                         for i in 0..4 {
-                            let hf = if i >= 3 { hf_loss } else { 1.0 };
+                            let hf = if i >= 3 { hf_loss } else if i == 2 { mid_loss } else { 1.0 };
                             let g = base * SQRT_LOSS_C[i + 1] * hf * (1.0 - sq_alpha[i]);
                             sq_g += g;
                             sq_c += g * sq_y[j][i];
@@ -1044,12 +1097,13 @@ impl AirwayNetwork {
 
         // 4) walls (velocity at half step from p(n), displacement integrates)
         let mut wall_rad_sum = 0.0;
+        let mut chest_sum = 0.0;
         for k in 0..n {
             if !self.has_wall[k] {
                 continue;
             }
             let m = self.wall_m[k];
-            let r = self.wall_r[k];
+            let r = self.wall_r[k] * self.wall_r_scale;
             let v = ((m * inv_t - 0.5 * r) * self.wall_v[k] + self.p[k] - self.wall_k[k] * self.wall_y[k]) / (m * inv_t + 0.5 * r);
             self.wall_v[k] = v;
             self.wall_y[k] += t * v;
@@ -1058,6 +1112,16 @@ impl AirwayNetwork {
             self.wall_u[k] = uw;
             self.flow_sum[k] -= uw;
             wall_rad_sum += uw * self.wall_rad[k];
+            if !self.chest_rad.is_empty() {
+                chest_sum += uw * self.chest_rad[k];
+            }
+        }
+        if !self.chest_buf.is_empty() {
+            // the delay line holds chest flow; the mouth hears it `len − 1` samples late
+            let len = self.chest_buf.len();
+            self.chest_buf[self.chest_pos] = chest_sum;
+            self.chest_pos = (self.chest_pos + 1) % len;
+            wall_rad_sum += self.chest_buf[self.chest_pos];
         }
 
         // 5) nodes (radiation loads handled semi-implicitly)
@@ -1191,7 +1255,7 @@ impl AirwayNetwork {
     pub fn linear_elements(&self) -> LinearElements {
         let n = self.n_nodes;
         let nb = self.n_branches;
-        let visc = sqrt((RHO * MU * self.viscous_omega) / 2.0) * self.viscous_scale;
+        let visc = sqrt((RHO * MU * self.viscous_omega) / 2.0) * self.viscous_scale * if self.thermal_losses { 1.0 + THERMAL_FACTOR } else { 1.0 };
         let a_t = &self.area_target;
         let dx = &self.dx_target;
         let mut l = vec![0.0; nb];
@@ -1240,13 +1304,14 @@ impl AirwayNetwork {
             c,
             wall_area,
             wall_m: self.wall_m.clone(),
-            wall_r: self.wall_r.clone(),
+            wall_r: self.wall_r.iter().map(|r| r * self.wall_r_scale).collect(),
             wall_k: self.wall_k.clone(),
             wall_rad: self.wall_rad.clone(),
             fixed: self.fixed.clone(),
             rad_nodes: self.rad_nodes.clone(),
             rad_area: self.rad_nodes.iter().map(|&k| js_max(a_t[k], 1e-4)).collect(),
             hf_loss: self.hf_loss,
+            mid_loss: self.mid_loss,
             sqrt_loss: if self.sqrt_losses { self.b_kind.iter().map(|&k| k == KIND_SERIES).collect() } else { Vec::new() },
         }
     }

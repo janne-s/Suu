@@ -68,6 +68,24 @@ pub struct HumanAirway {
 }
 
 impl HumanAirway {
+    /// experiment (default 0): the fraction of the trachea's wall motion radiated as sound, i.e.
+    /// the voice heard from the neck and chest. It carries the subglottal resonances and the
+    /// trachea wall's own (≈200 Hz) into the output (Doc/design/2026-11-08-aantovaylan-haviot).
+    pub fn set_chest_radiation(&mut self, f: f64) {
+        for i in 0..self.trachea.n {
+            self.net.set_wall_radiation(self.trachea.node(i), f);
+        }
+    }
+
+    /// As set_chest_radiation, but the chest's sound reaches the listener `delay_s` after the
+    /// mouth's (≈0.6–0.9 ms for a microphone in front of the mouth: the chest is 20–30 cm lower),
+    /// so it combs gently with the mouth instead of cancelling one partial in phase.
+    pub fn set_chest_radiation_delayed(&mut self, f: f64, delay_s: f64) {
+        for i in 0..self.trachea.n {
+            self.net.set_chest_radiation(self.trachea.node(i), f, delay_s);
+        }
+    }
+
     /// `fs`: internal sample rate (Hz).
     pub fn new(fs: f64, body: HumanBody) -> Self {
         let k = body.scale;

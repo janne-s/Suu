@@ -29,7 +29,7 @@ fn branch_z(el: &LinearElements, j: usize, w: f64) -> (f64, f64) {
         for i in 0..4 {
             let p = 2.0 * PI * SQRT_LOSS_POLES_HZ[i];
             let d = w * w + p * p;
-            let hf = if i >= 3 { el.hf_loss } else { 1.0 };
+            let hf = if i >= 3 { el.hf_loss } else if i == 2 { el.mid_loss } else { 1.0 };
             zr += r * SQRT_LOSS_C[i + 1] * hf * w * w / d;
             zi += r * SQRT_LOSS_C[i + 1] * hf * w * p / d;
         }

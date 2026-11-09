@@ -21,6 +21,8 @@ pub const RD_MAX: f64 = 2.7;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LfShape {
     pub rd: f64,
+    /// × on the return phase ta that Rd's regression gives (1 = Fant's regression)
+    pub ra_scale: f64,
     pub tp: f64,
     pub te: f64,
     pub ta: f64,
@@ -36,13 +38,21 @@ pub struct LfShape {
 
 impl LfShape {
     pub fn new(rd: f64) -> LfShape {
+        LfShape::with_ra_scale(rd, 1.0)
+    }
+
+    /// Rd's open phase (tp, te) with the return phase ta scaled: the closure's abruptness, which
+    /// sets the excitation above ~1/(2π·ta·T0), separated from the open phase's length, which sets
+    /// how much the open glottis damps F1–F2. Fant's regression ties them; a resonant sung voice
+    /// combines a long open phase with an abrupt closure (Doc/design/2026-11-08-aantovaylan-haviot).
+    pub fn with_ra_scale(rd: f64, ra_scale: f64) -> LfShape {
         let rd = clamp(rd, RD_MIN, RD_MAX);
         let ra = (-1.0 + 4.8 * rd) / 100.0;
         let rk = (22.4 + 11.8 * rd) / 100.0;
         let rg = rk / (4.0 * ((0.11 * rd) / (0.5 + 1.2 * rk) - ra));
         let tp = 0.5 / rg;
         let te = js_min(tp * (1.0 + rk), 0.97);
-        let ta = clamp(ra, 1e-4, (1.0 - te) * 0.95);
+        let ta = clamp(ra * ra_scale, 1e-4, (1.0 - te) * 0.95);
         let tb = 1.0 - te;
         // ε·ta = 1 − e^{−ε·tb} (Newton from 1/ta)
         let mut eps = 1.0 / ta;
@@ -93,7 +103,7 @@ impl LfShape {
         }
         let alpha = 0.5 * (lo + hi);
         let e0 = -1.0 / (exp(alpha * te) * sin(omega * te));
-        let mut s = LfShape { rd, tp, te, ta, alpha, eps, omega, e0, ute: 0.0, upeak: 1.0 };
+        let mut s = LfShape { rd, ra_scale, tp, te, ta, alpha, eps, omega, e0, ute: 0.0, upeak: 1.0 };
         s.ute = s.open_flow(te);
         let mut peak = 0.0;
         for i in 0..=512 {
