@@ -19,7 +19,7 @@ pub struct Handle {
 /// 20 glide_s, 21 glide_sync (beats, 0 = free), 22 text_rate_hz, 23 text_sync (beats, 0 = free),
 /// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn), 28 text_seq (0/1), 29 speech,
 /// 30 text_once (0/1), 31 text_step (0 note, 1 clock), 32 text_unit (0 syllable, 1 word),
-/// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down), 36 osc_db, 37 input_db
+/// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down), 36 osc_db, 37 input_db, 38 text_gate
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -58,6 +58,7 @@ fn set(p: &mut Params, id: u32, v: f64) {
         34 => p.text_len = v,
         36 => p.osc_db = v,
         37 => p.input_db = v,
+        38 => p.text_gate = v,
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}
     }

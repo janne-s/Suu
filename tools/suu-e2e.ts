@@ -116,6 +116,11 @@ await page.click('[data-tstep="0"]'); await page.click('[data-tunit="0"]'); awai
   const b = await page.locator("#speech").boundingBox();
   await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down(); await page.mouse.move(b!.x + 20, b!.y - 60, { steps: 5 }); await page.mouse.up();
   ok("speech speed drags", (await page.textContent("#speech")) !== "×1.00", await page.textContent("#speech") ?? "");
+  const gb = await page.locator("#textgate").boundingBox();
+  await page.mouse.move(gb!.x + 20, gb!.y + 10); await page.mouse.down(); await page.mouse.move(gb!.x + 20, gb!.y + 60, { steps: 5 }); await page.mouse.up();
+  ok("text gate drags down", (await page.textContent("#textgate")) !== "100%", await page.textContent("#textgate") ?? "");
+  await page.dblclick("#textgate");
+  ok("and back to 100%", (await page.textContent("#textgate")) === "100%");
   await page.dblclick("#speech");
 }
 await page.click("#singtext"); await page.waitForTimeout(300);

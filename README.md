@@ -31,7 +31,7 @@ purpose.
   the clock, for **Len** of a tick; 100% joins them), **Shot** says it through.
   **Start**: **Free**, or **Seq** to start over with the sequence. **Repeat**:
   **Loop**, or **1×** once a pass. **Speed** sets how fast it is spoken, from
-  ×0.25 to ×4.
+  ×0.25 to ×4; **Gate** how much of each part is heard.
 - **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
   Open, each with Depth, Rate or ♪, a shape (sine, triangle, saw, square,
   random, envelope) and Smooth, from sharp jumps to gliding ones.

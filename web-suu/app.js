@@ -1253,7 +1253,7 @@ for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 // What moves the text on (note or its own clock), what it says at a time (syllable or word),
 // how (held or said through, and on the clock how long a held one lasts), where it starts (free
 // or with the sequence), how often (over and over or once a pass) and how fast it is spoken.
-const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1 };
+const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1 };
 function sing(text) {
   if (!node) return;
   const bytes = new TextEncoder().encode(text);
@@ -1296,6 +1296,9 @@ function sendText(final = true) {
   send(28, tx.seq ? 1 : 0);
   send(30, tx.once ? 1 : 0);
   send(29, tx.speech);
+  send(38, tx.gate);
+  $("textgate").textContent = Math.round(tx.gate * 100) + "%";
+  $("textgate").classList.toggle("on", tx.gate < 1);
   const press = (attr, v) => document.querySelectorAll(`[${attr}]`).forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute(attr) === String(v))));
   press("data-tstep", tx.step);
   press("data-tunit", tx.unit);
@@ -1352,6 +1355,15 @@ dragValue($("speech"), () => Math.log(tx.speech), (lv, final) => {
 $("speech").ondblclick = () => {
   tx.speech = 1;
   sendText();
+};
+// how much of each part is heard (the sound is cut after it; nothing to plan again)
+dragValue($("textgate"), () => tx.gate, (v) => {
+  tx.gate = Math.round(clamp(v, 0.05, 1) * 100) / 100;
+  sendText(false);
+}, 1 / 150);
+$("textgate").ondblclick = () => {
+  tx.gate = 1;
+  sendText(false);
 };
 sendText(false);
 
@@ -1490,6 +1502,7 @@ function readState(raw) {
     seq: bool(text.seq, d.text.seq),
     once: bool(text.once, d.text.once),
     speech: num(text.speech, d.text.speech, 0.25, 4),
+    gate: num(text.gate, d.text.gate, 0.05, 1),
   };
   return out;
 }
@@ -1712,6 +1725,7 @@ const TIPS = {
   '[data-tonce="0"]': "Loop\nOver and over.",
   '[data-tonce="1"]': "Once\nOnce per pass of the sequence (or once per Sing).",
   "#speech": "Speed\nHow fast it's spoken: the consonants and moves between sounds. Double-click: ×1.",
+  "#textgate": "Gate\nHow much of each part you hear: the sound is cut after this share of a tick (clock) or of its spoken length (notes). Double-click: 100%.",
   "#motion-reset": "Reset\nEvery depth back to 0.",
   "#play": "Play (Space)\nStart or stop the sequencer.",
   "#rate": "Rate\nThe steps' note value.",

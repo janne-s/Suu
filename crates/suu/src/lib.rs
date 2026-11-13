@@ -189,6 +189,9 @@ pub struct Params {
     /// the text is said once (per pass of the sequence, or once when set) instead of over and
     /// over
     pub text_once: bool,
+    /// how much of each unit is heard (0.05..1): the sound is gated after this part of a tick
+    /// (on the clock) or of the unit's spoken length (on notes). 1: not cut.
+    pub text_gate: f64,
     /// speaking speed, × (0.25..4): how fast the consonants and transitions go. On the clock the
     /// vowels stay on the ticks; on a note the unit is said faster or slower.
     pub speech: f64,
@@ -235,6 +238,7 @@ impl Default for Params {
             text_rate_hz: 2.0,
             text_sync: 1.0,
             text_len: 1.0,
+            text_gate: 1.0,
             text_seq: true,
             text_once: false,
             speech: 1.0,
@@ -527,6 +531,8 @@ pub struct Suu {
     hold_off: Vec<Vec<Gesture>>,
     shot: Vec<Vec<Gesture>>,
     shot_lead: f64,
+    /// each unit's spoken length (s), for `text_gate` on notes
+    shot_len: Vec<f64>,
     tick_plan: Vec<Vec<Gesture>>,
     tick_lead: f64,
     pass_plan: Vec<Gesture>,
@@ -550,6 +556,11 @@ pub struct Suu {
     last_restart: f64,
     /// the held unit (index, tag) on a note
     open_unit: Option<(usize, f64)>,
+    /// `text_gate`: the window the last unit is heard in, and the joined passes' span (voice
+    /// clock, s); the gate after it (the note's gate and the text's)
+    cut: (f64, f64),
+    pass_cut: (f64, f64),
+    gate_eff: bool,
     /// units said in all, and the last one (for tests)
     said: u64,
     last_unit: usize,
@@ -618,6 +629,7 @@ impl Suu {
             hold_off: Vec::new(),
             shot: Vec::new(),
             shot_lead: 0.0,
+            shot_len: Vec::new(),
             tick_plan: Vec::new(),
             tick_lead: 0.0,
             pass_plan: Vec::new(),
@@ -633,6 +645,9 @@ impl Suu {
             seen_cycles: 0,
             last_restart: 0.0,
             open_unit: None,
+            cut: (0.0, 0.0),
+            pass_cut: (0.0, 0.0),
+            gate_eff: false,
             said: 0,
             last_unit: 0,
             next_tag: 1000.0,
@@ -712,6 +727,7 @@ impl Suu {
         q.text_rate_hz = clamp(q.text_rate_hz, 0.1, 16.0);
         q.text_sync = clamp(q.text_sync, 0.0, 16.0);
         q.text_len = clamp(q.text_len, 0.05, 1.0);
+        q.text_gate = clamp(q.text_gate, 0.05, 1.0);
         q.speech = clamp(q.speech, 0.25, 4.0);
         q.reson = clamp(q.reson, 0.0, 1.0);
         q.morph = clamp(q.morph, 0.0, 1.0);
@@ -1187,6 +1203,7 @@ impl Suu {
         }
         let lead_of = |plans: &[Vec<Gesture>]| plans.iter().fold(0.0f64, |m, gs| m.max(-start_of(gs)));
         self.shot_lead = lead_of(&shot);
+        self.shot_len = shot.iter().map(|gs| gs.iter().map(|g| g.t1 + g.ramp_out).fold(0.0, f64::max) - start_of(gs)).collect();
         self.tick_lead = lead_of(&tick);
         // the joined pass: every unit a tick, its syllables sharing it
         let all: Vec<SungNote> = units.iter().flat_map(|r| notes(r, beats / r.len() as f64)).collect();
@@ -1269,6 +1286,7 @@ impl Suu {
             TextSay::Hold => {
                 self.close_unit();
                 if on && let Some(u) = self.next_unit() {
+                    self.cut = (now, now + self.p.text_gate * self.shot_len[u]);
                     self.next_tag += 1.0;
                     let tag = self.next_tag;
                     self.schedule_at(Plan::HoldOn(u), now, Some(tag));
@@ -1277,6 +1295,7 @@ impl Suu {
             }
             TextSay::Shot => {
                 if on && let Some(u) = self.next_unit() {
+                    self.cut = (now, now + self.p.text_gate * self.shot_len[u]);
                     // its first gesture now, its vowel a lead later
                     let at = now + self.shot_lead;
                     self.schedule_at(Plan::Shot(u), at, None);
@@ -1341,6 +1360,8 @@ impl Suu {
             // the joined pass, scheduled a pass ahead; said once, only the one asked for
             if now + 0.5 + lead >= self.next_pass && (!p.text_once || self.once_pending) {
                 let at = self.next_pass;
+                // passes that follow on extend the span the ticks are heard in
+                self.pass_cut = if (at - self.pass_cut.1).abs() < 1e-9 { (self.pass_cut.0, at + self.pass_len) } else { (at, at + self.pass_len) };
                 self.schedule_at(Plan::Pass, at, None);
                 self.next_pass += self.pass_len;
                 self.once_pending = false;
@@ -1355,11 +1376,29 @@ impl Suu {
         while self.next_tick - lead <= horizon {
             let at = self.next_tick;
             if let Some(u) = self.next_unit() {
+                let from = at - lead.min(0.5 * self.tick_s);
+                self.cut = (from, from + p.text_gate * self.tick_s);
                 let plan = if p.text_say == TextSay::Hold { Plan::Tick(u) } else { Plan::Shot(u) };
                 self.schedule_at(plan, at, None);
             }
             self.next_tick += self.tick_s;
         }
+    }
+
+    /// `text_gate`: is the sound let through now? Always, unless the text sings and is cut.
+    fn text_window_open(&self) -> bool {
+        let p = self.p;
+        if self.text.is_empty() || p.text_gate >= 1.0 {
+            return true;
+        }
+        let now = self.voice.clock;
+        if self.on_clock() && self.joined() {
+            // joined passes: a window at each tick, from just before its vowel
+            let tick = self.tick_s;
+            let from = self.pass_cut.0 - self.pass_lead.min(0.5 * tick);
+            return now >= from && now < self.pass_cut.1 && (now - from).rem_euclid(tick) < p.text_gate * tick;
+        }
+        now >= self.cut.0 && now < self.cut.1
     }
 
     // ------------------------------------------------------------ audio
@@ -1395,6 +1434,7 @@ impl Suu {
         self.retrig = false;
         self.prev_gate = self.gate_now;
         let p = self.p;
+        self.gate_eff = self.gate_now && self.text_window_open();
         // sleep: nothing sounds and nothing can start a sound on its own (no note, no folds, no
         // text loop, no crossfade), and the last SLEEP_AFTER s were quiet; decided per control
         // period, so it does not depend on the host's block size
@@ -1402,8 +1442,8 @@ impl Suu {
         self.period_peak = 0.0;
         self.quiet = if quiet_period { self.quiet + CTRL } else { 0 };
         // the folds open and close with the gate (5 ms up, 60 ms down)
-        let tau = if self.gate_now { 0.005 } else { 0.06 };
-        let goal = if self.gate_now { 1.0 } else { 0.0 };
+        let tau = if self.gate_eff { 0.005 } else { 0.06 };
+        let goal = if self.gate_eff { 1.0 } else { 0.0 };
         self.fold_env += (goal - self.fold_env) * (1.0 - exp(-(CTRL as f64) / (tau * self.fs)));
         let area = p.folds * self.fold_env;
         if area != self.voice.glottal_area_scale {
@@ -1466,7 +1506,7 @@ impl Suu {
         let rel_in = 1.0 - exp(-1.0 / (0.008 * fs));
         let env_a = 1.0 - exp(-1.0 / (0.005 * fs));
         let env_r = 1.0 - exp(-1.0 / (0.08 * fs));
-        let gate = self.gate_now;
+        let gate = self.gate_eff;
         let level_of = |db: f64| if db <= -60.0 { 0.0 } else { pow(10.0, db / 20.0) };
         let (osc_g, input_g) = (level_of(p.osc_db), level_of(p.input_db));
         let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
@@ -2019,6 +2059,40 @@ mod tests {
         let folds_quiet_osc = level_db(Params { folds: 1.0, osc_db: -60.0, ..Params::default() }, 0.0);
         let folds_with_osc_low = level_db(Params { folds: 1.0, osc_db: -30.0, ..Params::default() }, 0.0);
         assert!((folds_quiet_osc - folds_with_osc_low).abs() < 1.5, "{folds_quiet_osc:.1} vs {folds_with_osc_low:.1}");
+    }
+
+    #[test]
+    fn the_text_gate_lets_through_part_of_each_unit() {
+        // the share of control periods the sound is let through, a note held throughout
+        let open_share = |step: TextStep, len: f64, gate: f64| {
+            let mut s = Suu::new(48000.0);
+            s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+            s.set_params(Params { gate: true, bpm: 120.0, text_sync: 0.5, text_len: len, text_gate: gate, ..text_params(step, TextUnit::Syllable, TextSay::Hold) });
+            s.set_text("wow yeah now");
+            if step == TextStep::Note {
+                // a note each quarter second, held through
+                for i in 0..STEPS {
+                    s.set_step(i, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 1.0 });
+                }
+                s.set_seq(16, 2.0, 1.0);
+                s.set_playing(true);
+            }
+            run(&mut s, 32, 24000);
+            let (mut open, mut all) = (0, 0);
+            for _ in 0..(48000 * 2 / 32) {
+                run(&mut s, 32, 32);
+                all += 1;
+                open += s.gate_eff as u32;
+            }
+            open as f64 / all as f64
+        };
+        for (step, len) in [(TextStep::Clock, 0.5), (TextStep::Clock, 1.0)] {
+            let (full, half) = (open_share(step, len, 1.0), open_share(step, len, 0.5));
+            assert!(full > 0.99 && (half - 0.5).abs() < 0.08, "{step:?} len {len}: gate 1 {full:.2}, gate 0.5 {half:.2}");
+        }
+        // on notes, a share of each syllable's spoken length: less than with no cut
+        let (full, cut) = (open_share(TextStep::Note, 1.0, 1.0), open_share(TextStep::Note, 1.0, 0.3));
+        assert!(full > 0.95 && cut < 0.6 * full, "notes: {full:.2} vs {cut:.2}");
     }
 
     #[test]
