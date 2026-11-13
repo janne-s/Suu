@@ -9,6 +9,8 @@ const color = (n) => colors.get(n) ?? (colors.set(n, css.getPropertyValue(n).tri
 let dirty = true;
 
 let ctx, node, srcNode, fileBuf, micStream, analyser, fx = {};
+// the engine, compiled once: for the audio worklet, and for drawing the mouth before audio starts
+const wasmModule = WebAssembly.compileStreaming(fetch("suu.wasm"));
 function post(m, transfer) {
   node?.port.postMessage(m, transfer ?? []);
 }
@@ -708,7 +710,7 @@ async function start() {
   if (ctx) return;
   status("loading…", true);
   ctx = new AudioContext({ latencyHint: "interactive" });
-  const [mod] = await Promise.all([WebAssembly.compileStreaming(fetch("suu.wasm")), ctx.audioWorklet.addModule("worklet.js")]);
+  const [mod] = await Promise.all([wasmModule, ctx.audioWorklet.addModule("worklet.js")]);
   node = new AudioWorkletNode(ctx, "suu", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { module: mod } });
   node.port.onmessage = (e) => onWorklet(e.data);
   buildSpace();
@@ -1169,11 +1171,16 @@ document.querySelectorAll("[data-tmode]").forEach((b) => {
   };
 });
 // the loop's own rate: free (syllables per second) or a note value per syllable
-const loop = { rate: 2, sync: "1/4", seq: true };
+const loop = { rate: 2, sync: "1/4", seq: true, once: false, speech: 1 };
 function sendTextRate(final = true) {
   send(22, loop.rate);
   send(23, loop.sync ? divBeats(loop.sync) : 0);
   send(28, loop.seq ? 1 : 0);
+  send(29, loop.speech);
+  send(30, loop.once ? 1 : 0);
+  $("looponce").setAttribute("aria-pressed", String(loop.once));
+  $("speech").textContent = "×" + loop.speech.toFixed(2);
+  $("speech").classList.toggle("on", loop.speech !== 1);
   $("loopseq").textContent = loop.seq ? "SEQ" : "FREE";
   $("loopseq").setAttribute("aria-pressed", String(loop.seq));
   $("loophz").textContent = loop.rate.toFixed(loop.rate < 10 ? 1 : 0) + "/s";
@@ -1181,14 +1188,28 @@ function sendTextRate(final = true) {
   $("loopdiv").hidden = !loop.sync;
   if (loop.sync) $("loopdiv").value = loop.sync;
   $("loopsync").setAttribute("aria-pressed", String(!!loop.sync));
-  // the loop plans a pass ahead: sing again so a new rate is heard now
-  if (final && textOn && textMode === 0) sing($("text").value);
+  // the text is planned ahead (the loop's pass, every syllable's pace): sing again so a change
+  // is heard now
+  if (final && textOn) sing($("text").value);
 }
 $("loopdiv").innerHTML = DIVS.map(([n]) => `<option>${n}</option>`).join("");
 dragValue($("loophz"), () => Math.log(loop.rate), (lv, final) => {
   loop.rate = clamp(Math.exp(lv), 0.25, 16);
   sendTextRate(final);
 }, 1 / 60);
+$("looponce").onclick = () => {
+  loop.once = !loop.once;
+  sendTextRate(); // sing again so it takes effect now
+};
+// speaking speed ×0.25 … ×4 (log); planned with the text, so it is sung again when let go
+dragValue($("speech"), () => Math.log(loop.speech), (lv, final) => {
+  loop.speech = Math.round(clamp(Math.exp(lv), 0.25, 4) * 100) / 100;
+  sendTextRate(final);
+}, 1 / 80);
+$("speech").ondblclick = () => {
+  loop.speech = 1;
+  sendTextRate();
+};
 $("loopseq").onclick = () => {
   loop.seq = !loop.seq;
   sendTextRate(false);
@@ -1248,7 +1269,7 @@ function getState() {
     knobs,
     motion,
     seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
-    text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync, seq: loop.seq },
+    text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync, seq: loop.seq, once: loop.once, speech: loop.speech },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
     hornWave: { ...hornWave, snap: snapVals.slice() },
@@ -1314,7 +1335,7 @@ function readState(raw) {
   const snap = Array.isArray(hw.snap) && hw.snap.length === HORN_POINTS ? hw.snap.map((v) => num(v, 0, -1, 1)) : [];
   const shape = Math.round(num(hw.shape, d.hornWave.shape, -1, 5));
   out.hornWave = { shape: shape === 5 && !snap.length ? -1 : shape, cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)), depth: num(hw.depth, d.hornWave.depth, 0, 1), snap };
-  out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync), seq: bool(text.seq, d.text.seq) };
+  out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync), seq: bool(text.seq, d.text.seq), once: bool(text.once, d.text.once), speech: num(text.speech, d.text.speech, 0.25, 4) };
   return out;
 }
 
@@ -1358,7 +1379,7 @@ function applyState(st) {
   sendHorn();
   $("text").value = st.text.words;
   setTextMode(st.text.mode);
-  Object.assign(loop, { rate: st.text.rate, sync: st.text.sync, seq: st.text.seq });
+  Object.assign(loop, { rate: st.text.rate, sync: st.text.sync, seq: st.text.seq, once: st.text.once, speech: st.text.speech });
   sendTextRate(false);
   if (textOn) sing($("text").value);
 }
@@ -1460,3 +1481,28 @@ $("presetfile").onchange = (e) => {
   setInterval(save, 1000);
   addEventListener("pagehide", save);
 }
+
+// ---------------------------------------------------------------- the mouth before audio starts
+// The front view is drawn from the engine's state, which arrives once audio runs. Before that, a
+// silent engine on this thread (the same wasm) takes the saved mouth, lets the articulators
+// settle, and hands over one frame to draw.
+(async () => {
+  try {
+    const { exports: x } = await WebAssembly.instantiate(await wasmModule, {});
+    if (ui) return; // audio already started
+    const h = x.suu_new(48000);
+    for (const r of rows) x.suu_set(h, r.param, r.base);
+    x.suu_set(h, 18, state.size);
+    const bytes = new Uint8Array(horn.buffer.slice(horn.byteOffset, horn.byteOffset + horn.byteLength));
+    const p = x.suu_alloc(bytes.length);
+    new Uint8Array(x.memory.buffer, p, bytes.length).set(bytes);
+    x.suu_set_profile(h, p, horn.length, hornWrap ? 1 : 0);
+    x.suu_free(p, bytes.length);
+    for (let i = 0; i < 150; i++) x.suu_process(h, 128); // 0.4 s: the articulators reach the vowel
+    const len = x.suu_ui_update(h);
+    if (!ui) {
+      ui = new Float32Array(x.memory.buffer, x.suu_ui(h), len).slice();
+      dirty = true;
+    }
+  } catch {}
+})();

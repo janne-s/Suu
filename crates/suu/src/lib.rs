@@ -25,7 +25,7 @@ use chimera::phonetics::Syllable;
 use chimera::phonetics::english::EnglishG2P;
 use chimera::phonetics::planner::vowel_artic;
 use chimera::control::score::{ControlKey, Gesture};
-use chimera::phonetics::sing::{NoteOnOptions, SongOptions, SungNote, plan_note_off, plan_note_on, plan_song};
+use chimera::phonetics::sing::{NoteOnOptions, SongOptions, SungNote, plan_note_off, plan_note_on, plan_song, plan_song_at};
 use chimera::phonetics::syllables::lyrics_to_syllables;
 use chimera::voice::human_voice::{HumanVoice, SourcePatch};
 
@@ -151,6 +151,13 @@ pub struct Params {
     /// the text loop starts over with the sequence (each time it returns to its first step);
     /// off, it runs free
     pub text_seq: bool,
+    /// the text loop says the text once (per pass of the sequence, or once when set) instead of
+    /// looping
+    pub text_once: bool,
+    /// speaking speed, × (0.25..4): how fast the consonants and transitions go. In the loop the
+    /// vowels stay on their beats; a note's syllable or word is said faster or slower. Planned
+    /// in `set_text`, so a change needs `set_text` again.
+    pub speech: f64,
     /// 0..1 the resonator: a comb tuned to the sounding note (and its glide) that gives any sound
     /// the played pitch; more rings longer and replaces more of the dry source. 0 = off.
     pub reson: f64,
@@ -188,6 +195,8 @@ impl Default for Params {
             text_rate_hz: 2.0,
             text_sync: 1.0,
             text_seq: true,
+            text_once: false,
+            speech: 1.0,
             reson: 0.0,
             morph: 0.0,
             shift: 0.0,
@@ -463,6 +472,8 @@ pub struct Suu {
     restart_for: Option<u64>,
     /// the voice-clock time of the last restart scheduled (for tests)
     last_restart: f64,
+    /// said once: a pass is still to be scheduled (set by `set_text` and the sequence's start)
+    once_pending: bool,
     cursor: usize,
     /// the open syllable (index, tag) in gate mode
     open_syl: Option<(usize, f64)>,
@@ -536,6 +547,7 @@ impl Suu {
             loop_lead: 0.0,
             restart_for: None,
             last_restart: 0.0,
+            once_pending: false,
             cursor: 0,
             open_syl: None,
             next_tag: 1000.0,
@@ -610,6 +622,7 @@ impl Suu {
         q.glide_sync = clamp(q.glide_sync, 0.0, 16.0);
         q.text_rate_hz = clamp(q.text_rate_hz, 0.1, 16.0);
         q.text_sync = clamp(q.text_sync, 0.0, 16.0);
+        q.speech = clamp(q.speech, 0.25, 4.0);
         q.reson = clamp(q.reson, 0.0, 1.0);
         q.morph = clamp(q.morph, 0.0, 1.0);
         q.shift = clamp(q.shift, -0.5, 0.5);
@@ -888,6 +901,7 @@ impl Suu {
             if self.loop_follows_seq() {
                 self.voice.release_all(self.voice.clock);
                 self.next_loop = self.voice.clock;
+                self.once_pending = true;
                 self.restart_for = Some(0);
             }
             self.trigger();
@@ -985,12 +999,29 @@ impl Suu {
             self.cursor = 0;
         }
         self.next_loop = self.voice.clock + 0.1;
+        self.once_pending = true;
         let body = BodyMix::new(0.0, 0.0);
         self.applied = [f64::NAN; N_MOD];
         // pitch comes from the oscillator or the sequencer, not the text: drop pitch gestures
         let unpitched = |gs: Vec<Gesture>| -> Vec<Gesture> { gs.into_iter().filter(|g| !g.targets.has(ControlKey::F0) && !g.targets.has(ControlKey::VIBRATO)).collect() };
-        self.syl_on = self.text.iter().map(|s| unpitched(plan_note_on(s, 57.0, &NoteOnOptions { body, vibrato: 0.0, tag: 0.0, legato_from: None }))).collect();
-        self.syl_off = self.text.iter().map(|s| unpitched(plan_note_off(s, 57.0, body))).collect();
+        // speaking speed: a plan's times stretch from its first gesture's start (so nothing
+        // slips into the past), slower = longer
+        let k = 1.0 / self.p.speech;
+        let paced = move |mut gs: Vec<Gesture>| -> Vec<Gesture> {
+            let from = gs.iter().fold(f64::INFINITY, |m, g| m.min(g.t0 - g.ramp_in));
+            if k != 1.0 && from.is_finite() {
+                for g in gs.iter_mut() {
+                    g.t0 = from + (g.t0 - from) * k;
+                    g.t1 = from + (g.t1 - from) * k;
+                    g.ramp_in *= k;
+                    g.ramp_out *= k;
+                    g.release_hold = g.release_hold.map(|h| h * k);
+                }
+            }
+            gs
+        };
+        self.syl_on = self.text.iter().map(|s| paced(unpitched(plan_note_on(s, 57.0, &NoteOnOptions { body, vibrato: 0.0, tag: 0.0, legato_from: None })))).collect();
+        self.syl_off = self.text.iter().map(|s| paced(unpitched(plan_note_off(s, 57.0, body)))).collect();
         self.words.clear();
         let mut start = 0;
         for (i, s) in self.text.iter().enumerate() {
@@ -998,14 +1029,14 @@ impl Suu {
                 let notes: Vec<SungNote> = self.text[start..=i].iter().map(|s| SungNote { midi: 57.0, beats: 0.5, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
                 // the word's first vowel on "now", its onset consonants just before (shifted in)
                 let plan = plan_song(&notes, &SongOptions { body, bpm: self.p.bpm, t0: 0.06, vibrato: 0.0 });
-                self.words.push(unpitched(plan.gestures));
+                self.words.push(paced(unpitched(plan.gestures)));
                 start = i + 1;
             }
         }
         // the loop's pass, unpitched like the rest (the pitch comes from the note)
         let beats = self.loop_beats();
         let notes: Vec<SungNote> = self.text.iter().map(|s| SungNote { midi: 57.0, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
-        self.loop_plan = unpitched(plan_song(&notes, &SongOptions { body, bpm: self.p.bpm, t0: 0.0, vibrato: 0.0 }).gestures);
+        self.loop_plan = unpitched(plan_song_at(&notes, &SongOptions { body, bpm: self.p.bpm, t0: 0.0, vibrato: 0.0 }, 0.8 / self.p.speech).gestures);
         self.loop_len = notes.len() as f64 * beats * 60.0 / self.p.bpm;
         self.loop_lead = self.loop_plan.iter().fold(0.0, |m: f64, g| m.max(g.ramp_in - g.t0));
         self.restart_for = None;
@@ -1199,12 +1230,15 @@ impl Suu {
                 self.voice.release_all(at);
                 self.next_loop = at;
                 self.schedule_loop();
+                self.once_pending = false;
                 self.restart_for = Some(next);
                 self.last_restart = at;
             }
         }
-        if !self.text.is_empty() && self.text_mode == TextMode::Loop && self.voice.clock + 0.5 >= self.next_loop {
+        // the loop's next pass; said once, only the pass a start or a restart asked for
+        if !self.text.is_empty() && self.text_mode == TextMode::Loop && self.voice.clock + 0.5 >= self.next_loop && (!p.text_once || self.once_pending) {
             self.schedule_loop();
+            self.once_pending = false;
         }
     }
 
@@ -1629,6 +1663,47 @@ mod tests {
         // no note: only the breath's own air is left (it was −11.5 dBFS with the folds sounding)
         assert!(off < -50.0 && on > -30.0, "no note {off:.1} dB, a note {on:.1} dB");
         assert_eq!(a, level(true, 37).1);
+    }
+
+    #[test]
+    fn once_says_the_text_one_time_per_pass_of_the_sequence() {
+        // 3 syllables at 1/16 (0.375 s at 120 bpm) in a 16-step pattern (2 s): looping, the
+        // text is scheduled several times a pass; once, one time per pass
+        let passes = |once: bool| {
+            let mut s = Suu::new(48000.0);
+            s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+            s.set_params(Params { bpm: 120.0, text_sync: 0.25, text_once: once, ..Params::default() });
+            s.set_text("wow yeah now", TextMode::Loop);
+            s.set_playing(true);
+            let mut n = 0;
+            let mut last = s.next_loop;
+            for _ in 0..(48000 * 6 / 32) {
+                run(&mut s, 32, 32);
+                if s.next_loop != last {
+                    n += 1;
+                    last = s.next_loop;
+                }
+            }
+            n
+        };
+        let (looping, once) = (passes(false), passes(true));
+        assert!(looping >= 12 && (3..=4).contains(&once), "looping {looping}, once {once}");
+    }
+
+    #[test]
+    fn speech_speed_stretches_a_word_and_keeps_the_loop_on_its_beats() {
+        let plans = |speech: f64| {
+            let mut s = Suu::new(48000.0);
+            s.load_dict("WOW  W AW1\nYEAH  Y AE1\nSTOP  S T AA1 P\n");
+            s.set_params(Params { speech, ..Params::default() });
+            s.set_text("stop wow", TextMode::OneShot);
+            let span = |gs: &[Gesture]| gs.iter().map(|g| g.t1 + g.ramp_out).fold(0.0, f64::max) - gs.iter().map(|g| g.t0 - g.ramp_in).fold(f64::MAX, f64::min);
+            (span(&s.words[0]), s.loop_len)
+        };
+        let ((slow, len_slow), (normal, len), (fast, len_fast)) = (plans(0.5), plans(1.0), plans(2.0));
+        assert!((slow / normal - 2.0).abs() < 0.05 && (normal / fast - 2.0).abs() < 0.05, "word: {slow:.3} {normal:.3} {fast:.3}");
+        // the loop's pass keeps its length (its rate, not the speech, sets the rhythm)
+        assert!(len_slow == len && len_fast == len);
     }
 
     #[test]

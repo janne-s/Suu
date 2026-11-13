@@ -99,6 +99,13 @@ fn melisma(s: &Syllable) -> bool {
 
 /// Plan a whole melody: one utterance per phrase, so each phrase gets its own breath.
 pub fn plan_song(notes: &[SungNote], o: &SongOptions) -> Plan {
+    plan_song_at(notes, o, 0.8)
+}
+
+/// As [`plan_song`], with the consonants at `consonants` × their spoken length (0.8 sung):
+/// shorter is faster, crisper speech, longer slower; the vowels stay on their beats (taking
+/// what the consonants leave) and consonants still shrink to fit a short note.
+pub fn plan_song_at(notes: &[SungNote], o: &SongOptions, consonants: f64) -> Plan {
     let beat = 60.0 / o.bpm;
     let mut gestures: Vec<Gesture> = Vec::new();
     let mut segments: Vec<PlannedSegment> = Vec::new();
@@ -120,9 +127,9 @@ pub fn plan_song(notes: &[SungNote], o: &SongOptions) -> Plan {
         // each note's onset and coda consonants, at the note's pitch (a coda at the pitch of the
         // note whose syllable it ends; a melisma has neither)
         let hz_of = |k: usize| midi_to_hz(notes[k].midi);
-        let mut onsets: Vec<Vec<Segment>> = (i..=j).map(|k| if melisma(&notes[k].syl) { Vec::new() } else { consonants_at(&notes[k].syl.onset, o.body, 0.8, hz_of(k)) }).collect();
+        let mut onsets: Vec<Vec<Segment>> = (i..=j).map(|k| if melisma(&notes[k].syl) { Vec::new() } else { consonants_at(&notes[k].syl.onset, o.body, consonants, hz_of(k)) }).collect();
         let mut codas: Vec<Vec<Segment>> = (i..=j)
-            .map(|k| if k < j && melisma(&notes[k + 1].syl) { Vec::new() } else { consonants_at(&last_of_chain(notes, k).coda, o.body, 0.8, hz_of(k)) })
+            .map(|k| if k < j && melisma(&notes[k + 1].syl) { Vec::new() } else { consonants_at(&last_of_chain(notes, k).coda, o.body, consonants, hz_of(k)) })
             .collect();
         // the phrase's last vowel leaves a short breath before the next phrase. The call's last
         // phrase is followed by a rest (callers split phrases at rests), so the breath comes from

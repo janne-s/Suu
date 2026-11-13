@@ -27,7 +27,8 @@ purpose.
   along the tract (a wave wraps, so it can travel through), **Open** widens it.
 - **Text** — Type words. **Gate** sings a syllable per note, **One-shot** a
   word per note, **Loop** syllables at its own rate or ♪, starting over with the
-  sequence (**Seq**) or running free (**Free**).
+  sequence (**Seq**) or running free (**Free**), or said once a pass (**1×**).
+  **Speed** sets how fast it is spoken, from ×0.25 to ×4.
 - **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
   Open, each with Depth, Rate or ♪, a shape (sine, triangle, saw, square,
   random, envelope) and Smooth, from sharp jumps to gliding ones.

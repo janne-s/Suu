@@ -32,6 +32,15 @@ await page.evaluate(() => localStorage.clear());
 await page.reload({ waitUntil: "networkidle" });
 await page.screenshot({ path: `${out}/1-idle.png` });
 ok("no START/ON button", (await page.locator("#start").count()) === 0);
+// the mouth is drawn before any click (a silent engine on the page draws the first frame)
+const lipPixels = await page.evaluate(() => {
+  const c = document.getElementById("mouth") as HTMLCanvasElement;
+  const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i] > 150 && d[i + 1] < 140) n++; // the lips' rose
+  return n;
+});
+ok("the mouth shows before audio starts", lipPixels > 500, `${lipPixels} rose pixels`);
 // stuck note 1: very first key, released while the audio is still starting
 await page.keyboard.down("a"); await page.keyboard.up("a");
 await page.waitForTimeout(1500);
@@ -83,6 +92,15 @@ ok("the loop follows the sequence by default", (await page.textContent("#loopseq
 await page.click("#loopseq");
 ok("SEQ → FREE", (await page.textContent("#loopseq")) === "FREE");
 await page.click("#loopseq");
+await page.click("#looponce");
+ok("once toggles", (await page.getAttribute("#looponce", "aria-pressed")) === "true");
+await page.click("#looponce");
+{
+  const b = await page.locator("#speech").boundingBox();
+  await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down(); await page.mouse.move(b!.x + 20, b!.y - 60, { steps: 5 }); await page.mouse.up();
+  ok("speech speed drags", (await page.textContent("#speech")) !== "×1.00", await page.textContent("#speech") ?? "");
+  await page.dblclick("#speech");
+}
 await page.screenshot({ path: `${out}/2-text.png` });
 await page.click("#singtext"); await page.waitForTimeout(300);
 ok("STOP → SING", (await page.textContent("#singtext"))!.includes("SING"));
