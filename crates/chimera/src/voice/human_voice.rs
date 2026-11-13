@@ -206,6 +206,10 @@ pub struct HumanVoice {
     /// voice opens the glottis wider; the open glottis then damps and widens F1 and carries more
     /// flow into H1–H2 (Doc/design/2026-11-08-aantovaylan-haviot).
     pub glottal_area_scale: f64,
+    /// the last input sample of `render_driven` (interpolation start of the next one)
+    ext_prev: f64,
+    /// the airway node `render_driven` injects into (default: just above the glottis)
+    ext_node: usize,
 }
 
 impl HumanVoice {
@@ -263,7 +267,10 @@ impl HumanVoice {
             jitter_scale: 1.0,
             shimmer_scale: 1.0,
             glottal_area_scale: 1.0,
+            ext_prev: 0.0,
+            ext_node: 0,
         };
+        v.ext_node = v.airway.pharynx.first_node();
         let x = v.artic.x;
         v.airway.apply(&x, 0.0);
         v.airway.net.snap_to_targets();
@@ -355,6 +362,32 @@ impl HumanVoice {
 
     /// Render `out.len()` output samples.
     pub fn render(&mut self, out: &mut [f32]) {
+        self.render_inner(None, out);
+    }
+
+    /// experiment (the voice as an effect): render `out.len()` samples with `input` (one sample
+    /// per output sample) injected as volume velocity just above the glottis, `flow_scale` cm³/s
+    /// per unit, linearly interpolated to the internal rate. The tract shapes any sound the way it
+    /// shapes the folds' flow; lungs, glottis and noise sources run as usual, so a caller who
+    /// wants only the input silences the folds (`glottal_area_scale = 0`, then `set_source`).
+    /// `render` is unchanged and never touches the injection.
+    pub fn render_driven(&mut self, input: &[f32], flow_scale: f64, out: &mut [f32]) {
+        assert_eq!(input.len(), out.len(), "render_driven: input and output lengths differ");
+        self.render_inner(Some((input, flow_scale)), out);
+    }
+
+    /// experiment: where `render_driven` injects its input, 0 = just above the glottis … 1 = just
+    /// behind the lips, along the pharynx then the oral tube. Moving the source along the tract
+    /// changes which resonances it excites (a source at a pressure node of a mode drives it least).
+    pub fn set_injection(&mut self, pos: f64) {
+        let (n_ph, n_or) = (self.airway.n_ph, self.airway.n_or);
+        let last = (n_ph + n_or - 2) as f64;
+        let i = js_trunc_i32(clamp(pos, 0.0, 1.0) * last + 0.5) as usize;
+        self.ext_node = if i < n_ph { self.airway.pharynx.node(i) } else { self.airway.oral.node(i - n_ph) };
+    }
+
+    #[inline(always)]
+    fn render_inner(&mut self, input: Option<(&[f32], f64)>, out: &mut [f32]) {
         let m = self.m;
         let lungs = self.airway.lungs;
         let sub_node = self.airway.trachea.last_node();
@@ -364,13 +397,22 @@ impl HumanVoice {
         let n_or = self.airway.n_or;
         let ph_first = self.airway.pharynx.first_node();
         let or_first = self.airway.oral.first_node();
-        for o in out.iter_mut() {
-            for _ in 0..m {
+        let inv_m = 1.0 / m as f64;
+        for (i, o) in out.iter_mut().enumerate() {
+            for sub_i in 0..m {
                 if self.ctrl_counter <= 0 {
                     self.control();
                 }
                 self.ctrl_counter -= 1;
                 let net = &mut self.airway.net;
+                if let Some((x, scale)) = input {
+                    let cur = x[i] as f64;
+                    let w = (sub_i + 1) as f64 * inv_m;
+                    net.ext_flow[self.ext_node] += (self.ext_prev + (cur - self.ext_prev) * w) * scale;
+                    if sub_i + 1 == m {
+                        self.ext_prev = cur;
+                    }
+                }
                 self.p_lung_now += self.p_lung_step;
                 net.set_fixed_pressure(lungs, self.p_lung_now);
                 let a = self.glottis.next(net.p[sub_node] - net.p[supra]);

@@ -1,0 +1,189 @@
+//! The web app's view of Suu: one handle per AudioWorklet, fixed in/out buffers the worklet
+//! writes and reads through the wasm memory, parameters by index (see `PARAMS`), and text and
+//! the dictionary passed as UTF-8 in buffers from `suu_alloc`.
+
+use suu::{ArpOrder, MAX_BLOCK, Mod, Params, SeqMode, Shape, Source, Step, Suu, TextMode};
+
+pub struct Handle {
+    suu: Suu,
+    input: Vec<f32>,
+    output: Vec<f32>,
+    frame: Vec<f32>,
+}
+
+/// Parameter indices, in this order (the web app's `PARAMS` list mirrors it).
+/// 0 source (0 input, 1 saw, 2 supersaw, 3 square), 1 note, 2 gate, 3 drive_db, 4 tilt_hz,
+/// 5 breath, 6 follow, 7 vowel_x, 8 vowel_y, 9 round, 10 nasal, 11 inject, 12 damping, 13 folds,
+/// 14 sub_hz, 15 sub_level, 16 mix, 17 out_db, 18 size (rebuilds the airway), 19 bpm
+fn set(p: &mut Params, id: u32, v: f64) {
+    match id {
+        0 => p.source = match v as i32 { 0 => Source::Input, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
+        1 => p.note = v,
+        2 => p.gate = v > 0.5,
+        3 => p.drive_db = v,
+        4 => p.tilt_hz = v,
+        5 => p.breath = v,
+        6 => p.follow = v,
+        7 => p.vowel_x = v,
+        8 => p.vowel_y = v,
+        9 => p.round = v,
+        10 => p.nasal = v,
+        11 => p.inject = v,
+        12 => p.damping = v,
+        13 => p.folds = v,
+        14 => p.sub_hz = v,
+        15 => p.sub_level = v,
+        16 => p.mix = v,
+        17 => p.out_db = v,
+        19 => p.bpm = v,
+        _ => {}
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_alloc(n: usize) -> *mut u8 {
+    let mut v = Vec::<u8>::with_capacity(n.max(1));
+    let p = v.as_mut_ptr();
+    std::mem::forget(v);
+    p
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_free(p: *mut u8, n: usize) {
+    if !p.is_null() {
+        unsafe { drop(Vec::from_raw_parts(p, 0, n.max(1))) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_new(fs: f64) -> *mut Handle {
+    Box::into_raw(Box::new(Handle { suu: Suu::new(fs), input: vec![0.0; MAX_BLOCK], output: vec![0.0; MAX_BLOCK], frame: Vec::with_capacity(4096) }))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_input(h: *mut Handle) -> *mut f32 {
+    unsafe { (*h).input.as_mut_ptr() }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_output(h: *mut Handle) -> *mut f32 {
+    unsafe { (*h).output.as_mut_ptr() }
+}
+
+/// Process `n` (≤ MAX_BLOCK) samples from the input buffer into the output buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_process(h: *mut Handle, n: usize) {
+    let h = unsafe { &mut *h };
+    let n = n.min(MAX_BLOCK);
+    h.suu.process(&h.input[..n], &mut h.output[..n]);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set(h: *mut Handle, id: u32, v: f64) {
+    let h = unsafe { &mut *h };
+    if id == 18 {
+        h.suu.set_size(v);
+        return;
+    }
+    let mut p = h.suu.params();
+    set(&mut p, id, v);
+    h.suu.set_params(p);
+}
+
+fn text<'a>(ptr: *const u8, len: usize) -> &'a str {
+    std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }).unwrap_or("")
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_load_dict(h: *mut Handle, ptr: *const u8, len: usize) {
+    let h = unsafe { &mut *h };
+    h.suu.load_dict(text(ptr, len));
+}
+
+/// Sing `text` (mode 0 loop, 1 gate, 2 one-shot); returns the syllable count (0 = the pad).
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize, mode: u32) -> u32 {
+    let h = unsafe { &mut *h };
+    let m = match mode { 1 => TextMode::Gate, 2 => TextMode::OneShot, _ => TextMode::Loop };
+    h.suu.set_text(text(ptr, len), m) as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set_step(h: *mut Handle, i: u32, on: u32, note: i32, tie: u32, vowel: i32) {
+    let h = unsafe { &mut *h };
+    h.suu.set_step(i as usize, Step { on: on != 0, note, tie: tie != 0, vowel });
+}
+
+/// mode 0 steps, 1 arp; order 0 up, 1 down, 2 up-down, 3 random
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set_seq(h: *mut Handle, mode: u32, len: u32, div: f64, gate: f64, order: u32, octaves: u32) {
+    let h = unsafe { &mut *h };
+    let mode = if mode == 1 { SeqMode::Arp } else { SeqMode::Steps };
+    let order = match order { 1 => ArpOrder::Down, 2 => ArpOrder::UpDown, 3 => ArpOrder::Random, _ => ArpOrder::Up };
+    h.suu.set_seq(mode, len as usize, div, gate, order, octaves);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_play(h: *mut Handle, on: u32) {
+    unsafe { (*h).suu.set_playing(on != 0) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_note_on(h: *mut Handle, midi: i32) {
+    unsafe { (*h).suu.note_on(midi) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_note_off(h: *mut Handle, midi: i32) {
+    unsafe { (*h).suu.note_off(midi) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set_latch(h: *mut Handle, on: u32) {
+    unsafe { (*h).suu.set_latch(on != 0) };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_retrigger(h: *mut Handle) {
+    unsafe { (*h).suu.retrigger() };
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_all_notes_off(h: *mut Handle) {
+    unsafe { (*h).suu.all_notes_off() };
+}
+
+/// Motion for target `t` (see `suu::MOD_TARGETS`); shape 0 sine, 1 triangle, 2 saw, 3 square,
+/// 4 random, 5 envelope; `sync` beats per cycle (0 = free at `rate_hz`).
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, sync: f64, shape: u32) {
+    let h = unsafe { &mut *h };
+    let shape = match shape { 1 => Shape::Triangle, 2 => Shape::Saw, 3 => Shape::Square, 4 => Shape::Random, 5 => Shape::Follow, _ => Shape::Sine };
+    h.suu.set_mod(t as usize, Mod { depth, rate_hz, sync, shape });
+}
+
+/// Fill the UI buffer (see `Suu::ui_state`) and return its length; `suu_ui` points at it.
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_ui_update(h: *mut Handle) -> u32 {
+    let h = unsafe { &mut *h };
+    h.suu.ui_state(&mut h.frame);
+    h.frame.len() as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_ui(h: *mut Handle) -> *const f32 {
+    unsafe { (*h).frame.as_ptr() }
+}
+
+/// 0 step, 1 gate (0/1), 2 sounding note, 3 playing (0/1)
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_state(h: *mut Handle, what: u32) -> f64 {
+    let h = unsafe { &*h };
+    let (step, gate, note) = h.suu.seq_state();
+    match what {
+        0 => step as f64,
+        1 => gate as u32 as f64,
+        2 => note,
+        _ => h.suu.playing() as u32 as f64,
+    }
+}

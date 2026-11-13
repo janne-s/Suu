@@ -1,0 +1,13 @@
+[package]
+name = "suu-wasm"
+description = "C-ABI wasm bindings of Suu for the web app's AudioWorklet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+suu = { path = "../suu" }
