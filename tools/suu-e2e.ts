@@ -113,6 +113,24 @@ await page.waitForTimeout(1200);
 await page.reload({ waitUntil: "networkidle" });
 ok("reload keeps B active and its tempo", (await page.inputValue("#bpm")) === "88" && (await page.getAttribute("#slotB", "aria-pressed")) === "true");
 ok("reload keeps the gate", (await page.textContent("#seqgate")) !== "100%", await page.textContent("#seqgate") ?? "");
+// HORN: draw, and the morph comes in
+await page.click("#view-horn");
+await page.keyboard.down("a");
+const m = await page.locator("#mouth").boundingBox();
+await page.mouse.move(m!.x + m!.width * 0.2, m!.y + m!.height * 0.5 - 60);
+await page.mouse.down();
+await page.mouse.move(m!.x + m!.width * 0.8, m!.y + m!.height * 0.5 - 20, { steps: 12 });
+await page.mouse.up();
+await page.waitForTimeout(500);
+db = await peakDb(); ok("a drawn horn sounds", db > -50, `${db.toFixed(1)} dB`);
+await page.keyboard.up("a");
+ok("drawing brings MORPH in", (await page.locator(".motion-row").nth(6).locator(".base output").textContent()) === "horn");
+await page.screenshot({ path: `${out}/4-horn.png` });
+await page.waitForTimeout(1200);
+await page.reload({ waitUntil: "networkidle" });
+const hornSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("suu.session.v1")!).B.horn as number[]);
+ok("the drawn horn is saved", hornSaved.length === 32 && Math.abs(hornSaved[10] - hornSaved[25]) > 0.1, JSON.stringify(hornSaved.slice(8, 12)));
+await page.click("#view-pad");
 // INIT: this side back to the initial settings
 await page.click("#init");
 ok("INIT restores the defaults", (await page.inputValue("#bpm")) === "100" && (await page.textContent("#seqgate")) === "100%");

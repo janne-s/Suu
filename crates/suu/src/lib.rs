@@ -46,8 +46,15 @@ const STEP_PAD: [(f64, f64); 5] = [(1.0, 1.0), (0.0, 0.5), (0.0, 0.0), (1.0, 0.5
 
 /// Motion: what an LFO (or the envelope) can move, with each target's range; the last is
 /// modulated on a log scale.
-pub const MOD_TARGETS: [&str; 6] = ["vowelX", "vowelY", "round", "nasal", "inject", "damping"];
-const MOD_RANGE: [(f64, f64); 6] = [(-0.3, 1.3), (-0.3, 1.3), (-1.0, 1.0), (0.0, 1.5), (0.0, 1.0), (0.1, 20.0)];
+pub const MOD_TARGETS: [&str; N_MOD] = ["vowelX", "vowelY", "round", "nasal", "inject", "damping", "morph", "shift", "open"];
+pub const N_MOD: usize = 9;
+const MOD_RANGE: [(f64, f64); N_MOD] = [(-0.3, 1.3), (-0.3, 1.3), (-1.0, 1.0), (0.0, 1.5), (0.0, 1.0), (0.1, 20.0), (0.0, 1.0), (-0.5, 0.5), (0.25, 4.0)];
+/// targets modulated on a log scale
+const MOD_LOG: [bool; N_MOD] = [false, false, false, false, false, true, false, false, true];
+/// The drawn horn: this many areas from the glottis to the lips.
+pub const HORN_POINTS: usize = 32;
+/// The live area function the UI gets: this many samples from the glottis to the lips.
+pub const UI_AREAS: usize = 48;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Shape {
@@ -133,6 +140,11 @@ pub struct Params {
     /// 0..1 the resonator: a comb tuned to the sounding note (and its glide) that gives any sound
     /// the played pitch; more rings longer and replaces more of the dry source. 0 = off.
     pub reson: f64,
+    /// the drawn horn: 0 the articulated mouth … 1 the drawn area function; its shift along the
+    /// tract (−0.5..0.5, + toward the lips) and opening (× its areas, 0.25..4)
+    pub morph: f64,
+    pub shift: f64,
+    pub open: f64,
 }
 
 impl Default for Params {
@@ -162,6 +174,9 @@ impl Default for Params {
             text_rate_hz: 2.0,
             text_sync: 1.0,
             reson: 0.0,
+            morph: 0.0,
+            shift: 0.0,
+            open: 1.0,
         }
     }
 }
@@ -303,6 +318,16 @@ impl Osc {
     }
 }
 
+/// The drawn horn's starting shape: narrow at the glottis, a throat, a wide bell at the lips.
+fn default_horn() -> Vec<f64> {
+    (0..HORN_POINTS)
+        .map(|i| {
+            let u = i as f64 / (HORN_POINTS - 1) as f64;
+            0.6 + 1.5 * (-((u - 0.3) / 0.12).powi(2)).exp() + 9.0 * u.powi(3)
+        })
+        .collect()
+}
+
 /// A comb resonator tuned by its delay (Karplus-Strong style): a fractional delay line with a
 /// gentle low-pass in the loop, so the partials decay like a string's, and a DC blocker after.
 struct Reson {
@@ -381,13 +406,13 @@ pub struct Suu {
     wet_old: Vec<f32>,
     rest: [f64; N_ARTIC],
     corners: [[f64; N_ARTIC]; 4],
-    mods: [Mod; 6],
-    mod_phase: [f64; 6],
-    mod_hold: [f64; 6],
+    mods: [Mod; N_MOD],
+    mod_phase: [f64; N_MOD],
+    mod_hold: [f64; N_MOD],
     mod_rng: u32,
     /// the targets' values after modulation, and the last ones sent to the voice
-    eff: [f64; 6],
-    applied: [f64; 6],
+    eff: [f64; N_MOD],
+    applied: [f64; N_MOD],
     /// a step's vowel holds the pad here while the sequencer plays
     seq_pad: Option<(f64, f64)>,
     g2p: Option<EnglishG2P>,
@@ -443,12 +468,12 @@ impl Suu {
             wet_old: vec![0.0; MAX_BLOCK],
             rest: [0.0; N_ARTIC],
             corners: [[0.0; N_ARTIC]; 4],
-            mods: [Mod::default(); 6],
-            mod_phase: [0.0; 6],
-            mod_hold: [0.0; 6],
+            mods: [Mod::default(); N_MOD],
+            mod_phase: [0.0; N_MOD],
+            mod_hold: [0.0; N_MOD],
             mod_rng: 0x9e37_79b9,
-            eff: [0.0; 6],
-            applied: [f64::NAN; 6],
+            eff: [0.0; N_MOD],
+            applied: [f64::NAN; N_MOD],
             seq_pad: None,
             g2p: None,
             text: Vec::new(),
@@ -480,6 +505,7 @@ impl Suu {
         for (i, v) in CORNERS.iter().enumerate() {
             s.corners[i] = full(v, &s.rest);
         }
+        s.voice.airway.profile = default_horn();
         s.configure_voice();
         s.refresh_mouth();
         s
@@ -512,6 +538,9 @@ impl Suu {
         q.text_rate_hz = clamp(q.text_rate_hz, 0.1, 16.0);
         q.text_sync = clamp(q.text_sync, 0.0, 16.0);
         q.reson = clamp(q.reson, 0.0, 1.0);
+        q.morph = clamp(q.morph, 0.0, 1.0);
+        q.shift = clamp(q.shift, -0.5, 0.5);
+        q.open = clamp(q.open, 0.25, 4.0);
         self.p = q;
         self.configure_voice();
         self.refresh_mouth();
@@ -528,6 +557,7 @@ impl Suu {
         let body = HumanBody { name: "suu", scale: s, ..BODY_MALE };
         let mut nv = HumanVoice::new(self.fs, body, oversample_for(self.fs, s));
         nv.artic = self.voice.artic.clone();
+        nv.airway.profile = self.voice.airway.profile.clone();
         nv.score = self.voice.score.clone();
         nv.clock = self.voice.clock;
         let x = nv.artic.x;
@@ -536,10 +566,23 @@ impl Suu {
         let old = core::mem::replace(&mut self.voice, nv);
         self.fade = Some((old, FADE));
         self.folds_f0 = 0.0;
-        self.applied = [f64::NAN; 6];
+        self.applied = [f64::NAN; N_MOD];
         self.configure_voice();
         self.refresh_mouth();
         self.voice.set_source(&SourcePatch { pressure: Some(self.fade.as_ref().map_or(9.0, |f| f.0.source.pressure)), ..Default::default() });
+    }
+
+    /// The drawn horn: `HORN_POINTS` areas (cm², adult scale) from the glottis to the lips,
+    /// clamped to 0..20. Copies into a buffer sized at construction (no allocation).
+    pub fn set_profile(&mut self, areas: &[f64]) {
+        let n = HORN_POINTS.min(areas.len());
+        for (d, &a) in self.voice.airway.profile.iter_mut().zip(&areas[..n]) {
+            *d = clamp(a, 0.0, 20.0);
+        }
+    }
+
+    pub fn profile(&self) -> &[f64] {
+        &self.voice.airway.profile
     }
 
     pub fn size(&self) -> f64 {
@@ -558,21 +601,21 @@ impl Suu {
     // ------------------------------------------------------------ the mouth and Motion
 
     pub fn set_mod(&mut self, target: usize, m: Mod) {
-        if target < 6 {
+        if target < N_MOD {
             self.mods[target] = Mod { depth: clamp(m.depth, -1.0, 1.0), rate_hz: clamp(m.rate_hz, 0.01, 40.0), sync: clamp(m.sync, 0.0, 64.0), ..m };
         }
     }
 
     pub fn get_mod(&self, target: usize) -> Mod {
-        self.mods[target.min(5)]
+        self.mods[target.min(N_MOD - 1)]
     }
 
     /// The targets' unmodulated values: the pad (or a step's vowel), rounding, nasal, injection
     /// and damping.
-    fn bases(&self) -> [f64; 6] {
+    fn bases(&self) -> [f64; N_MOD] {
         let p = self.p;
         let (x, y) = self.seq_pad.unwrap_or((p.vowel_x, p.vowel_y));
-        [x, y, p.round, p.nasal, p.inject, p.damping]
+        [x, y, p.round, p.nasal, p.inject, p.damping, p.morph, p.shift, p.open]
     }
 
     /// Advance the LFOs one control period and compute the modulated values.
@@ -580,7 +623,7 @@ impl Suu {
         let bases = self.bases();
         let t = self.pos as f64 / self.fs;
         let beats = t * self.p.bpm / 60.0;
-        for i in 0..6 {
+        for i in 0..N_MOD {
             let m = self.mods[i];
             let (lo, hi) = MOD_RANGE[i];
             if m.depth == 0.0 {
@@ -606,7 +649,7 @@ impl Suu {
                 Shape::Random => self.mod_hold[i],
                 Shape::Follow => envn,
             };
-            self.eff[i] = if i == 5 {
+            self.eff[i] = if MOD_LOG[i] {
                 clamp(bases[i] * pow(hi / lo, 0.5 * m.depth * v), lo, hi)
             } else {
                 clamp(bases[i] + 0.5 * m.depth * v * (hi - lo), lo, hi)
@@ -623,6 +666,9 @@ impl Suu {
         if e[5] != self.applied[5] {
             self.voice.airway.net.viscous_scale = e[5];
         }
+        // the drawn horn: read by the airway at its next geometry update
+        let aw = &mut self.voice.airway;
+        (aw.profile_mix, aw.profile_shift, aw.profile_open) = (e[6], e[7], e[8]);
         let shape_changed = (0..4).any(|i| (e[i] - self.applied[i]).abs() > 1e-6 || self.applied[i].is_nan());
         self.applied = e;
         if !shape_changed {
@@ -649,20 +695,21 @@ impl Suu {
     /// Re-apply the mouth now (after a parameter change), without advancing the LFOs.
     fn refresh_mouth(&mut self) {
         let b = self.bases();
-        for i in 0..6 {
+        for i in 0..N_MOD {
             if self.mods[i].depth == 0.0 {
                 self.eff[i] = b[i];
             }
         }
-        self.applied = [f64::NAN; 6];
+        self.applied = [f64::NAN; N_MOD];
         self.apply_mouth();
     }
 
     /// For the UI: `[eff ×6, base x, base y, lipAp, lipWidth, lipProt, jaw, tbX, tbY, velum,
-    /// lip area, envelope, step, gate, playing]`. Reuses `out`'s capacity.
+    /// lip area, envelope, step, gate, playing, morph, shift, open, areas ×UI_AREAS]` (areas in
+    /// cm², glottis → lips). Reuses `out`'s capacity.
     pub fn ui_state(&self, out: &mut Vec<f32>) {
         out.clear();
-        out.extend(self.eff.iter().map(|&v| v as f32));
+        out.extend(self.eff[..6].iter().map(|&v| v as f32));
         let b = self.bases();
         out.push(b[0] as f32);
         out.push(b[1] as f32);
@@ -675,6 +722,19 @@ impl Suu {
         out.push(self.seq.step as f32);
         out.push(self.gate_now as u32 as f32);
         out.push(self.seq.playing as u32 as f32);
+        // 20..23: morph, shift, open (modulated); 23..: the live area function, glottis → lips
+        out.extend(self.eff[6..9].iter().map(|&v| v as f32));
+        let aw = &self.voice.airway;
+        let total = aw.ph_len + aw.or_len;
+        for k in 0..UI_AREAS {
+            let s = (k as f64 + 0.5) / UI_AREAS as f64 * total;
+            let a = if s < aw.ph_len {
+                aw.ph_areas[((s / aw.ph_len * aw.n_ph as f64) as usize).min(aw.n_ph - 1)]
+            } else {
+                aw.or_areas[(((s - aw.ph_len) / aw.or_len * aw.n_or as f64) as usize).min(aw.n_or - 1)]
+            };
+            out.push(a as f32);
+        }
     }
 
     // ------------------------------------------------------------ sequencer
@@ -796,7 +856,7 @@ impl Suu {
         }
         self.next_loop = self.voice.clock + 0.1;
         let body = BodyMix::new(0.0, 0.0);
-        self.applied = [f64::NAN; 6];
+        self.applied = [f64::NAN; N_MOD];
         // pitch comes from the oscillator or the sequencer, not the text: drop pitch gestures
         let unpitched = |gs: Vec<Gesture>| -> Vec<Gesture> { gs.into_iter().filter(|g| !g.targets.has(ControlKey::F0) && !g.targets.has(ControlKey::VIBRATO)).collect() };
         self.syl_on = self.text.iter().map(|s| unpitched(plan_note_on(s, 57.0, &NoteOnOptions { body, vibrato: 0.0, tag: 0.0, legato_from: None }))).collect();
@@ -1161,6 +1221,39 @@ mod tests {
         };
         let (closed, open) = (level(false), level(true));
         assert!(open > 0.005 && closed < 1e-4 * open, "closed {closed} open {open}");
+    }
+
+    #[test]
+    fn the_drawn_horn_morphs_the_airway_and_moves_smoothly() {
+        let areas = |s: &Suu| {
+            let mut ui = Vec::new();
+            s.ui_state(&mut ui);
+            ui[23..].to_vec()
+        };
+        let mut s = playing();
+        run(&mut s, 128, 9600);
+        let vowel = areas(&s);
+        // a flat 5 cm² tube, fully morphed: every section reaches it (the slew limits take time)
+        s.set_profile(&[5.0; HORN_POINTS]);
+        s.set_params(Params { gate: true, morph: 1.0, ..Params::default() });
+        let out = run(&mut s, 128, 24000);
+        let horn = areas(&s);
+        assert!(horn.iter().all(|a| (a - 5.0).abs() < 0.05), "{horn:?}");
+        assert!(vowel.iter().zip(&horn).any(|(a, b)| (a - b).abs() > 1.0));
+        // open doubles it, and the move is bounded and without a click
+        s.set_params(Params { gate: true, morph: 1.0, open: 2.0, ..Params::default() });
+        let out2 = run(&mut s, 128, 24000);
+        assert!(areas(&s).iter().all(|a| (a - 10.0).abs() < 0.1));
+        let jump = |x: &[f32]| x.windows(2).fold(0f32, |m, w| m.max((w[1] - w[0]).abs()));
+        assert!(peak(&out2) < 1.0 && jump(&out2) < 3.0 * jump(&out[12000..]), "jump {} vs {}", jump(&out2), jump(&out[12000..]));
+        // block size still does not matter, with the horn moving
+        let mk = || {
+            let mut s = playing();
+            s.set_params(Params { gate: true, morph: 0.7, ..Params::default() });
+            s.set_mod(7, Mod { depth: 0.8, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine });
+            s
+        };
+        assert_eq!(run(&mut mk(), 128, 24000), run(&mut mk(), 45, 24000));
     }
 
     /// Normalised autocorrelation of `x` at `lag`.

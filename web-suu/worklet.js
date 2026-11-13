@@ -1,7 +1,7 @@
 // Suu's AudioWorklet: one wasm instance, mono in → mono out (copied to both channels).
 // From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes, mode}
 //   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", len, div, gate}
-//   · {type:"play", on} · {type:"retrigger"}
+//   · {type:"play", on} · {type:"retrigger"} · {type:"profile", areas: Float32Array}
 //   · {type:"mod", target, depth, rate, sync, shape}
 // To the page: ready · dict · text {syllables} · applied {id} · ui {ui} (see Suu::ui_state)
 
@@ -58,6 +58,13 @@ class SuuProcessor extends AudioWorkletProcessor {
       case "seq":
         x.suu_set_seq(h, m.len, m.div, m.gate);
         break;
+      case "profile": {
+        const bytes = new Uint8Array(m.areas.buffer, m.areas.byteOffset, m.areas.byteLength);
+        const p = this.bytes(bytes);
+        x.suu_set_profile(h, p, m.areas.length);
+        x.suu_free(p, bytes.length);
+        break;
+      }
       case "play":
         x.suu_play(h, m.on ? 1 : 0);
         break;

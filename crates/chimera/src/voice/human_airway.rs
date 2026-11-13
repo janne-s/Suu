@@ -60,6 +60,15 @@ pub struct HumanAirway {
     pub seal_hi: f64,
     /// below this area (cm²) the closing rate slows with √A, so the seal is reached smoothly
     pub seal_ease: f64,
+    /// Opt-in (Suu's drawn horn, default off): an area function (cm², adult scale) sampled evenly
+    /// from the glottis (first) to the lips (last), blended over the articulated one by
+    /// `profile_mix` 0..1 before the slew limits, so moving it is as smooth as articulating.
+    /// `profile_shift` slides it along the tract (a fraction of the length, + toward the lips);
+    /// `profile_open` scales its areas. Empty or a mix of 0 leaves the airway untouched.
+    pub profile: Vec<f64>,
+    pub profile_mix: f64,
+    pub profile_shift: f64,
+    pub profile_open: f64,
     /// areas committed at the start of the current control step (slew-limit baseline)
     base: Option<[Vec<f64>; 4]>,
     base_dt: f64,
@@ -167,6 +176,10 @@ impl HumanAirway {
             seal_lo: 0.03,
             seal_hi: 0.4,
             seal_ease: 0.03,
+            profile: Vec::new(),
+            profile_mix: 0.0,
+            profile_shift: 0.0,
+            profile_open: 1.0,
             base: None,
             base_dt: 0.0,
             noise_list: Vec::with_capacity(8),
@@ -205,6 +218,9 @@ impl HumanAirway {
         let mut f = self.frame.take().unwrap_or_else(|| core::mem::take(&mut self.scratch_frame));
         self.tract.compute(a, &mut f);
         let (ph_len, or_len) = self.tract.resample(a, &f, &mut self.ph_areas, &mut self.or_areas, Some(&mut self.ph_min), Some(&mut self.or_min));
+        if self.profile_mix > 0.0 && self.profile.len() >= 2 {
+            self.blend_profile(&mut f, ph_len, or_len);
+        }
         if dt > 0.0
             && let Some(base) = &self.base
         {
@@ -281,6 +297,33 @@ impl HumanAirway {
         self.update_noise(&f);
         self.frame = Some(f);
         self.frame.as_ref().unwrap()
+    }
+
+    /// The drawn area at `u` (0 glottis … 1 lips), shifted and opened, scaled to the body.
+    fn profile_at(&self, u: f64) -> f64 {
+        let p = &self.profile;
+        let x = (u - self.profile_shift).clamp(0.0, 1.0) * (p.len() - 1) as f64;
+        let i = (x as usize).min(p.len() - 2);
+        let a = p[i] + (x - i as f64) * (p[i + 1] - p[i]);
+        js_max(0.0, a * self.profile_open) * self.body.scale * self.body.scale
+    }
+
+    /// Blend the drawn profile over the articulated areas (and their minima, which set the jet
+    /// losses and where the noise sources sit), and the lips' area the frame reports.
+    fn blend_profile(&mut self, f: &mut HumanFrame, ph_len: f64, or_len: f64) {
+        let m = self.profile_mix.clamp(0.0, 1.0);
+        let total = ph_len + or_len;
+        for i in 0..self.n_ph {
+            let d = self.profile_at((i as f64 + 0.5) * ph_len / self.n_ph as f64 / total);
+            self.ph_areas[i] += m * (d - self.ph_areas[i]);
+            self.ph_min[i] = js_min(self.ph_areas[i], self.ph_min[i] + m * (d - self.ph_min[i]));
+        }
+        for i in 0..self.n_or {
+            let d = self.profile_at((ph_len + (i as f64 + 0.5) * or_len / self.n_or as f64) / total);
+            self.or_areas[i] += m * (d - self.or_areas[i]);
+            self.or_min[i] = js_min(self.or_areas[i], self.or_min[i] + m * (d - self.or_min[i]));
+        }
+        f.lip_area += m * (self.profile_at(1.0) - f.lip_area);
     }
 
     /// Register turbulence sources: glottis, narrowest supraglottal constriction, teeth obstacle.

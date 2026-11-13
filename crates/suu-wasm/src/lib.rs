@@ -16,7 +16,7 @@ pub struct Handle {
 /// 5 breath, 6 follow, 7 vowel_x, 8 vowel_y, 9 round, 10 nasal, 11 inject, 12 damping, 13 folds,
 /// 14 sub_hz, 15 sub_level, 16 mix, 17 out_db, 18 size (rebuilds the airway), 19 bpm,
 /// 20 glide_s, 21 glide_sync (beats, 0 = free), 22 text_rate_hz, 23 text_sync (beats, 0 = free),
-/// 24 reson
+/// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Input, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -43,6 +43,9 @@ fn set(p: &mut Params, id: u32, v: f64) {
         22 => p.text_rate_hz = v,
         23 => p.text_sync = v,
         24 => p.reson = v,
+        25 => p.morph = v,
+        26 => p.shift = v,
+        27 => p.open = v,
         _ => {}
     }
 }
@@ -113,6 +116,19 @@ pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize, mode:
     let h = unsafe { &mut *h };
     let m = match mode { 1 => TextMode::Gate, 2 => TextMode::OneShot, _ => TextMode::Loop };
     h.suu.set_text(text(ptr, len), m) as u32
+}
+
+/// The drawn horn: `n` little-endian f32 areas (cm²) at `ptr`, glottis → lips (see `suu::HORN_POINTS`).
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_set_profile(h: *mut Handle, ptr: *const u8, n: usize) {
+    let h = unsafe { &mut *h };
+    // little-endian f32s from a byte buffer (suu_alloc does not align for f32)
+    let src = unsafe { std::slice::from_raw_parts(ptr, 4 * n) };
+    let mut a = [0.0f64; suu::HORN_POINTS];
+    for (d, b) in a.iter_mut().zip(src.chunks_exact(4)) {
+        *d = f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64;
+    }
+    h.suu.set_profile(&a[..n.min(suu::HORN_POINTS)]);
 }
 
 #[unsafe(no_mangle)]

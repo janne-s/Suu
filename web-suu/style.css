@@ -91,7 +91,7 @@ h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500;
 .views { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 6px; min-height: 0; }
 .mouth-panel, .motion-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; }
-.panel-title > div { display: flex; gap: 2px; }
+.panel-title > div { display: flex; gap: 8px; }
 h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: var(--title); letter-spacing: 3px; text-shadow: 0 0 7px rgba(var(--beam-rgb), 0.35); display: flex; align-items: center; }
 /* a small lit mark before each section title, so the eye finds where a section starts */
 .panel-title h2::before, .stage h2::before {

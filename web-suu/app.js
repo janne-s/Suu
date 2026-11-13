@@ -177,6 +177,10 @@ const MOTION = [
   [3, "NASAL", 10, 0, 1.5, 0, pct],
   [4, "INJECT", 11, 0, 1, 0, (v) => (v < 0.02 ? "throat" : v > 0.98 ? "lips" : pct(v))],
   [5, "DAMPING", 12, 0.1, 20, 1, times, true],
+  // the drawn horn (HORN view): blend, slide along the tract, widen
+  [6, "MORPH", 25, 0, 1, 0, (v) => (v < 0.005 ? "mouth" : v > 0.995 ? "horn" : pct(v))],
+  [7, "SHIFT", 26, -0.5, 0.5, 0, (v) => (Math.abs(v) < 0.005 ? "0" : (v > 0 ? "lips " : "throat ") + pct(Math.abs(v)))],
+  [8, "OPEN", 27, 0.25, 4, 1, times, true],
 ];
 const SHAPES = ["SIN", "TRI", "SAW", "SQR", "RND", "ENV"];
 const rows = [];
@@ -285,10 +289,116 @@ function lens(c, cx, cy, w, hTop, hBot, round, more = false) {
   c.closePath();
 }
 
+// ---------------------------------------------------------------- the horn (HORN view)
+// The drawn area function: HORN_POINTS areas (cm², adult scale), glottis → lips. Its start
+// matches the engine's: narrow at the glottis, a throat, a wide bell.
+const HORN_POINTS = 32, HORN_MAX = 20, UI_AREAS = 48;
+const defaultHorn = () => Float32Array.from({ length: HORN_POINTS }, (_, i) => {
+  const u = i / (HORN_POINTS - 1);
+  return 0.6 + 1.5 * Math.exp(-(((u - 0.3) / 0.12) ** 2)) + 9 * u ** 3;
+});
+let horn = defaultHorn(), view = "pad";
+function sendHorn() {
+  post({ type: "profile", areas: horn.slice() });
+}
+/** The horn's frame on the canvas: x for u (0 glottis … 1 lips), half-height in px for an area. */
+function hornFrame(w, h) {
+  const x0 = w * 0.07, x1 = w * 0.93, cy = h * 0.5;
+  const perCm = (h * 0.44) / Math.sqrt(HORN_MAX / Math.PI);
+  return { x0, x1, cy, x: (u) => x0 + u * (x1 - x0), r: (a) => Math.sqrt(Math.max(0, a) / Math.PI) * perCm, perCm };
+}
+function drawHorn(c, w, h, dpr) {
+  const f = hornFrame(w, h);
+  // the axis, and the ends named
+  c.strokeStyle = color("--line");
+  c.lineWidth = dpr;
+  c.setLineDash([3 * dpr, 4 * dpr]);
+  c.beginPath();
+  c.moveTo(f.x0, f.cy);
+  c.lineTo(f.x1, f.cy);
+  c.stroke();
+  c.setLineDash([]);
+  c.fillStyle = color("--dim");
+  c.font = FONT(11, dpr);
+  c.textBaseline = "middle";
+  c.textAlign = "left";
+  c.fillText("GLOTTIS", f.x0, h - 14 * dpr);
+  c.textAlign = "right";
+  c.fillText("LIPS", f.x1, h - 14 * dpr);
+  // the live tract: a horn in the lips' rose, glowing with the sound
+  if (ui && ui.length >= 23 + UI_AREAS) {
+    const areas = ui.subarray(23, 23 + UI_AREAS);
+    const lit = clamp(ui[16] * 4, 0, 1);
+    const rgb = color("--lips-rgb");
+    const pts = Array.from(areas, (a, k) => [f.x((k + 0.5) / UI_AREAS), f.r(a)]);
+    c.beginPath();
+    pts.forEach(([x, r], k) => (k ? c.lineTo(x, f.cy - r) : c.moveTo(x, f.cy - r)));
+    for (let k = pts.length - 1; k >= 0; k--) c.lineTo(pts[k][0], f.cy + pts[k][1]);
+    c.closePath();
+    const g = c.createLinearGradient(0, f.cy - f.r(HORN_MAX), 0, f.cy + f.r(HORN_MAX));
+    g.addColorStop(0, `rgba(${rgb}, ${0.08 + 0.1 * lit})`);
+    g.addColorStop(0.5, `rgba(${rgb}, ${0.32 + 0.18 * lit})`);
+    g.addColorStop(1, `rgba(${rgb}, ${0.08 + 0.1 * lit})`);
+    c.fillStyle = g;
+    c.shadowColor = color("--lips");
+    c.shadowBlur = (8 + 20 * lit) * dpr;
+    c.fill();
+    c.strokeStyle = color("--lips");
+    c.lineWidth = 1.6 * dpr;
+    c.lineJoin = "round";
+    c.stroke();
+    c.shadowBlur = 0;
+  }
+  // the drawn horn (what MORPH blends toward), as an editable outline
+  c.strokeStyle = color("--ink");
+  c.globalAlpha = 0.7;
+  c.lineWidth = 1.2 * dpr;
+  c.setLineDash([4 * dpr, 3 * dpr]);
+  for (const side of [-1, 1]) {
+    c.beginPath();
+    horn.forEach((a, i) => {
+      const x = f.x(i / (HORN_POINTS - 1)), y = f.cy + side * f.r(a);
+      i ? c.lineTo(x, y) : c.moveTo(x, y);
+    });
+    c.stroke();
+  }
+  c.setLineDash([]);
+  c.globalAlpha = 1;
+}
+let hornLast = -1;
+function hornAt(e) {
+  const r = mouthEl.getBoundingClientRect();
+  const dpr = mouthEl.width / r.width;
+  const f = hornFrame(mouthEl.width, mouthEl.height);
+  const x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
+  const i = Math.round(clamp((x - f.x0) / (f.x1 - f.x0), 0, 1) * (HORN_POINTS - 1));
+  const cm = Math.abs(y - f.cy) / f.perCm;
+  const a = clamp(Math.PI * cm * cm, 0, HORN_MAX);
+  // fill every point between the last one and this, so a fast stroke leaves no gaps
+  const from = hornLast < 0 ? i : hornLast;
+  const a0 = hornLast < 0 ? a : horn[from];
+  const n = Math.abs(i - from);
+  for (let k = 0; k <= n; k++) {
+    const j = from + Math.sign(i - from) * k;
+    horn[j] = n ? a0 + ((a - a0) * k) / n : a;
+  }
+  hornLast = i;
+  sendHorn();
+}
+function setView(v) {
+  view = v;
+  $("view-pad").setAttribute("aria-pressed", String(v === "pad"));
+  $("view-horn").setAttribute("aria-pressed", String(v === "horn"));
+  mouthEl.style.cursor = v === "horn" ? "cell" : "";
+}
+$("view-pad").onclick = () => setView("pad");
+$("view-horn").onclick = () => setView("horn");
+
 function drawMouth() {
   const c = mouthEl.getContext("2d");
   const [w, h, dpr] = fit(mouthEl);
   c.clearRect(0, 0, w, h);
+  if (view === "horn") return drawHorn(c, w, h, dpr);
   // the pad: inner box = the four corner vowels, the border beyond extrapolates
   const x0 = toPad(0) * w, x1 = toPad(1) * w, y0 = toPad(0) * h, y1 = toPad(1) * h;
   c.strokeStyle = color("--line");
@@ -448,9 +558,20 @@ function padAt(e) {
 }
 mouthEl.addEventListener("pointerdown", (e) => {
   mouthEl.setPointerCapture(e.pointerId);
-  padAt(e);
+  if (view === "horn") {
+    // drawing a horn with MORPH at 0 would be silent: bring the horn in fully
+    const morph = rows[6];
+    if (morph.base === 0) setBase(morph, 1);
+    hornLast = -1;
+    hornAt(e);
+  } else padAt(e);
 });
-mouthEl.addEventListener("pointermove", (e) => e.buttons && padAt(e));
+mouthEl.addEventListener("pointermove", (e) => e.buttons && (view === "horn" ? hornAt(e) : padAt(e)));
+mouthEl.addEventListener("dblclick", () => {
+  if (view !== "horn") return;
+  horn = defaultHorn();
+  sendHorn();
+});
 new ResizeObserver(drawMouth).observe(mouthEl);
 
 let peakHold = 0;
@@ -460,9 +581,10 @@ function frameLoop() {
   if (ui) {
     // live markers on the Motion rows
     for (const r of rows) {
+      const live = ui[r.t < 6 ? r.t : 14 + r.t]; // the horn's three come after the first 20 values
       r.marker.hidden = r.depth === 0;
-      r.marker.style.left = 100 * clamp(baseNorm(r, ui[r.t]), 0, 1) + "%";
-      const a = baseNorm(r, r.base) * 100, b = clamp(baseNorm(r, ui[r.t]), 0, 1) * 100;
+      r.marker.style.left = 100 * clamp(baseNorm(r, live), 0, 1) + "%";
+      const a = baseNorm(r, r.base) * 100, b = clamp(baseNorm(r, live), 0, 1) * 100;
       r.input.style.setProperty("--lo", Math.min(a, b) + "%");
       r.input.style.setProperty("--hi", Math.max(a, b) + "%");
     }
@@ -538,6 +660,7 @@ function pushAll() {
   }
   send(19, bpm());
   send(1, lastNote);
+  sendHorn();
   gate();
   sendTextRate();
   setSpace();
@@ -996,7 +1119,7 @@ addEventListener("keydown", (e) => e.key === "Escape" && showInfo(false));
 // Reading is tolerant: a missing field takes its default, an unknown one is ignored, numbers are
 // clamped, and a wrong structure refuses the whole state before anything changes.
 const STATE_VERSION = 1;
-const MOTION_NAMES = ["vowelX", "vowelY", "round", "nasal", "inject", "damping"];
+const MOTION_NAMES = ["vowelX", "vowelY", "round", "nasal", "inject", "damping", "morph", "shift", "open"];
 const INTERNAL = ["1", "2", "3"];
 
 function getState() {
@@ -1015,6 +1138,7 @@ function getState() {
     motion,
     seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
     text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync },
+    horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
   };
 }
 
@@ -1069,6 +1193,8 @@ function readState(raw) {
     }),
   };
   const text = obj(r.text, "text");
+  if (r.horn !== undefined && !Array.isArray(r.horn)) throw new Error("horn is not a list");
+  out.horn = d.horn.map((da, i) => num(r.horn?.[i], da, 0, HORN_MAX));
   out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync) };
   return out;
 }
@@ -1105,6 +1231,8 @@ function applyState(st) {
   $("spaceon").textContent = spaceOn ? "ON" : "OFF";
   setSpace();
   if (st.source !== undefined && current !== "file" && current !== "mic") setSource(String(st.source));
+  horn = Float32Array.from(st.horn);
+  sendHorn();
   $("text").value = st.text.words;
   setTextMode(st.text.mode);
   Object.assign(loop, { rate: st.text.rate, sync: st.text.sync });

@@ -42,9 +42,9 @@
 
 <div class="views">
   <section class="panel mouth-panel">
-    <div class="panel-title"><h2>MOUTH</h2><div><button id="text-toggle" aria-expanded="false">TEXT</button></div></div>
+    <div class="panel-title"><h2>MOUTH</h2><div><span class="seg" role="group" aria-label="View"><button id="view-pad" aria-pressed="true" title="The vowel pad, the mouth from the front">PAD</button><button id="view-horn" aria-pressed="false" title="The tract from the side as a horn: draw your own (MORPH blends it in)">HORN</button></span><button id="text-toggle" aria-expanded="false">TEXT</button></div></div>
     <div class="well">
-      <canvas id="mouth" aria-label="Vowel pad: left to right front to back, top to bottom close to open"></canvas>
+      <canvas id="mouth" aria-label="Vowel pad: left to right front to back, top to bottom close to open. In HORN view: the tract from glottis to lips; drag to draw its width"></canvas>
       <div id="text-panel" class="overlay" hidden>
         <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false">▶ SING</button></form>
         <div class="text-timing"><div class="seg" role="group" aria-label="Text timing"><button data-tmode="1" aria-pressed="true" title="A syllable per note, held while the note is">GATE</button><button data-tmode="2" aria-pressed="false" title="A whole word per note">ONE-SHOT</button><button data-tmode="0" aria-pressed="false" title="Syllables on their own, at the loop's rate">LOOP</button></div>

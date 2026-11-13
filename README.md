@@ -21,10 +21,14 @@ purpose.
 
 - **Vowel pad** — Drag the mouth: left to right front to back, top to bottom
   close to open. The edge beyond the corner vowels extrapolates.
+- **Horn** — The tract from the side, glottis to lips, as it sounds now.
+  Drag to draw your own; double-click restores the default. **Morph** blends
+  the drawn horn in, **Shift** slides it along the tract, **Open** widens it.
 - **Text** — Type words. **Gate** sings a syllable per note, **One-shot** a
   word per note, **Loop** syllables at its own rate or ♪.
-- **Motion** — Vowel X/Y, Round, Nasal, Inject and Damping, each with Depth,
-  Rate or ♪, and a shape (sine, triangle, saw, square, random, envelope).
+- **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
+  Open, each with Depth, Rate or ♪, and a shape (sine, triangle, saw, square,
+  random, envelope).
 
 ## Sequencer
 
