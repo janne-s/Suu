@@ -159,7 +159,14 @@ pub struct Step {
     pub tie: bool,
     /// index into `STEP_VOWELS`, or −1 to leave the mouth where it is
     pub vowel: i32,
+    /// louder (and with more air): the source is raised by `ACCENT`
+    pub accent: bool,
+    /// how long the gate stays open, a fraction of the step (a tie holds it into the next)
+    pub len: f64,
 }
+
+/// An accented step's level, × the source.
+pub const ACCENT: f64 = 1.6;
 
 /// How typed text is sung.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -237,7 +244,7 @@ impl Seq {
         ];
         Seq {
             mode: SeqMode::Steps,
-            steps: pat.map(|(on, note, tie, vowel)| Step { on, note, tie, vowel }),
+            steps: pat.map(|(on, note, tie, vowel)| Step { on, note, tie, vowel, accent: false, len: 0.6 }),
             len: 16,
             div: 4.0,
             gate: 0.6,
@@ -382,6 +389,8 @@ pub struct Suu {
     note_now: f64,
     gate_now: bool,
     folds_f0: f64,
+    /// the sounding step is accented
+    accent: bool,
 }
 
 impl Suu {
@@ -432,6 +441,7 @@ impl Suu {
             note_now: 45.0,
             gate_now: false,
             folds_f0: 0.0,
+            accent: false,
         };
         s.rest = s.voice.artic.target.to_array();
         let mix = BodyMix::new(0.0, 0.0);
@@ -638,7 +648,7 @@ impl Suu {
 
     pub fn set_step(&mut self, i: usize, step: Step) {
         if i < STEPS {
-            self.seq.steps[i] = Step { note: step.note.clamp(-36, 36), vowel: step.vowel.clamp(-1, STEP_VOWELS.len() as i32 - 1), ..step };
+            self.seq.steps[i] = Step { note: step.note.clamp(-36, 36), vowel: step.vowel.clamp(-1, STEP_VOWELS.len() as i32 - 1), len: clamp(step.len, 0.05, 1.0), ..step };
         }
     }
 
@@ -752,6 +762,7 @@ impl Suu {
                     let prev = self.seq.steps[(self.seq.step + self.seq.len - 1) % self.seq.len];
                     self.retrig = !(prev.tie && prev.on && self.seq.gate_open);
                     self.seq.gate_open = true;
+                    self.accent = st.accent;
                     if st.vowel >= 0 {
                         self.seq_pad = Some(STEP_PAD[st.vowel as usize]);
                     }
@@ -790,8 +801,17 @@ impl Suu {
                 self.seq.arp_i += 1;
                 self.seq.note = (sorted[idx % n] + 12 * (idx / n) as i32) as f64;
                 self.seq.gate_open = true;
+                self.accent = false;
                 self.retrig = true;
             }
+        }
+    }
+
+    /// The current note's gate length (fraction of a step): the step's own, or the arp's.
+    fn gate_len(&self) -> f64 {
+        match self.seq.mode {
+            SeqMode::Steps => self.seq.steps[self.seq.step].len,
+            SeqMode::Arp => self.seq.gate,
         }
     }
 
@@ -802,7 +822,7 @@ impl Suu {
             self.seq.t -= len;
             self.seq.step = (self.seq.step + 1) % self.seq.len;
             self.trigger();
-        } else if self.seq.gate_open && self.seq.t >= self.seq.gate * len {
+        } else if self.seq.gate_open && self.seq.t >= self.gate_len() * len {
             // a tie holds the gate into the next step
             let tied = self.seq.mode == SeqMode::Steps && self.seq.steps[self.seq.step].tie;
             if !tied {
@@ -992,12 +1012,13 @@ impl Suu {
         let env_a = 1.0 - exp(-1.0 / (0.005 * fs));
         let env_r = 1.0 - exp(-1.0 / (0.08 * fs));
         let gate = self.gate_now;
+        let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
         let mut env_peak = self.env_peak;
         for i in 0..n {
             let x = if p.source == Source::Input {
                 // the sequencer and arp gate an external sound (it has no pitch to play)
                 if self.seq.playing {
-                    let g = if gate { 1.0 } else { 0.0 };
+                    let g = if gate { level } else { 0.0 };
                     self.osc_env += (g - self.osc_env) * if gate { att } else { rel_in };
                     input[i] as f64 * self.osc_env
                 } else {
@@ -1006,7 +1027,7 @@ impl Suu {
                 }
             } else {
                 self.osc_hz += (target - self.osc_hz) * glide;
-                let g = if gate { 1.0 } else { 0.0 };
+                let g = if gate { level } else { 0.0 };
                 self.osc_env += (g - self.osc_env) * if gate { att } else { rel };
                 self.osc.next(p.source, self.osc_hz / fs) * self.osc_env * 0.5
             };
@@ -1210,5 +1231,21 @@ mod tests {
         }
         let (lo, hi) = ys.iter().fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
         assert!(hi - lo > 0.8, "vowel Y swing {lo}..{hi}");
+    }
+
+    #[test]
+    fn steps_have_their_own_length_and_accent() {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { bpm: 120.0, ..Params::default() });
+        s.set_seq(SeqMode::Steps, 2, 4.0, 0.6, ArpOrder::Up, 1);
+        // step 0 short and plain, step 1 long and accented (sixteenths at 120 bpm: 6000 samples)
+        s.set_step(0, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 0.2 });
+        s.set_step(1, Step { on: true, note: 0, tie: false, vowel: -1, accent: true, len: 0.9 });
+        s.set_playing(true);
+        let out = run(&mut s, 128, 48000);
+        let rms = |a: &[f32]| (a.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / a.len() as f64).sqrt();
+        // in the second half: the middle of step 0 (gate closed) vs the middle of step 1 (open)
+        let (a, b) = (rms(&out[24000 + 2400..24000 + 3600]), rms(&out[30000 + 2400..30000 + 3600]));
+        assert!(b > 3.0 * a, "short step {a}, long accented step {b}");
     }
 }

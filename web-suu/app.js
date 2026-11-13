@@ -129,7 +129,7 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
     btn.title = "Sync to tempo";
     btn.setAttribute("aria-pressed", "false");
     const box = document.createElement("select");
-    box.className = "syncbox";
+    box.className = "field syncbox";
     box.hidden = true;
     box.setAttribute("aria-label", `${label} as a note value`);
     box.innerHTML = DIVS.slice(0, 13).map(([n]) => `<option>${n}</option>`).join("");
@@ -184,7 +184,8 @@ function sendMod(r) {
   post({ type: "mod", target: r.t, depth: r.depth, rate: r.rate, sync: r.sync ? divBeats(r.sync) : 0, shape: r.shape });
   r.el.classList.toggle("active", r.depth !== 0);
   r.el.classList.toggle("env", env);
-  r.depthOut.textContent = Math.round(r.depth * 100) + "%";
+  r.depthBox.textContent = (r.depth > 0 ? "+" : "") + Math.round(r.depth * 100) + "%";
+  r.depthBox.classList.toggle("on", r.depth !== 0);
   r.rateVal.textContent = r.rate < 1 ? r.rate.toFixed(2) + " Hz" : r.rate.toFixed(1) + " Hz";
   r.rateVal.hidden = !!r.sync;
   r.rateSel.hidden = !r.sync;
@@ -195,25 +196,24 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
   el.className = "motion-row";
   el.innerHTML = `<span class="name">${label}</span>
     <span class="base"><input type="range" min="0" max="1" step="0.001" aria-label="${label} base"><i></i><output></output></span>
-    <span class="depth"><input type="range" min="-1" max="1" step="0.01" value="0" aria-label="${label} depth"><output>0%</output></span>
-    <span class="rate"><span class="val" tabindex="0" title="Drag up/down: rate"></span><select hidden aria-label="${label} rate as a note value">${DIVS.map(([n]) => `<option>${n}</option>`).join("")}</select><button title="Sync to tempo">♪</button></span>
-    <select class="shape" aria-label="${label} shape">${SHAPES.map((s, i) => `<option value="${i}">${s}</option>`).join("")}</select>`;
+    <span class="field drag depth" tabindex="0" aria-label="${label} depth"></span>
+    <span class="rate"><span class="field drag val" tabindex="0" aria-label="${label} rate"></span><select class="field" hidden aria-label="${label} rate as a note value">${DIVS.map(([n]) => `<option>${n}</option>`).join("")}</select><button title="Sync to tempo">♪</button></span>
+    <select class="field shape" aria-label="${label} shape">${SHAPES.map((s, i) => `<option value="${i}">${s}</option>`).join("")}</select>`;
   $("motion").append(el);
   const r = {
     t, param, lo, hi, fmt, log, el, def, base: def, depth: 0, rate: 0.5, sync: null, shape: 0,
     input: el.querySelector(".base input"), marker: el.querySelector(".base i"), out: el.querySelector(".base output"),
-    depthIn: el.querySelector(".depth input"), depthOut: el.querySelector(".depth output"),
+    depthBox: el.querySelector(".depth"),
     rateVal: el.querySelector(".rate .val"), rateSel: el.querySelector(".rate select"), syncBtn: el.querySelector(".rate button"), shapeSel: el.querySelector("select.shape"),
   };
   rows.push(r);
   r.input.oninput = () => setBase(r, baseFrom(r, +r.input.value));
   r.input.ondblclick = () => setBase(r, def);
-  r.depthIn.oninput = () => {
-    r.depth = +r.depthIn.value;
+  dragValue(r.depthBox, () => r.depth, (v) => {
+    r.depth = Math.round(clamp(v, -1, 1) * 100) / 100;
     sendMod(r);
-  };
-  r.depthIn.ondblclick = () => {
-    r.depthIn.value = 0;
+  }, 1 / 150);
+  r.depthBox.ondblclick = () => {
     r.depth = 0;
     sendMod(r);
   };
@@ -241,7 +241,6 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
 $("motion-reset").onclick = () => {
   for (const r of rows) {
     r.depth = 0;
-    r.depthIn.value = 0;
     sendMod(r);
   }
 };
@@ -433,7 +432,7 @@ requestAnimationFrame(frameLoop);
 // ---------------------------------------------------------------- audio graph
 async function start() {
   if (ctx) return;
-  status("Loading the engine…");
+  status("loading…", true);
   ctx = new AudioContext({ latencyHint: "interactive" });
   const [mod] = await Promise.all([WebAssembly.compileStreaming(fetch("suu.wasm")), ctx.audioWorklet.addModule("worklet.js")]);
   node = new AudioWorkletNode(ctx, "suu", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { module: mod } });
@@ -448,22 +447,27 @@ async function start() {
   await setSource(current);
   $("start").textContent = "● ON";
   $("start").setAttribute("aria-pressed", "true");
-  status("Loading the pronouncing dictionary…");
+  status("loading words…", true);
   const gz = await fetch("cmudict.txt.gz");
   const bytes = new Uint8Array(await new Response(gz.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
   post({ type: "dict", bytes }, [bytes.buffer]);
 }
 $("start").onclick = start;
-function status(t) {
-  $("status").textContent = t;
+let statusTimer = 0;
+/** A short message in the bar that fades after a few seconds. */
+function status(t, keep = false) {
+  const el = $("status");
+  el.textContent = t;
+  el.classList.remove("fade");
+  clearTimeout(statusTimer);
+  if (!keep) statusTimer = setTimeout(() => el.classList.add("fade"), 4000);
 }
 
 function onWorklet(m) {
-  if (m.type === "dict") status("Ready. Keys A W S E D F T G Y H U J K play, Z X change octave, Space plays the sequencer.");
+  if (m.type === "dict") status("ready");
   else if (m.type === "text") {
     textOn = m.syllables > 0;
-    $("textstat").textContent = textOn ? `${m.syllables} syllables` : "";
-    $("sing").setAttribute("aria-pressed", String(textOn));
+    $("text-toggle").textContent = textOn ? `TEXT · ${m.syllables}` : "TEXT";
   } else if (m.type === "ui") {
     ui = m.ui;
     showSeq(ui[19] > 0.5, ui[17]);
@@ -530,7 +534,7 @@ function makeIR(len) {
 
 function setSpace() {
   if (!ctx) return;
-  const on = $("spaceon").checked;
+  const on = spaceOn;
   const t = ctx.currentTime;
   fx.dl.delayTime.setTargetAtTime(eff("delayTime"), t, 0.05);
   fx.dr.delayTime.setTargetAtTime(eff("delayTime"), t, 0.05);
@@ -539,7 +543,13 @@ function setSpace() {
   fx.rmix.gain.setTargetAtTime(on ? state.revMix : 0, t, 0.02);
   if (Math.abs(fx.irLen - state.revSize) > 0.05) makeIR(state.revSize);
 }
-$("spaceon").onchange = setSpace;
+let spaceOn = true;
+$("spaceon").onclick = () => {
+  spaceOn = !spaceOn;
+  $("spaceon").setAttribute("aria-pressed", String(spaceOn));
+  $("spaceon").textContent = spaceOn ? "ON" : "OFF";
+  setSpace();
+};
 
 // ---------------------------------------------------------------- sources
 let current = "2", fileName = "";
@@ -547,7 +557,7 @@ async function setSource(src) {
   current = src;
   document.querySelectorAll("[data-src]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.src === src)));
   const internal = src !== "file" && src !== "mic";
-  $("source-name").textContent = src === "file" ? fileName : src === "mic" ? "microphone / line input" : "";
+  if (src === "file" && fileName) status(fileName);
   if (!ctx) return;
   srcNode?.disconnect();
   try {
@@ -566,9 +576,9 @@ async function setSource(src) {
       micStream ??= await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
       srcNode = ctx.createMediaStreamSource(micStream);
       srcNode.connect(node);
-      status("Microphone on. Use headphones, or the speakers feed back into the mouth.");
+      status("mic on · use headphones");
     } catch (e) {
-      status("No microphone: " + e.message);
+      status("no microphone: " + e.message);
     }
   }
 }
@@ -585,9 +595,9 @@ async function loadFile(f) {
     fileBuf = await ctx.decodeAudioData(await f.arrayBuffer());
     fileName = f.name;
     await setSource("file");
-    status(`Looping ${f.name}. Motion moves the mouth; Space plays the sequencer, which gates the file; FOLDS sings its notes.`);
+    status(f.name);
   } catch {
-    status(`Could not decode ${f.name}.`);
+    status(`could not decode ${f.name}`);
   }
 }
 $("file").onchange = (e) => e.target.files[0] && loadFile(e.target.files[0]);
@@ -675,16 +685,16 @@ const VOWELS = ["·", "ɑ", "e", "i", "o", "u"]; // index 0 = leave the mouth (�
 const steps = [
   [1, 0, 0, 0], [0, 0, 0, -1], [1, 12, 0, 4], [1, 0, 0, 2], [1, 0, 1, 0], [1, 7, 0, 3], [0, 0, 0, -1], [1, 10, 0, 1],
   [1, 0, 0, 0], [0, 0, 0, -1], [1, 12, 0, 4], [1, 0, 0, 2], [1, 3, 0, 3], [1, 5, 0, 0], [1, 7, 0, 1], [0, 0, 0, -1],
-].map(([on, n, tie, vowel]) => ({ on: !!on, note: n, tie: !!tie, vowel }));
+].map(([on, n, tie, vowel], i) => ({ on: !!on, note: n, tie: !!tie, vowel, accent: i % 8 === 0, len: tie ? 1 : 0.6 }));
 let playing = false;
 const cells = [];
 
 function sendStep(i) {
   const s = steps[i];
-  post({ type: "step", i, on: s.on, note: s.note, tie: s.tie, vowel: s.vowel });
+  post({ type: "step", i, on: s.on, note: s.note, tie: s.tie, vowel: s.vowel, accent: s.accent, len: s.len });
 }
 function sendSeq() {
-  post({ type: "seq", mode: 0, len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: clamp(+$("gatelen").value || 60, 5, 100) / 100, order: 0, octaves: 1 });
+  post({ type: "seq", mode: 0, len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: 0.6, order: 0, octaves: 1 });
   renderSteps();
 }
 function renderSteps() {
@@ -693,8 +703,10 @@ function renderSteps() {
     const c = cells[i];
     c.el.classList.toggle("on", s.on);
     c.el.classList.toggle("tie", s.on && s.tie);
+    c.el.classList.toggle("accent", s.on && s.accent);
+    c.el.style.setProperty("--len", s.len);
     c.el.classList.toggle("off-len", i >= len);
-    c.note.textContent = s.on ? (s.note > 0 ? "+" + s.note : s.note < 0 ? "−" + -s.note : "0") : "–";
+    c.label.textContent = s.on ? (s.note > 0 ? "+" + s.note : s.note < 0 ? "−" + -s.note : "0") : "–";
     c.vowel.textContent = VOWELS[s.vowel + 1];
     c.vowel.classList.toggle("set", s.vowel >= 0);
   });
@@ -702,10 +714,31 @@ function renderSteps() {
 for (let i = 0; i < 16; i++) {
   const el = document.createElement("div");
   el.className = "step";
-  el.innerHTML = `<div class="note" title="Click: on/off · drag up/down: semitones · shift-click: tie · double-click: root"></div><div class="vowel" title="Vowel on this step: moves the pad there (· leaves it)"></div>`;
+  el.innerHTML = `<div class="note"><span></span><i class="acc" title="Accent">◆</i><div class="len" title="Length"><b></b></div></div><div class="vowel"></div>`;
   $("steps").append(el);
   const noteEl = el.querySelector(".note"), vowelEl = el.querySelector(".vowel");
-  cells.push({ el, note: noteEl, vowel: vowelEl });
+  cells.push({ el, note: noteEl, label: noteEl.querySelector("span"), vowel: vowelEl });
+  const accEl = el.querySelector(".acc"), lenEl = el.querySelector(".len");
+  accEl.addEventListener("pointerdown", (e) => e.stopPropagation());
+  accEl.addEventListener("click", () => {
+    steps[i].accent = !steps[i].accent;
+    steps[i].on = true;
+    sendStep(i);
+    renderSteps();
+  });
+  // length: drag across the bar
+  lenEl.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    lenEl.setPointerCapture(e.pointerId);
+    const set = (ev) => {
+      const r = lenEl.getBoundingClientRect();
+      steps[i].len = clamp(Math.round(((ev.clientX - r.left) / r.width) * 20) / 20, 0.05, 1);
+      sendStep(i);
+      renderSteps();
+    };
+    set(e);
+    lenEl.onpointermove = (ev) => ev.buttons && set(ev);
+  });
   let drag = null;
   noteEl.addEventListener("pointerdown", (e) => {
     noteEl.setPointerCapture(e.pointerId);
@@ -764,7 +797,7 @@ function showSeq(isPlaying, step) {
   if (s >= 0) cells[s]?.el.classList.add("now");
   shownStep = s;
 }
-for (const id of ["rate", "gatelen", "seqlen"]) $(id).onchange = sendSeq;
+for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 
 // ---------------------------------------------------------------- text
 let textMode = 1;
@@ -802,3 +835,17 @@ document.querySelectorAll("[data-tmode]").forEach((b) => {
     if (textOn) sing($("text").value);
   };
 });
+
+// ---------------------------------------------------------------- help
+function showInfo(open) {
+  $("info").hidden = !open;
+  $("info-toggle").setAttribute("aria-expanded", String(open));
+}
+$("info-toggle").onclick = (e) => {
+  e.stopPropagation();
+  showInfo($("info").hidden);
+};
+addEventListener("pointerdown", (e) => {
+  if (!$("info").hidden && !$("info").contains(e.target) && e.target !== $("info-toggle")) showInfo(false);
+});
+addEventListener("keydown", (e) => e.key === "Escape" && showInfo(false));

@@ -1,6 +1,6 @@
 // Suu's AudioWorklet: one wasm instance, mono in → mono out (copied to both channels).
 // From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes, mode}
-//   · {type:"step", i, on, note, tie, vowel} · {type:"seq", mode, len, div, gate, order, octaves}
+//   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", mode, len, div, gate, order, octaves}
 //   · {type:"play", on} · {type:"noteOn", midi} · {type:"noteOff", midi} · {type:"retrigger"}
 //   · {type:"allOff"} · {type:"latch", on}
 //   · {type:"mod", target, depth, rate, sync, shape}
@@ -54,7 +54,7 @@ class SuuProcessor extends AudioWorkletProcessor {
         break;
       }
       case "step":
-        x.suu_set_step(h, m.i, m.on ? 1 : 0, m.note, m.tie ? 1 : 0, m.vowel);
+        x.suu_set_step(h, m.i, m.on ? 1 : 0, m.note, m.tie ? 1 : 0, m.vowel, m.accent ? 1 : 0, m.len);
         break;
       case "seq":
         x.suu_set_seq(h, m.mode, m.len, m.div, m.gate, m.order, m.octaves);

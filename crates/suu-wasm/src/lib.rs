@@ -109,9 +109,9 @@ pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize, mode:
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn suu_set_step(h: *mut Handle, i: u32, on: u32, note: i32, tie: u32, vowel: i32) {
+pub extern "C" fn suu_set_step(h: *mut Handle, i: u32, on: u32, note: i32, tie: u32, vowel: i32, accent: u32, len: f64) {
     let h = unsafe { &mut *h };
-    h.suu.set_step(i as usize, Step { on: on != 0, note, tie: tie != 0, vowel });
+    h.suu.set_step(i as usize, Step { on: on != 0, note, tie: tie != 0, vowel, accent: accent != 0, len });
 }
 
 /// mode 0 steps, 1 arp; order 0 up, 1 down, 2 up-down, 3 random
