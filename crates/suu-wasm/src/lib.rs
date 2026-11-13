@@ -9,6 +9,7 @@ pub struct Handle {
     input: Vec<f32>,
     output: Vec<f32>,
     frame: Vec<f32>,
+    snap: [f32; suu::HORN_POINTS],
 }
 
 /// Parameter indices, in this order (the web app's `PARAMS` list mirrors it).
@@ -67,7 +68,7 @@ pub extern "C" fn suu_free(p: *mut u8, n: usize) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_new(fs: f64) -> *mut Handle {
-    Box::into_raw(Box::new(Handle { suu: Suu::new(fs), input: vec![0.0; MAX_BLOCK], output: vec![0.0; MAX_BLOCK], frame: Vec::with_capacity(4096) }))
+    Box::into_raw(Box::new(Handle { suu: Suu::new(fs), input: vec![0.0; MAX_BLOCK], output: vec![0.0; MAX_BLOCK], frame: Vec::with_capacity(4096), snap: [0.0; suu::HORN_POINTS] }))
 }
 
 #[unsafe(no_mangle)]
@@ -160,6 +161,21 @@ pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, 
     let h = unsafe { &mut *h };
     let shape = match shape { 1 => Shape::Triangle, 2 => Shape::Saw, 3 => Shape::Square, 4 => Shape::Random, 5 => Shape::Follow, _ => Shape::Sine };
     h.suu.set_mod(t as usize, Mod { depth, rate_hz, sync, shape });
+}
+
+/// One period of the source's waveform (`suu::HORN_POINTS` values, −1..1) into a buffer at
+/// the returned pointer, or null when the source is silent.
+#[unsafe(no_mangle)]
+pub extern "C" fn suu_snapshot(h: *mut Handle) -> *const f32 {
+    let h = unsafe { &mut *h };
+    let mut v = [0.0f64; suu::HORN_POINTS];
+    if !h.suu.snapshot(&mut v) {
+        return std::ptr::null();
+    }
+    for (d, s) in h.snap.iter_mut().zip(v) {
+        *d = s as f32;
+    }
+    h.snap.as_ptr()
 }
 
 /// Fill the UI buffer (see `Suu::ui_state`) and return its length; `suu_ui` points at it.

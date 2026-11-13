@@ -308,13 +308,15 @@ const hornU = (i) => i / (hornWrap ? HORN_POINTS : HORN_POINTS - 1);
 /** The horn from a wave: a 3 cm² tube rippled `depth` (1 = closing at the troughs). */
 // RND: one value per cycle, drawn anew only when RND is chosen or the cycles change
 let rndSteps = [];
+// SNAP: one period of the source's waveform (32 values, −1..1), taken by the camera button
+let snapVals = [];
 function buildWave(newRandom = false) {
   const { shape, cycles, depth } = hornWave;
   if (newRandom || rndSteps.length !== cycles) rndSteps = Array.from({ length: cycles }, () => Math.random() * 2 - 1);
   const steps = rndSteps;
   horn = Float32Array.from({ length: HORN_POINTS }, (_, i) => {
     const ph = (cycles * i) / HORN_POINTS, f = ph % 1;
-    const w = [Math.sin(2 * Math.PI * ph), 1 - 4 * Math.abs(f - 0.5), 2 * f - 1, f < 0.5 ? 1 : -1, steps[Math.floor(ph)]][shape];
+    const w = [Math.sin(2 * Math.PI * ph), 1 - 4 * Math.abs(f - 0.5), 2 * f - 1, f < 0.5 ? 1 : -1, steps[Math.floor(ph)], snapVals[Math.floor(f * HORN_POINTS)] ?? 0][shape];
     return clamp(3 * (1 + depth * w), 0, HORN_MAX);
   });
   hornWrap = true;
@@ -340,9 +342,26 @@ function bringHornIn() {
 $("horn-reset").onclick = resetHorn;
 $("horn-shape").onchange = () => {
   hornWave.shape = +$("horn-shape").value;
+  // SNAP without a snapshot yet: take one now
+  if (hornWave.shape === 5 && !snapVals.length) return post({ type: "snapshot" });
   if (hornWave.shape >= 0) buildWave(true);
   showHornWave();
 };
+$("horn-snap").onclick = async () => {
+  await start();
+  post({ type: "snapshot" });
+};
+function onSnapshot(values) {
+  if (!values) {
+    status("snapshot: no sound (play a note, or start the file)");
+    if (hornWave.shape === 5 && !snapVals.length) hornWave.shape = -1;
+    return showHornWave();
+  }
+  snapVals = Array.from(values, (v) => Math.round(v * 1000) / 1000);
+  hornWave.shape = 5;
+  buildWave();
+  showHornWave();
+}
 dragValue($("horn-cycles"), () => hornWave.cycles, (v) => {
   const c = Math.round(clamp(v, 1, 8));
   if (c === hornWave.cycles) return;
@@ -695,6 +714,7 @@ function status(t, keep = false) {
 
 function onWorklet(m) {
   if (m.type === "dict") status("ready");
+  else if (m.type === "snapshot") onSnapshot(m.values);
   else if (m.type === "text") {
     textOn = m.syllables > 0;
     $("text-toggle").textContent = textOn ? `TEXT · ${m.syllables}` : "TEXT";
@@ -1198,7 +1218,7 @@ function getState() {
     text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
-    hornWave: { ...hornWave },
+    hornWave: { ...hornWave, snap: snapVals.slice() },
   };
 }
 
@@ -1257,7 +1277,10 @@ function readState(raw) {
   out.horn = d.horn.map((da, i) => num(r.horn?.[i], da, 0, HORN_MAX));
   out.hornWrap = bool(r.hornWrap, d.hornWrap);
   const hw = obj(r.hornWave, "hornWave");
-  out.hornWave = { shape: Math.round(num(hw.shape, d.hornWave.shape, -1, 4)), cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)), depth: num(hw.depth, d.hornWave.depth, 0, 1) };
+  if (hw.snap !== undefined && !Array.isArray(hw.snap)) throw new Error("hornWave.snap is not a list");
+  const snap = Array.isArray(hw.snap) && hw.snap.length === HORN_POINTS ? hw.snap.map((v) => num(v, 0, -1, 1)) : [];
+  const shape = Math.round(num(hw.shape, d.hornWave.shape, -1, 5));
+  out.hornWave = { shape: shape === 5 && !snap.length ? -1 : shape, cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)), depth: num(hw.depth, d.hornWave.depth, 0, 1), snap };
   out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync) };
   return out;
 }
@@ -1296,7 +1319,8 @@ function applyState(st) {
   if (st.source !== undefined && current !== "file" && current !== "mic") setSource(String(st.source));
   horn = Float32Array.from(st.horn);
   hornWrap = st.hornWrap;
-  Object.assign(hornWave, st.hornWave);
+  snapVals = st.hornWave.snap.slice();
+  Object.assign(hornWave, { shape: st.hornWave.shape, cycles: st.hornWave.cycles, depth: st.hornWave.depth });
   showHornWave();
   sendHorn();
   $("text").value = st.text.words;

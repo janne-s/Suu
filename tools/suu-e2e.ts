@@ -137,6 +137,13 @@ let saved = async () => { await page.waitForTimeout(1200); return await page.eva
 let st = await saved();
 ok("SIN builds a wrapping wave horn", st.hornWrap === true && st.hornWave.shape === 0 && Math.abs(st.horn[4] - st.horn[12]) > 1, JSON.stringify(st.horn.slice(0, 6)));
 await page.screenshot({ path: `${out}/5-wave.png` });
+// snapshot: the synth's waveform (a supersaw) becomes the horn
+await page.keyboard.down("a");
+await page.waitForTimeout(300);
+await page.click("#horn-snap");
+await page.keyboard.up("a");
+st = await saved();
+ok("the camera snapshots the sound into the horn", st.hornWave.shape === 5 && st.hornWave.snap.length === 32 && st.hornWrap === true, JSON.stringify(st.hornWave.snap.slice(0, 4)));
 await page.click("#horn-reset");
 st = await saved();
 ok("reset icon restores the original horn", st.hornWrap === false && st.hornWave.shape === -1 && Math.abs(st.horn[0] - 0.6) < 0.05, JSON.stringify(st.horn.slice(0, 3)));

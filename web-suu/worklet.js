@@ -4,6 +4,7 @@
 //   · {type:"play", on} · {type:"retrigger"} · {type:"profile", areas: Float32Array, wrap}
 //   · {type:"mod", target, depth, rate, sync, shape}
 // To the page: ready · dict · text {syllables} · applied {id} · ui {ui} (see Suu::ui_state)
+//   · snapshot {values: Float32Array(32) | null} (after {type:"snapshot"})
 
 const FRAME_EVERY = 1 / 30; // s
 
@@ -63,6 +64,12 @@ class SuuProcessor extends AudioWorkletProcessor {
         const p = this.bytes(bytes);
         x.suu_set_profile(h, p, m.areas.length, m.wrap ? 1 : 0);
         x.suu_free(p, bytes.length);
+        break;
+      }
+      case "snapshot": {
+        const p = x.suu_snapshot(h);
+        const values = p ? new Float32Array(this.x.memory.buffer, p, 32).slice() : null;
+        this.port.postMessage({ type: "snapshot", values });
         break;
       }
       case "play":

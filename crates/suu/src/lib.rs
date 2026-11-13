@@ -53,6 +53,8 @@ const MOD_RANGE: [(f64, f64); N_MOD] = [(-0.3, 1.3), (-0.3, 1.3), (-1.0, 1.0), (
 const MOD_LOG: [bool; N_MOD] = [false, false, false, false, false, true, false, false, true];
 /// The drawn horn: this many areas from the glottis to the lips.
 pub const HORN_POINTS: usize = 32;
+/// The source history a snapshot reads from (samples, a power of two: 85 ms at 48 kHz).
+const SNAP_RING: usize = 4096;
 /// The live area function the UI gets: this many samples from the glottis to the lips.
 pub const UI_AREAS: usize = 48;
 
@@ -396,6 +398,9 @@ pub struct Suu {
     osc_hz: f64,
     osc_env: f64,
     reson: Reson,
+    /// the last SNAP_RING samples of the ungated source (for `snapshot`)
+    snap_ring: Vec<f32>,
+    snap_w: usize,
     tilt_y: f64,
     env: f64,
     sub1: f64,
@@ -457,6 +462,8 @@ impl Suu {
             glide_rate: 0.0,
             osc_hz: midi_to_hz(45.0),
             reson: Reson::new(fs),
+            snap_ring: vec![0.0; SNAP_RING],
+            snap_w: 0,
             osc_env: 0.0,
             tilt_y: 0.0,
             env: 0.0,
@@ -585,6 +592,28 @@ impl Suu {
         }
     }
 
+    /// One period of the source's waveform (the sounding note's, from the ungated source:
+    /// the oscillator, or the file or mic) as `HORN_POINTS` values in −1..1, each the mean of
+    /// its stretch (so the shape is not aliased), normalised to the peak. False if silent.
+    pub fn snapshot(&self, out: &mut [f64; HORN_POINTS]) -> bool {
+        let len = clamp(self.fs / self.osc_hz, HORN_POINTS as f64, (SNAP_RING - 1) as f64) as usize;
+        let start = self.snap_w + SNAP_RING - len;
+        for (k, o) in out.iter_mut().enumerate() {
+            let (a, b) = (k * len / HORN_POINTS, ((k + 1) * len / HORN_POINTS).max(k * len / HORN_POINTS + 1));
+            *o = (a..b).map(|j| self.snap_ring[(start + j) & (SNAP_RING - 1)] as f64).sum::<f64>() / (b - a) as f64;
+        }
+        // centred and normalised: the shape, not its offset or level
+        let mean = out.iter().sum::<f64>() / HORN_POINTS as f64;
+        let peak = out.iter().fold(0.0f64, |m, v| m.max((v - mean).abs()));
+        if peak < 1e-6 {
+            return false;
+        }
+        for o in out.iter_mut() {
+            *o = (*o - mean) / peak;
+        }
+        true
+    }
+
     pub fn profile(&self) -> &[f64] {
         &self.voice.airway.profile
     }
@@ -597,7 +626,9 @@ impl Suu {
     fn configure_voice(&mut self) {
         let p = self.p;
         self.voice.glottal_area_scale = p.folds;
-        self.voice.set_source(&SourcePatch { voiced: Some(true), tension: Some(0.55), drift: Some(0.0), ..Default::default() });
+        // the folds follow Suu's own (already glided) pitch: no glide of their own (their default
+        // 60 ms kept a slide even with Glide at 0)
+        self.voice.set_source(&SourcePatch { voiced: Some(true), tension: Some(0.55), drift: Some(0.0), glide: Some(0.002), ..Default::default() });
         self.voice.set_gate(1.0);
         self.folds_f0 = 0.0; // re-send the pitch on the next control tick
     }
@@ -994,10 +1025,17 @@ impl Suu {
         self.retrig = false;
         self.prev_gate = self.gate_now;
         let p = self.p;
+        let secs = if p.glide_sync > 0.0 { p.glide_sync * 60.0 / p.bpm } else { p.glide_s };
+        // Glide moves the vowels too: the articulators' speed is ×1 at the default 30 ms, up to
+        // ×4 at 0 (the airway's area slew limits still keep a change click-free) and down to
+        // ×¼ for long glides
+        let speed = clamp(0.03 / js_max(secs, 0.0075), 0.25, 4.0);
+        if speed != self.voice.artic.speed[0] {
+            self.voice.artic.speed = [speed; N_ARTIC];
+        }
         if self.note_now != self.glide_to {
             // a new pitch: glide there in the glide time, linear in semitones, from where it is
             self.glide_to = self.note_now;
-            let secs = if p.glide_sync > 0.0 { p.glide_sync * 60.0 / p.bpm } else { p.glide_s };
             let n = js_max(1.0, secs * self.fs);
             self.glide_rate = (self.glide_to - self.pitch).abs() / n;
         }
@@ -1036,17 +1074,16 @@ impl Suu {
                 self.pitch = if d.abs() <= self.glide_rate { self.glide_to } else { self.pitch + self.glide_rate * d.signum() };
                 self.osc_hz = midi_to_hz(self.pitch);
             }
-            let x = if p.source == Source::Input {
-                // keys, hold and the sequencer gate an external sound as they gate the oscillator
-                // (it has no pitch to play); it closes fast, so a rhythm reads at sixteenths
-                let g = if gate { level } else { 0.0 };
-                self.osc_env += (g - self.osc_env) * if gate { att } else { rel_in };
-                input[i] as f64 * self.osc_env
-            } else {
-                let g = if gate { level } else { 0.0 };
-                self.osc_env += (g - self.osc_env) * if gate { att } else { rel };
-                self.osc.next(p.source, self.osc_hz / fs) * self.osc_env * 0.5
-            };
+            // keys, hold and the sequencer gate an external sound as they gate the oscillator (it
+            // has no pitch to play); it closes fast, so a rhythm reads at sixteenths
+            let input_src = p.source == Source::Input;
+            let raw = if input_src { input[i] as f64 } else { self.osc.next(p.source, self.osc_hz / fs) * 0.5 };
+            // the ungated source, for a snapshot of its waveform
+            self.snap_ring[self.snap_w] = raw as f32;
+            self.snap_w = (self.snap_w + 1) & (SNAP_RING - 1);
+            let g = if gate { level } else { 0.0 };
+            self.osc_env += (g - self.osc_env) * if gate { att } else if input_src { rel_in } else { rel };
+            let x = raw * self.osc_env;
             // the resonator: the dry source crossfades into the comb, whose loop gain rises with
             // the amount
             let x = if p.reson > 0.0 {
@@ -1292,6 +1329,24 @@ mod tests {
         assert!(jump(&moving) < 1.5 * jump(&still), "jump moving {} still {}", jump(&moving), jump(&still));
     }
 
+    #[test]
+    fn a_snapshot_is_one_period_of_the_source() {
+        // a saw at 110 Hz: one period comes back as a ramp (low → high, then the drop at the end)
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { source: Source::Saw, note: 45.0, ..Params::default() });
+        run(&mut s, 128, 9600);
+        let mut snap = [0.0; HORN_POINTS];
+        assert!(s.snapshot(&mut snap));
+        let rising = snap.windows(2).filter(|w| w[1] > w[0]).count();
+        assert!(rising >= HORN_POINTS - 3, "a ramp: {snap:?}");
+        assert!(snap.iter().all(|v| v.abs() <= 1.0 + 1e-9) && snap.iter().any(|v| v.abs() > 0.99));
+        // silence: nothing to take
+        let mut q = Suu::new(48000.0);
+        q.set_params(Params { source: Source::Input, ..Params::default() });
+        run(&mut q, 128, 4800);
+        assert!(!q.snapshot(&mut snap));
+    }
+
     /// Normalised autocorrelation of `x` at `lag`.
     fn autocorr(x: &[f32], lag: usize) -> f64 {
         let (mut num, mut den) = (0.0, 0.0);
@@ -1330,6 +1385,37 @@ mod tests {
         assert!(peak(&on) < 1.0 && peak(&on) > 0.01, "peak {}", peak(&on));
         let rms = |x: &[f32]| (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
         println!("rms off {:.4} on {:.4}, autocorr off {a_off:.2} on {a_on:.2}", rms(&off), rms(&on));
+    }
+
+    /// Samples until the tongue body is within 5 % of a jump from the vowel i to ɑ, and the
+    /// largest sample step in the output meanwhile.
+    fn vowel_settle(glide_s: f64) -> (usize, f32) {
+        let mut s = Suu::new(48000.0);
+        let p = Params { gate: true, glide_s, vowel_x: 0.0, vowel_y: 0.0, ..Params::default() };
+        s.set_params(p);
+        run(&mut s, 128, 9600);
+        let from = s.voice.artic.x.tb_y;
+        s.set_params(Params { vowel_x: 1.0, vowel_y: 1.0, ..p });
+        let to = s.voice.artic.target.tb_y;
+        let (mut n, mut jump, mut last) = (0, 0f32, 0f32);
+        while (s.voice.artic.x.tb_y - to).abs() > 0.05 * (to - from).abs() && n < 48000 {
+            for v in run(&mut s, 32, 32) {
+                jump = jump.max((v - last).abs());
+                last = v;
+            }
+            n += 32;
+        }
+        (n, jump)
+    }
+
+    #[test]
+    fn glide_at_zero_moves_the_vowel_fast_and_without_a_click() {
+        let (fast, j_fast) = vowel_settle(0.0);
+        let (normal, j_normal) = vowel_settle(0.03);
+        let (slow, _) = vowel_settle(0.12);
+        println!("vowel settles: glide 0 {fast}, 30 ms {normal}, 120 ms {slow} samples; jumps {j_fast} {j_normal}");
+        assert!(fast * 3 < normal && normal * 3 < slow, "{fast} {normal} {slow}");
+        assert!(j_fast < 1.5 * j_normal, "jump fast {j_fast} normal {j_normal}");
     }
 
     /// Samples until the oscillator's pitch reaches `to` after a jump there.
