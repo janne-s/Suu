@@ -999,7 +999,7 @@ function sendSeq() {
   renderSteps();
 }
 dragValue($("seqgate"), () => seqGate, (v) => {
-  seqGate = Math.round(clamp(v, 0.1, 2) * 100) / 100;
+  seqGate = Math.round(clamp(v, 0, 2) * 100) / 100;
   sendSeq();
 }, 1 / 200);
 $("seqgate").ondblclick = () => {
@@ -1043,7 +1043,8 @@ for (let i = 0; i < 16; i++) {
     const set = (ev) => {
       const r = lenEl.getBoundingClientRect();
       // the bar shows the length after the global gate, so the cursor sets that
-      const at = clamp((ev.clientX - r.left) / r.width, 0, 1) / seqGate;
+      // (at a gate of 0 the bar is empty: the cursor then sets the step's own length)
+      const at = clamp((ev.clientX - r.left) / r.width, 0, 1) / (seqGate > 0 ? seqGate : 1);
       steps[i].len = clamp(Math.round(at * 20) / 20, 0.05, 1);
       sendStep(i);
       renderSteps();
@@ -1155,10 +1156,13 @@ document.querySelectorAll("[data-tmode]").forEach((b) => {
   };
 });
 // the loop's own rate: free (syllables per second) or a note value per syllable
-const loop = { rate: 2, sync: "1/4" };
+const loop = { rate: 2, sync: "1/4", seq: true };
 function sendTextRate(final = true) {
   send(22, loop.rate);
   send(23, loop.sync ? divBeats(loop.sync) : 0);
+  send(28, loop.seq ? 1 : 0);
+  $("loopseq").textContent = loop.seq ? "SEQ" : "FREE";
+  $("loopseq").setAttribute("aria-pressed", String(loop.seq));
   $("loophz").textContent = loop.rate.toFixed(loop.rate < 10 ? 1 : 0) + "/s";
   $("loophz").hidden = !!loop.sync;
   $("loopdiv").hidden = !loop.sync;
@@ -1172,6 +1176,10 @@ dragValue($("loophz"), () => Math.log(loop.rate), (lv, final) => {
   loop.rate = clamp(Math.exp(lv), 0.25, 16);
   sendTextRate(final);
 }, 1 / 60);
+$("loopseq").onclick = () => {
+  loop.seq = !loop.seq;
+  sendTextRate(false);
+};
 $("loopsync").onclick = () => {
   loop.sync = loop.sync ? null : "1/4";
   sendTextRate();
@@ -1227,7 +1235,7 @@ function getState() {
     knobs,
     motion,
     seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
-    text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync },
+    text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync, seq: loop.seq },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
     hornWave: { ...hornWave, snap: snapVals.slice() },
@@ -1278,7 +1286,7 @@ function readState(raw) {
   out.seq = {
     rate: [1, 2, 4, 8].includes(seq.rate) ? seq.rate : d.seq.rate,
     length: Math.round(num(seq.length, d.seq.length, 1, 16)),
-    gate: num(seq.gate, d.seq.gate, 0.1, 2),
+    gate: num(seq.gate, d.seq.gate, 0, 2),
     steps: d.seq.steps.map((ds, i) => {
       const s = obj(seq.steps?.[i], `step ${i + 1}`);
       return { on: bool(s.on, ds.on), note: Math.round(num(s.note, ds.note, -24, 24)), tie: bool(s.tie, ds.tie), vowel: Math.round(num(s.vowel, ds.vowel, -1, 4)), accent: bool(s.accent, ds.accent), len: num(s.len, ds.len, 0.05, 1) };
@@ -1293,7 +1301,7 @@ function readState(raw) {
   const snap = Array.isArray(hw.snap) && hw.snap.length === HORN_POINTS ? hw.snap.map((v) => num(v, 0, -1, 1)) : [];
   const shape = Math.round(num(hw.shape, d.hornWave.shape, -1, 5));
   out.hornWave = { shape: shape === 5 && !snap.length ? -1 : shape, cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)), depth: num(hw.depth, d.hornWave.depth, 0, 1), snap };
-  out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync) };
+  out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync), seq: bool(text.seq, d.text.seq) };
   return out;
 }
 
@@ -1337,7 +1345,7 @@ function applyState(st) {
   sendHorn();
   $("text").value = st.text.words;
   setTextMode(st.text.mode);
-  Object.assign(loop, { rate: st.text.rate, sync: st.text.sync });
+  Object.assign(loop, { rate: st.text.rate, sync: st.text.sync, seq: st.text.seq });
   sendTextRate(false);
   if (textOn) sing($("text").value);
 }

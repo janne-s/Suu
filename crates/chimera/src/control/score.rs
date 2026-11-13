@@ -332,9 +332,19 @@ impl GestureScore {
     /// in turns round and ramps out from its present activation (no later rise); one at full
     /// strength starts its ramp-out now. Those already ending are left alone.
     pub fn release(&mut self, tag: f64, t: f64) {
-        self.gestures.retain(|g| g.tag != Some(tag) || t > g.t0 - g.ramp_in);
+        self.release_where(t, |g| g.tag == Some(tag));
+    }
+
+    /// As `release`, for every gesture: at time t (now or later) the score ends, as if each
+    /// gesture's key were released then.
+    pub fn release_all(&mut self, t: f64) {
+        self.release_where(t, |_| true);
+    }
+
+    fn release_where(&mut self, t: f64, hit: impl Fn(&Gesture) -> bool) {
+        self.gestures.retain(|g| !hit(g) || t > g.t0 - g.ramp_in);
         for g in self.gestures.iter_mut() {
-            if g.tag != Some(tag) || g.t1 <= t {
+            if !hit(g) || g.t1 <= t {
                 continue;
             }
             if t < g.t0 {

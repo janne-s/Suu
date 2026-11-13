@@ -315,6 +315,12 @@ impl HumanVoice {
         self.score.release(tag, self.clock);
     }
 
+    /// End every gesture at time `t` on the voice clock (now or later): those not yet begun are
+    /// dropped, the rest ramp out from there.
+    pub fn release_all(&mut self, t: f64) {
+        self.score.release_all(t);
+    }
+
     /// Cancel scheduled gestures (speech stops; the voice returns to the performer's posture).
     pub fn cancel_score(&mut self) {
         self.score.clear();

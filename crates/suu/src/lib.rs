@@ -143,6 +143,9 @@ pub struct Params {
     /// the text loop's syllable rate, Hz; `text_sync` > 0 makes a syllable that many beats instead
     pub text_rate_hz: f64,
     pub text_sync: f64,
+    /// the text loop starts over with the sequence (each time it returns to its first step);
+    /// off, it runs free
+    pub text_seq: bool,
     /// 0..1 the resonator: a comb tuned to the sounding note (and its glide) that gives any sound
     /// the played pitch; more rings longer and replaces more of the dry source. 0 = off.
     pub reson: f64,
@@ -179,6 +182,7 @@ impl Default for Params {
             glide_sync: 0.0,
             text_rate_hz: 2.0,
             text_sync: 1.0,
+            text_seq: true,
             reson: 0.0,
             morph: 0.0,
             shift: 0.0,
@@ -223,8 +227,10 @@ struct Seq {
     len: usize,
     /// steps per beat (4 = sixteenths)
     div: f64,
-    /// × every step's length (a global gate that keeps the steps' proportions)
+    /// × every step's length (a global gate that keeps the steps' proportions; 0 = silent)
     gate_scale: f64,
+    /// passes through the pattern since it started playing
+    cycles: u64,
     playing: bool,
     /// samples into the current step
     t: f64,
@@ -259,6 +265,7 @@ impl Seq {
             len: 16,
             div: 4.0,
             gate_scale: 1.0,
+            cycles: 0,
             playing: false,
             t: 0.0,
             step: 0,
@@ -441,6 +448,12 @@ pub struct Suu {
     /// at the tempo and loop rate then (a change of either needs `set_text` again)
     loop_plan: Vec<Gesture>,
     loop_len: f64,
+    /// how far the loop's pass reaches before its start (its first onset consonants), s
+    loop_lead: f64,
+    /// the pattern pass (`Seq::cycles`) the text loop's restart is scheduled for
+    restart_for: Option<u64>,
+    /// the voice-clock time of the last restart scheduled (for tests)
+    last_restart: f64,
     cursor: usize,
     /// the open syllable (index, tag) in gate mode
     open_syl: Option<(usize, f64)>,
@@ -506,6 +519,9 @@ impl Suu {
             words: Vec::new(),
             loop_plan: Vec::new(),
             loop_len: 0.0,
+            loop_lead: 0.0,
+            restart_for: None,
+            last_restart: 0.0,
             cursor: 0,
             open_syl: None,
             next_tag: 1000.0,
@@ -532,7 +548,25 @@ impl Suu {
         s.voice.airway.profile = default_horn();
         s.configure_voice();
         s.refresh_mouth();
+        s.warm_up(&mut |v: &mut HumanVoice, inp, out| v.render_driven(inp, 100.0, out));
         s
+    }
+
+    /// Let a new airway settle in silence (250 ms, rendered and dropped) at the resting breath:
+    /// the lungs filling from zero blew a −44 dBFS blip through it in its first 50 ms, heard
+    /// when an instance is created. Runs the voice alone, so Suu's own clock and timing are untouched.
+    fn warm_up(&mut self, render: &mut dyn FnMut(&mut HumanVoice, &[f32], &mut [f32])) {
+        // at the breath's resting pressure, as the first control period will set it (a jump
+        // there from zero was the blip)
+        let p = self.p;
+        self.voice.set_source(&SourcePatch { pressure: Some(9.0 * p.breath * (1.0 - p.follow)), ..Default::default() });
+        let zeros = [0f32; MAX_BLOCK];
+        let mut left = (0.25 * self.fs) as usize;
+        while left > 0 {
+            let n = left.min(MAX_BLOCK);
+            render(&mut self.voice, &zeros[..n], &mut self.wet[..n]);
+            left -= n;
+        }
     }
 
     pub fn params(&self) -> Params {
@@ -801,12 +835,12 @@ impl Suu {
         self.seq.steps[i.min(STEPS - 1)]
     }
 
-    /// pattern length, steps per beat, and the global gate (× every step's length, 0.1..2)
+    /// pattern length, steps per beat, and the global gate (× every step's length, 0..2)
     pub fn set_seq(&mut self, len: usize, div: f64, gate_scale: f64) {
         let s = &mut self.seq;
         s.len = len.clamp(1, STEPS);
         s.div = clamp(div, 0.25, 8.0);
-        s.gate_scale = clamp(gate_scale, 0.1, 2.0);
+        s.gate_scale = clamp(gate_scale, 0.0, 2.0);
     }
 
     pub fn set_playing(&mut self, on: bool) {
@@ -816,7 +850,14 @@ impl Suu {
         self.seq.playing = on;
         self.seq.t = 0.0;
         self.seq.step = 0;
+        self.seq.cycles = 0;
         if on {
+            // a text loop that follows the sequence starts over with it (its first vowel now)
+            if self.loop_follows_seq() {
+                self.voice.release_all(self.voice.clock);
+                self.next_loop = self.voice.clock;
+                self.restart_for = Some(0);
+            }
             self.trigger();
         } else {
             self.seq.gate_open = false;
@@ -846,7 +887,8 @@ impl Suu {
     /// Start the current step.
     fn trigger(&mut self) {
         let st = self.seq.steps[self.seq.step];
-        if st.on {
+        // a gate of 0 opens nothing (not even for a control period)
+        if st.on && self.gate_len() > 0.0 {
             self.seq.note = self.p.note + st.note as f64;
             // a tied step continues the previous note; any other starts a new one
             let prev = self.seq.steps[(self.seq.step + self.seq.len - 1) % self.seq.len];
@@ -863,7 +905,7 @@ impl Suu {
 
     /// The current step's gate length (fraction of a step), scaled by the global gate.
     fn gate_len(&self) -> f64 {
-        clamp(self.seq.steps[self.seq.step].len * self.seq.gate_scale, 0.02, 1.0)
+        clamp(self.seq.steps[self.seq.step].len * self.seq.gate_scale, 0.0, 1.0)
     }
 
     fn advance_seq(&mut self) {
@@ -872,6 +914,9 @@ impl Suu {
         if self.seq.t >= len {
             self.seq.t -= len;
             self.seq.step = (self.seq.step + 1) % self.seq.len;
+            if self.seq.step == 0 {
+                self.seq.cycles += 1;
+            }
             self.trigger();
         } else if self.seq.gate_open && self.seq.t >= self.gate_len() * len {
             // a tie holds the gate into the next step
@@ -930,6 +975,8 @@ impl Suu {
         let notes: Vec<SungNote> = self.text.iter().map(|s| SungNote { midi: 57.0, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
         self.loop_plan = unpitched(plan_song(&notes, &SongOptions { body, bpm: self.p.bpm, t0: 0.0, vibrato: 0.0 }).gestures);
         self.loop_len = notes.len() as f64 * beats * 60.0 / self.p.bpm;
+        self.loop_lead = self.loop_plan.iter().fold(0.0, |m: f64, g| m.max(g.ramp_in - g.t0));
+        self.restart_for = None;
         // the copy buffer holds the largest plan, so scheduling never grows it
         let most = self.syl_on.iter().chain(&self.syl_off).chain(&self.words).map(Vec::len).chain([self.loop_plan.len()]).max().unwrap_or(0);
         self.scratch.reserve(most.saturating_sub(self.scratch.len()));
@@ -992,6 +1039,10 @@ impl Suu {
             }
             TextMode::Loop => {}
         }
+    }
+
+    fn loop_follows_seq(&self) -> bool {
+        self.p.text_seq && !self.text.is_empty() && self.text_mode == TextMode::Loop
     }
 
     /// The text loop's beats per syllable: synced, or from its free rate; never under 60 ms.
@@ -1097,6 +1148,20 @@ impl Suu {
         if (pressure - self.voice.source.pressure).abs() > 1e-6 || (p.folds > 0.0 && f0 != self.folds_f0) {
             self.voice.set_source(&SourcePatch { pressure: Some(pressure), f0: Some(f0), ..Default::default() });
             self.folds_f0 = f0;
+        }
+        // following the sequence: start the text over where the pattern next returns to its
+        // first step, scheduled ahead by the pass's lead so its first consonants land before it
+        if self.loop_follows_seq() && self.seq.playing {
+            let to_wrap = ((self.seq.len - self.seq.step) as f64 * self.step_samples() - self.seq.t) / self.fs;
+            let next = self.seq.cycles + 1;
+            if to_wrap <= self.loop_lead + 0.05 && self.restart_for != Some(next) {
+                let at = self.voice.clock + to_wrap;
+                self.voice.release_all(at);
+                self.next_loop = at;
+                self.schedule_loop();
+                self.restart_for = Some(next);
+                self.last_restart = at;
+            }
         }
         if !self.text.is_empty() && self.text_mode == TextMode::Loop && self.voice.clock + 0.5 >= self.next_loop {
             self.schedule_loop();
@@ -1481,6 +1546,48 @@ mod tests {
         assert!(rms > 0.005, "a note wakes it: rms {rms}");
         // still the same at any block size
         assert_eq!(a, run_gated(37).0);
+    }
+
+    #[test]
+    fn a_gate_of_zero_is_silent() {
+        // the same as no note at all, and that is quiet from the first sample (warmed up)
+        let mut s = Suu::new(48000.0);
+        s.set_seq(16, 4.0, 0.0);
+        s.set_playing(true);
+        let gated = run(&mut s, 128, 48000);
+        let none = run(&mut Suu::new(48000.0), 128, 48000);
+        assert_eq!(gated, none);
+        assert!(peak(&none) < 1e-4, "a new instance is silent: peak {}", peak(&none));
+    }
+
+    #[test]
+    fn the_text_loop_starts_over_with_the_sequence() {
+        let dict = "WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n";
+        // 3 syllables at 1/8 (0.25 s at 120 bpm) against a 5-step pattern of sixteenths
+        // (0.625 s): free, the text drifts against the pattern; following it, each pattern pass
+        // restarts the text exactly one pattern apart
+        let restarts = |follow: bool| {
+            let mut s = Suu::new(48000.0);
+            s.load_dict(dict);
+            s.set_params(Params { bpm: 120.0, text_sync: 0.5, text_seq: follow, ..Params::default() });
+            s.set_text("wow yeah now", TextMode::Loop);
+            s.set_seq(5, 4.0, 1.0);
+            s.set_playing(true);
+            let mut times = Vec::new();
+            for _ in 0..(48000 * 4 / 32) {
+                run(&mut s, 32, 32);
+                if times.last() != Some(&s.last_restart) && s.last_restart > 0.0 {
+                    times.push(s.last_restart);
+                }
+            }
+            times
+        };
+        let t = restarts(true);
+        assert!(t.len() >= 5, "{t:?}");
+        for w in t.windows(2) {
+            assert!((w[1] - w[0] - 0.625).abs() < 2e-3, "pattern apart: {t:?}");
+        }
+        assert!(restarts(false).is_empty());
     }
 
     #[test]

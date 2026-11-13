@@ -17,7 +17,7 @@ pub struct Handle {
 /// 5 breath, 6 follow, 7 vowel_x, 8 vowel_y, 9 round, 10 nasal, 11 inject, 12 damping, 13 folds,
 /// 14 sub_hz, 15 sub_level, 16 mix, 17 out_db, 18 size (rebuilds the airway), 19 bpm,
 /// 20 glide_s, 21 glide_sync (beats, 0 = free), 22 text_rate_hz, 23 text_sync (beats, 0 = free),
-/// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn)
+/// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn), 28 text_seq (0/1)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Input, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -47,6 +47,7 @@ fn set(p: &mut Params, id: u32, v: f64) {
         25 => p.morph = v,
         26 => p.shift = v,
         27 => p.open = v,
+        28 => p.text_seq = v > 0.5,
         _ => {}
     }
 }

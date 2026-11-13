@@ -26,7 +26,8 @@ purpose.
   one period of the sound with the camera; ↺ restores the original. **Morph** blends the horn in, **Shift** slides it
   along the tract (a wave wraps, so it can travel through), **Open** widens it.
 - **Text** — Type words. **Gate** sings a syllable per note, **One-shot** a
-  word per note, **Loop** syllables at its own rate or ♪.
+  word per note, **Loop** syllables at its own rate or ♪, starting over with the
+  sequence (**Seq**) or running free (**Free**).
 - **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
   Open, each with Depth, Rate or ♪, and a shape (sine, triangle, saw, square,
   random, envelope).
@@ -73,7 +74,7 @@ bun tools/suu-e2e.ts   # headless Chrome, with bun run suu running
 
 ## Limits
 
-English text only. Mono. Tested in Chrome. No plug-in yet.
+English text only. Mono. Tested in Chrome and Safari. No plug-in yet.
 
 ## Credits
 
