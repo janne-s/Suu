@@ -714,7 +714,7 @@ function renderSteps() {
 for (let i = 0; i < 16; i++) {
   const el = document.createElement("div");
   el.className = "step";
-  el.innerHTML = `<div class="note"><span></span><i class="acc" title="Accent">◆</i><div class="len" title="Length"><b></b></div></div><div class="vowel"></div>`;
+  el.innerHTML = `<div class="note"><span></span><i class="acc" title="Accent">◆</i><div class="len" title="Length"><b></b></div></div><div class="vowel"></div><i class="led"></i>`;
   $("steps").append(el);
   const noteEl = el.querySelector(".note"), vowelEl = el.querySelector(".vowel");
   cells.push({ el, note: noteEl, label: noteEl.querySelector("span"), vowel: vowelEl });
