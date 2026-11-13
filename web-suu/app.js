@@ -56,6 +56,26 @@ const KNOBS = {
     ["out", "OUTPUT", -40, 20, 0, (v) => v.toFixed(1) + " dB", null, 17],
   ],
 };
+// what each knob does, for its tooltip
+const KNOB_TIPS = {
+  size: "Size\nThe mouth's size: small is bright and high, large dark and low.",
+  folds: "Folds\nThe model's own vocal folds, at the played note, mixed in.",
+  breath: "Breath\nLung pressure: the air in the consonants and the folds.",
+  follow: "Follow\nHow far the breath follows the sound's level (0: steady air).",
+  reson: "Reson\nA resonator tuned to the played note: gives a file or mic pitch. 0: off.",
+  glide: "Glide\nHow long pitch and vowel changes take. 0: at once.",
+  drive: "Drive\nLevel into the mouth.",
+  tilt: "Tilt\nDarkens the source before the mouth, as a voice's own slope does. 0: off.",
+  sub: "Sub\nThe dry source's low end, added back (a mouth radiates little bass).",
+  subhz: "Sub Hz\nWhere the sub's low-pass sits.",
+  delayTime: "Time\nDelay time.",
+  delayFb: "Feedback\nDelay repeats.",
+  delayMix: "Delay\nDelay level.",
+  revMix: "Reverb\nReverb level.",
+  revSize: "Length\nReverb length.",
+  mix: "Mix\nThe dry source … the mouth.",
+  out: "Output\nOutput level.",
+};
 // time knobs that can lock to the tempo: the division they start from, and the engine id that
 // takes the synced length in beats (none: the page converts it to seconds itself)
 const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 } };
@@ -82,7 +102,7 @@ function update(key, v, final = true) {
   c.input.style.setProperty("--turn", `${270 * n}deg`);
   c.output.textContent = c.fmt(c.sync ? eff(key) : v);
   c.cell.classList.toggle("beyond", !!c.anat && (v < c.anat[0] - 1e-9 || v > c.anat[1] + 1e-9));
-  if (c.anat) c.cell.title = `${c.label}: the anatomy spans ${c.fmt(c.anat[0])} … ${c.fmt(c.anat[1])}; beyond is allowed`;
+  c.cell.dataset.tip = (KNOB_TIPS[key] ?? c.label) + (c.anat ? ` The anatomy spans ${c.fmt(c.anat[0])} … ${c.fmt(c.anat[1])}; beyond is allowed.` : "");
   if (c.target === "space") setSpace();
   else if (c.target === 18) {
     // a new mouth crossfades in; while dragging, build at most one every 80 ms
@@ -129,7 +149,7 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
   input.ondblclick = () => update(key, def);
   input.addEventListener("change", () => update(key, state[key], true));
   dragValue(input, () => toNorm(c, state[key]), (n, final) => update(key, fromNorm(c, clamp(n, 0, 1)), final));
-  output.title = "Click to type a value";
+  output.dataset.tip = "Value\nClick to type one.";
   output.onclick = () => {
     const raw = prompt(`${label} (${min} … ${max})`, String(+state[key].toFixed(3)));
     if (raw !== null && Number.isFinite(+raw)) update(key, +raw);
@@ -138,7 +158,7 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
     const btn = document.createElement("button");
     btn.className = "sync";
     btn.textContent = "♪";
-    btn.title = "Sync to tempo";
+    btn.dataset.tip = "Sync\nA note value at the tempo instead of a time.";
     btn.setAttribute("aria-pressed", "false");
     const box = document.createElement("select");
     box.className = "field syncbox";
@@ -185,8 +205,9 @@ function setGlideDir(d) {
   send(35, d);
   const b = $("glidedir");
   b.textContent = ["↕", "↑", "↓"][d];
-  b.title = ["Glide both ways", "Glide up only (down jumps)", "Glide down only (up jumps)"][d];
-  b.setAttribute("aria-label", b.title);
+  const said = ["Glide both ways", "Glide up only (down jumps)", "Glide down only (up jumps)"][d];
+  b.dataset.tip = `Direction\n${said}. Click to change.`;
+  b.setAttribute("aria-label", said);
   b.setAttribute("aria-pressed", String(d !== 0));
 }
 for (const [parent, list] of Object.entries(KNOBS)) for (const k of list) knob(parent, k);
@@ -207,6 +228,17 @@ const MOTION = [
   [8, "OPEN", 27, 0.25, 4, 1, times, true],
 ];
 const SHAPES = ["SIN", "TRI", "SAW", "SQR", "RND", "ENV"];
+const MOTION_TIPS = [
+  "Vowel X\nThe vowel from front to back (i … u).",
+  "Vowel Y\nThe vowel from close to open (i … a).",
+  "Round\nThe lips from spread to rounded and pushed out.",
+  "Nasal\nOpens the way into the nose: a nasal tone.",
+  "Inject\nWhere the sound enters: the throat filters fully, near the lips less.",
+  "Damping\nThe resonances: low rings, high muffles.",
+  "Morph\nFrom the mouth (the pad's vowel) to the drawn horn.",
+  "Shift\nSlides the horn's shape along the tract (a wave wraps round).",
+  "Open\nWidens or narrows the whole horn.",
+];
 const rows = [];
 const baseNorm = (r, v) => (r.log ? Math.log(v / r.lo) / Math.log(r.hi / r.lo) : (v - r.lo) / (r.hi - r.lo));
 const baseFrom = (r, n) => (r.log ? r.lo * Math.pow(r.hi / r.lo, n) : r.lo + n * (r.hi - r.lo));
@@ -239,10 +271,16 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
   el.innerHTML = `<span class="name">${label}</span>
     <span class="base"><input type="range" min="0" max="1" step="0.001" aria-label="${label} base"><i></i><output></output></span>
     <span class="field drag depth" tabindex="0" aria-label="${label} depth"></span>
-    <span class="rate"><span class="field drag val" tabindex="0" aria-label="${label} rate"></span><select class="field" hidden aria-label="${label} rate as a note value">${DIVS.map(([n]) => `<option>${n}</option>`).join("")}</select><button title="Sync to tempo">♪</button></span>
+    <span class="rate"><span class="field drag val" tabindex="0" aria-label="${label} rate"></span><select class="field" hidden aria-label="${label} rate as a note value">${DIVS.map(([n]) => `<option>${n}</option>`).join("")}</select><button data-tip="Sync\nThe rate as a note value at the tempo.">♪</button></span>
     <select class="field shape" aria-label="${label} shape">${SHAPES.map((s, i) => `<option value="${i}">${s}</option>`).join("")}</select>
-    <span class="field drag smooth" tabindex="0" aria-label="${label} smooth" title="Random, square and saw: 0 sharp … 100% smooth; double-click resets"></span>`;
+    <span class="field drag smooth" tabindex="0" aria-label="${label} smooth" data-tip="Smooth\nRandom, square and saw: from sharp jumps (0) to glides (100%). Double-click: 0."></span>`;
   $("motion").append(el);
+  el.querySelector(".name").dataset.tip = MOTION_TIPS[t];
+  el.querySelector(".base").dataset.tip = "Base\nWhere it rests; Motion moves around it. Double-click: default.";
+  el.querySelector(".depth").dataset.tip = "Depth\nHow far it swings, either way. Drag; double-click: 0.";
+  el.querySelector(".rate .val").dataset.tip = "Rate\nCycles per second. Drag.";
+  el.querySelector(".rate select").dataset.tip = "Rate\nOne cycle per this note value.";
+  el.querySelector("select.shape").dataset.tip = "Shape\nSine, triangle, saw, square, random, or the sound's envelope.";
   const r = {
     t, param, lo, hi, fmt, log, el, def, base: def, depth: 0, rate: 0.5, sync: null, shape: 0, smooth: 0,
     smoothBox: el.querySelector(".smooth"),
@@ -1106,7 +1144,7 @@ function renderSteps() {
 for (let i = 0; i < 16; i++) {
   const el = document.createElement("div");
   el.className = "step";
-  el.innerHTML = `<div class="note"><span></span><i class="acc" title="Accent">◆</i><div class="len" title="Length"><b></b></div></div><div class="vowel"></div><i class="led"></i>`;
+  el.innerHTML = `<div class="note"><span></span><i class="acc" data-tip="Accent\nLouder, with more air.">◆</i><div class="len" data-tip="Length\nHow long the step sounds. Drag across."><b></b></div></div><div class="vowel"></div><i class="led"></i>`;
   $("steps").append(el);
   const noteEl = el.querySelector(".note"), vowelEl = el.querySelector(".vowel");
   cells.push({ el, note: noteEl, label: noteEl.querySelector("span"), vowel: vowelEl });
@@ -1516,7 +1554,7 @@ function showSlots() {
   for (const k of ["A", "B"]) $("slot" + k).setAttribute("aria-pressed", String(slots.active === k));
   const other = slots.active === "A" ? "B" : "A";
   $("copyab").textContent = `${slots.active}→${other}`;
-  $("copyab").title = `Copy ${slots.active} to ${other}`;
+  $("copyab").dataset.tip = `Copy ${slots.active} → ${other}\nThis side's settings onto the other.`;
 }
 function load(st, what) {
   try {
@@ -1610,3 +1648,121 @@ $("presetfile").onchange = (e) => {
     }
   } catch {}
 })();
+
+// ---------------------------------------------------------------- tooltips
+// Every control says what it does, briefly, after a moment's hover; the ? in the bar turns them
+// off or on (remembered in this browser). Native titles can't be turned off, so they become tips.
+const TIPS = {
+  '[data-src="2"]': "Supersaw\nFive detuned saws: the built-in synth, played by keys and steps.",
+  '[data-src="1"]': "Saw\nOne saw: bright, every harmonic.",
+  '[data-src="3"]': "Square\nOdd harmonics only: hollow.",
+  '[data-src="file"]': "File\nAn audio file through the mouth, looped. Keys and steps gate it; Reson gives it pitch. Drop one anywhere.",
+  '[data-src="mic"]': "Mic\nThe microphone through the mouth. Use headphones.",
+  "#hold": "Hold\nKeeps the note on: a drone, or a file or mic passing through. Keys then say the text's next part.",
+  "#octdown": "Octave down (Z)",
+  "#octup": "Octave up (X)",
+  "#notename": "Note\nThe root: the synth's pitch and the sequence's key. Keys A … K play.",
+  "#slotA": "A\nOne of two full settings to compare; switching keeps the other.",
+  "#slotB": "B\nOne of two full settings to compare; switching keeps the other.",
+  "#init": "Init\nThis side back to the initial settings.",
+  "#savefile": "Save\nThe settings as a preset file.",
+  "#openfile": "Open\nA preset file (or drop one anywhere).",
+  "#bpm": "Tempo\nFor the sequencer, the text clock and every ♪.",
+  "#info-toggle": "Keys and credits",
+  "#help-toggle": "Help\nTooltips on or off.",
+  "#view-pad": "Pad\nThe mouth from the front: drag it to set the vowel.",
+  "#view-horn": "Horn\nThe tract from the side: draw your own shape (Morph blends it in).",
+  "#text-toggle": "Text\nWords for the mouth to say.",
+  "#horn-reset": "Reset\nThe original horn.",
+  "#horn-shape": "Wave\nBuild the horn from a wave (—: drawn by hand). Shift moves a wave through the tract.",
+  "#horn-snap": "Snapshot\nOne period of the sound playing now becomes the horn.",
+  "#horn-cycles": "Cycles\nHow many times the shape repeats along the tract.",
+  "#horn-depth": "Depth\nHow strongly the shape swells and narrows: 0 is a plain tube.",
+  "#text": "Words\nEnglish. Typing while it sings applies it; Enter sings.",
+  "#singtext": "Sing\nStart or stop saying the text.",
+  '[data-tstep="0"]': "Note\nEach note (a key, hold or step) says the next part.",
+  '[data-tstep="1"]': "Clock\nThe text's own clock says it at its rate. It doesn't gate the sound.",
+  "#loophz": "Rate\nParts per second. Drag.",
+  "#loopdiv": "Rate\nOne part per this note value.",
+  "#loopsync": "Sync\nThe rate as a note value at the tempo.",
+  '[data-tunit="0"]': "Syllable\nOne syllable at a time.",
+  '[data-tunit="1"]': "Word\nOne word at a time.",
+  '[data-tsay="0"]': "Hold\nIts vowel holds while the note does, then its ending.",
+  '[data-tsay="1"]': "Shot\nSaid through at its own pace, however long the note.",
+  "#lenbox": "Length\nOn the clock, how long each held part lasts; 100% joins them. Double-click: 100%.",
+  '[data-tseq="0"]': "Free\nCarries on where it was.",
+  '[data-tseq="1"]': "Seq\nStarts over each time the sequence does.",
+  '[data-tonce="0"]': "Loop\nOver and over.",
+  '[data-tonce="1"]': "Once\nOnce per pass of the sequence (or once per Sing).",
+  "#speech": "Speed\nHow fast it's spoken: the consonants and moves between sounds. Double-click: ×1.",
+  "#motion-reset": "Reset\nEvery depth back to 0.",
+  "#play": "Play (Space)\nStart or stop the sequencer.",
+  "#rate": "Rate\nThe steps' note value.",
+  "#seqlen": "Steps\nHow many steps the pattern has.",
+  "#seqgate": "Gate\nScales every step's length alike; 0 is silent. Double-click: 100%.",
+  "#spaceon": "Space\nWeb only: delay and reverb. Off is what the plug-in does.",
+  "#peak": "Peak\nThe output's peak; red is clipping.",
+};
+for (const [sel, t] of Object.entries(TIPS)) document.querySelectorAll(sel).forEach((el) => (el.dataset.tip = t));
+cells.forEach((c) => {
+  c.note.dataset.tip = "Step\nDrag up or down: its note. Click: on or off. Shift-click: tie to the next. Double-click: the root.";
+  c.vowel.dataset.tip = "Vowel\nClick: the vowel this step moves the mouth to (· leaves it).";
+});
+/** The mouth's tip follows the view. */
+function mouthTip() {
+  mouthEl.dataset.tip = view === "horn" ? "Horn\nThe tract, throat to lips, as it sounds now. Drag to draw; double-click: the original." : "Vowel pad\nDrag: front to back, close to open. Past the dashed box goes beyond the vowels.";
+}
+mouthTip();
+for (const id of ["view-pad", "view-horn"]) $(id).addEventListener("click", mouthTip);
+document.querySelectorAll("[title]").forEach((el) => {
+  el.dataset.tip ??= el.title;
+  el.removeAttribute("title");
+});
+
+let tipsOn = true;
+try {
+  tipsOn = localStorage.getItem("suu.tips") !== "off";
+} catch {}
+const tipEl = $("tip");
+let tipTimer = 0, tipFor = null;
+function hideTip() {
+  clearTimeout(tipTimer);
+  tipEl.hidden = true;
+  tipFor = null;
+}
+function showTip(el) {
+  const [name, ...rest] = el.dataset.tip.split("\n");
+  tipEl.replaceChildren();
+  const b = document.createElement("b");
+  b.textContent = name;
+  tipEl.append(b);
+  if (rest.length) tipEl.append(rest.join(" "));
+  tipEl.hidden = false;
+  // below the control, kept inside the window (above it if there is no room)
+  const r = el.getBoundingClientRect(), t = tipEl.getBoundingClientRect();
+  let x = clamp(r.left + r.width / 2 - t.width / 2, 6, innerWidth - t.width - 6);
+  let y = r.bottom + 6;
+  if (y + t.height > innerHeight - 6) y = r.top - t.height - 6;
+  tipEl.style.left = x + "px";
+  tipEl.style.top = Math.max(6, y) + "px";
+}
+addEventListener("pointerover", (e) => {
+  const el = e.target.closest?.("[data-tip]");
+  if (el === tipFor) return;
+  hideTip();
+  if (!tipsOn || !el || e.pointerType === "touch") return;
+  tipFor = el;
+  tipTimer = setTimeout(() => showTip(el), 600);
+});
+addEventListener("pointerdown", hideTip, true);
+addEventListener("keydown", hideTip, true);
+function setTips(on) {
+  tipsOn = on;
+  $("help-toggle").setAttribute("aria-pressed", String(on));
+  try {
+    localStorage.setItem("suu.tips", on ? "on" : "off");
+  } catch {}
+  hideTip();
+}
+$("help-toggle").onclick = () => setTips(!tipsOn);
+setTips(tipsOn);

@@ -239,6 +239,20 @@ await page.click("#view-pad");
   ok("smooth drags and is saved", st.motion.vowelY.smooth > 0.2, String(st.motion.vowelY.smooth));
   ok("Motion reset is an icon", (await page.locator("#motion-reset svg").count()) === 1);
 }
+// tooltips: after a moment's hover; ? turns them off (remembered) and on
+{
+  await page.mouse.move(5, 300);
+  await page.hover("#hold"); await page.waitForTimeout(800);
+  ok("a tooltip names what a control does", (await page.isVisible("#tip")) && (await page.textContent("#tip"))!.startsWith("Hold"), await page.textContent("#tip") ?? "");
+  await page.click("#help-toggle"); await page.mouse.move(5, 300);
+  await page.hover("#hold"); await page.waitForTimeout(800);
+  ok("? turns tooltips off", !(await page.isVisible("#tip")));
+  await page.reload({ waitUntil: "networkidle" });
+  ok("and it is remembered", (await page.getAttribute("#help-toggle", "aria-pressed")) === "false");
+  await page.click("#help-toggle");
+  const bare = await page.evaluate(() => [...document.querySelectorAll("button, select, input, .field.drag, .knob")].filter((el) => (el as HTMLElement).offsetParent && !el.closest("[data-tip]") && !el.closest(".popover")).map((el) => el.id || el.className || el.tagName));
+  ok("every visible control has a tip", bare.length === 0, JSON.stringify(bare));
+}
 // INIT: this side back to the initial settings
 await page.click("#init");
 ok("INIT restores the defaults", (await page.inputValue("#bpm")) === "100" && (await page.textContent("#seqgate")) === "100%");
