@@ -528,7 +528,7 @@ function drawMouth() {
     const thick = 0.75 + 0.5 * round;
     const lit = clamp(env * 4, 0, 1);
     const glow = 8 + 22 * lit;
-    const lips = color("--lips"), hi = color("--lips-hi"), rgb = color("--lips-rgb");
+    const lips = color("--lips"), rgb = color("--lips-rgb");
     const rose = (a) => `rgba(${rgb}, ${a})`;
     const outer = () => lens(c, cx, cy, (width + 1.4) * unit, (open / 2 + thick) * unit, (open / 2 + thick * 1.1) * unit, round);
     const mouth = (more = false) => lens(c, cx, cy, width * unit, (open / 2) * unit, (open / 2) * unit, round, more);
@@ -588,24 +588,28 @@ function drawMouth() {
       c.quadraticCurveTo(cx, cy + 0.12 * unit, cx + (width / 2) * unit, cy);
       c.stroke();
     }
-    // gloss: a light streak on the lower lip and two on the upper lip's bow
-    c.shadowColor = hi;
-    c.shadowBlur = 6 * dpr;
-    c.strokeStyle = hi;
-    c.lineCap = "round";
-    c.globalAlpha = 0.45 + 0.35 * lit;
-    c.lineWidth = 1.6 * dpr;
-    c.beginPath();
-    c.ellipse(cx + 0.1 * width * unit, cy + (open / 2 + thick * 0.62) * unit, width * 0.2 * unit, thick * 0.28 * unit, 0, 1.2 * Math.PI, 1.75 * Math.PI);
-    c.stroke();
-    c.lineWidth = 1.1 * dpr;
-    c.globalAlpha *= 0.7;
-    for (const sx of [-1, 1]) {
+    // sheen: a soft, edgeless light on each lip (no lines), brighter with the sound
+    c.save();
+    c.shadowBlur = 0;
+    outer();
+    if (open > 0.02) mouth(true);
+    c.clip("evenodd");
+    const sheen = (y, rx, ry, a) => {
+      c.save();
+      c.translate(cx, y);
+      c.scale(1, ry / rx);
+      const g = c.createRadialGradient(0, 0, 0, 0, 0, rx);
+      g.addColorStop(0, `rgba(255, 228, 236, ${a})`);
+      g.addColorStop(1, "rgba(255, 228, 236, 0)");
+      c.fillStyle = g;
       c.beginPath();
-      c.ellipse(cx + sx * width * 0.16 * unit, cy - (open / 2 + thick * 0.5) * unit, width * 0.08 * unit, thick * 0.18 * unit, 0, 1.15 * Math.PI, 1.8 * Math.PI);
-      c.stroke();
-    }
-    c.lineCap = "butt";
+      c.arc(0, 0, rx, 0, 2 * Math.PI);
+      c.fill();
+      c.restore();
+    };
+    sheen(cy + (open / 2 + thick * 0.5) * unit, width * 0.32 * unit, thick * 0.45 * unit, 0.13 + 0.07 * lit);
+    sheen(cy - (open / 2 + thick * 0.55) * unit, width * 0.26 * unit, thick * 0.35 * unit, 0.06 + 0.04 * lit);
+    c.restore();
     // nostrils light up as the velum opens
     const nas = clamp((velum + 0.1) / 0.6, 0, 1);
     c.shadowColor = lips;
