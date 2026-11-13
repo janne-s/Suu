@@ -1,8 +1,7 @@
 // Suu's AudioWorklet: one wasm instance, mono in → mono out (copied to both channels).
 // From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes, mode}
-//   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", mode, len, div, gate, order, octaves}
-//   · {type:"play", on} · {type:"noteOn", midi} · {type:"noteOff", midi} · {type:"retrigger"}
-//   · {type:"allOff"} · {type:"latch", on}
+//   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", len, div, gate}
+//   · {type:"play", on} · {type:"retrigger"}
 //   · {type:"mod", target, depth, rate, sync, shape}
 // To the page: ready · dict · text {syllables} · applied {id} · ui {ui} (see Suu::ui_state)
 
@@ -57,28 +56,16 @@ class SuuProcessor extends AudioWorkletProcessor {
         x.suu_set_step(h, m.i, m.on ? 1 : 0, m.note, m.tie ? 1 : 0, m.vowel, m.accent ? 1 : 0, m.len);
         break;
       case "seq":
-        x.suu_set_seq(h, m.mode, m.len, m.div, m.gate, m.order, m.octaves);
+        x.suu_set_seq(h, m.len, m.div, m.gate);
         break;
       case "play":
         x.suu_play(h, m.on ? 1 : 0);
         break;
-      case "noteOn":
-        x.suu_note_on(h, m.midi);
-        break;
-      case "noteOff":
-        x.suu_note_off(h, m.midi);
-        break;
       case "mod":
         x.suu_set_mod(h, m.target, m.depth, m.rate, m.sync, m.shape);
         break;
-      case "latch":
-        x.suu_set_latch(h, m.on ? 1 : 0);
-        break;
       case "retrigger":
         x.suu_retrigger(h);
-        break;
-      case "allOff":
-        x.suu_all_notes_off(h);
         break;
     }
     if (this.x.memory.buffer !== this.mem) this.views();

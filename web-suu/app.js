@@ -32,6 +32,8 @@ const KNOBS = {
     ["follow", "FOLLOW", 0, 1, 0.7, pct, null, 6],
   ],
   "k-drive": [
+    ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
+    ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
     ["drive", "DRIVE", -40, 40, 0, (v) => v.toFixed(1) + " dB", null, 3],
     ["tilt", "TILT", 0, 2000, 150, (v) => (v < 1 ? "off" : v.toFixed(0) + " Hz"), null, 4],
     ["sub", "SUB", 0, 1, 0, pct, null, 15],
@@ -49,13 +51,15 @@ const KNOBS = {
     ["out", "OUTPUT", -40, 20, 0, (v) => v.toFixed(1) + " dB", null, 17],
   ],
 };
-// time knobs that can lock to the tempo, and the division they start from
-const SYNCABLE = { delayTime: "1/8." };
+// time knobs that can lock to the tempo: the division they start from, and the engine id that
+// takes the synced length in beats (none: the page converts it to seconds itself)
+const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 } };
 
 const state = {};
 const controls = new Map();
-const toNorm = (c, v) => (c.curve === "log" ? Math.log(v / c.min) / Math.log(c.max / c.min) : (v - c.min) / (c.max - c.min));
-const fromNorm = (c, n) => (c.curve === "log" ? c.min * Math.pow(c.max / c.min, n) : c.min + n * (c.max - c.min));
+const toNorm = (c, v) =>
+  c.curve === "log" ? Math.log(v / c.min) / Math.log(c.max / c.min) : c.curve === "sq" ? Math.sqrt((v - c.min) / (c.max - c.min)) : (v - c.min) / (c.max - c.min);
+const fromNorm = (c, n) => (c.curve === "log" ? c.min * Math.pow(c.max / c.min, n) : c.curve === "sq" ? c.min + n * n * (c.max - c.min) : c.min + n * (c.max - c.min));
 
 /** A knob's value in its own units: the knob's, or the synced division's length in seconds. */
 function eff(key) {
@@ -82,7 +86,10 @@ function update(key, v, final = true) {
       send(18, v);
       sizeSent = now;
     }
-  } else send(c.target, v);
+  } else {
+    send(c.target, v);
+    if (SYNCABLE[key]?.id) send(SYNCABLE[key].id, c.sync ? divBeats(c.sync) : 0);
+  }
 }
 
 function dragValue(el, get, set, perPx = 1 / 180) {
@@ -135,19 +142,22 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
     box.innerHTML = DIVS.slice(0, 13).map(([n]) => `<option>${n}</option>`).join("");
     input.after(box);
     cell.append(btn);
-    btn.onclick = () => {
-      if (c.sync) {
-        const secs = eff(key);
-        c.sync = null;
-        update(key, secs);
-      } else {
-        c.sync = SYNCABLE[key];
-        box.value = c.sync;
-        update(key, state[key]);
-      }
+    c.setSync = (div) => {
+      c.sync = div;
+      if (div) box.value = div;
       btn.setAttribute("aria-pressed", String(!!c.sync));
       input.hidden = !!c.sync;
       box.hidden = !c.sync;
+    };
+    btn.onclick = () => {
+      if (c.sync) {
+        const secs = eff(key);
+        c.setSync(null);
+        update(key, secs);
+      } else {
+        c.setSync(SYNCABLE[key].div);
+        update(key, state[key]);
+      }
     };
     box.onchange = () => {
       c.sync = box.value;
@@ -261,9 +271,9 @@ function fit(canvas) {
 const FONT = (px, dpr) => `${px * dpr}px Hershey, 'SFMono-Regular', monospace`;
 
 /** A lens with rounded ends: the mouth's opening and the lips' outline (superellipse). */
-function lens(c, cx, cy, w, hTop, hBot, round) {
+function lens(c, cx, cy, w, hTop, hBot, round, more = false) {
   const n = 2 + 2.5 * round; // 2 = pointed corners like a lens … 4.5 = an O
-  c.beginPath();
+  if (!more) c.beginPath(); // more: add to the current path (a ring, filled even-odd)
   for (let i = 0; i <= 64; i++) {
     const a = (i / 64) * 2 * Math.PI;
     const ca = Math.cos(a), sa = Math.sin(a);
@@ -305,47 +315,92 @@ function drawMouth() {
     const open = clamp((4 * Math.max(0, lipArea)) / (Math.PI * width), 0, 4); // cm, from the lips' area
     const round = clamp(lipProt, 0, 1);
     const thick = 0.75 + 0.5 * round;
-    const glow = 6 + 18 * clamp(env * 4, 0, 1);
-    const beam = color("--beam"), struct = color("--struct");
+    const lit = clamp(env * 4, 0, 1);
+    const glow = 8 + 22 * lit;
+    const lips = color("--lips"), hi = color("--lips-hi"), rgb = color("--lips-rgb");
+    const rose = (a) => `rgba(${rgb}, ${a})`;
+    const outer = () => lens(c, cx, cy, (width + 1.4) * unit, (open / 2 + thick) * unit, (open / 2 + thick * 1.1) * unit, round);
+    const mouth = (more = false) => lens(c, cx, cy, width * unit, (open / 2) * unit, (open / 2) * unit, round, more);
+    const top = cy - (open / 2 + thick) * unit, bottom = cy + (open / 2 + thick * 1.1) * unit;
     c.lineJoin = "round";
-    c.shadowColor = beam;
-    // outer lips
+    // the lips: a ring of soft rose, fuller in the middle of each lip, glowing with the sound
+    const body = c.createLinearGradient(0, top, 0, bottom);
+    body.addColorStop(0, rose(0.1 + 0.08 * lit));
+    body.addColorStop(0.3, rose(0.28 + 0.12 * lit));
+    body.addColorStop(0.5, rose(0.06));
+    body.addColorStop(0.72, rose(0.32 + 0.14 * lit));
+    body.addColorStop(1, rose(0.1 + 0.08 * lit));
+    c.shadowColor = lips;
     c.shadowBlur = glow * dpr;
-    c.strokeStyle = beam;
-    c.lineWidth = 1.8 * dpr;
-    lens(c, cx, cy, (width + 1.4) * unit, (open / 2 + thick) * unit, (open / 2 + thick * 1.1) * unit, round);
+    outer();
+    if (open > 0.02) mouth(true);
+    c.fillStyle = body;
+    c.fill("evenodd");
+    c.strokeStyle = lips;
+    c.lineWidth = 1.6 * dpr;
+    outer();
     c.stroke();
-    // the opening
     if (open > 0.02) {
-      c.lineWidth = 1.4 * dpr;
-      lens(c, cx, cy, width * unit, (open / 2) * unit, (open / 2) * unit, round);
-      c.stroke();
-      c.save();
-      lens(c, cx, cy, width * unit, (open / 2) * unit, (open / 2) * unit, round);
-      c.clip();
+      // inside: a deep wine dark, the teeth in faint bone, the tongue in rose
       c.shadowBlur = 0;
-      // upper teeth, and the tongue rising with the tongue body
-      c.strokeStyle = struct;
+      mouth();
+      c.fillStyle = "#14060b";
+      c.fill();
+      c.save();
+      mouth();
+      c.clip();
+      const tx = cx - width * 0.32 * unit, ty = cy - (open / 2) * unit - 2, tw = width * 0.64 * unit, th = 0.45 * unit + 2;
+      c.fillStyle = "rgba(255, 240, 235, 0.1)";
+      c.fillRect(tx, ty, tw, th);
+      c.strokeStyle = "rgba(255, 240, 235, 0.45)";
       c.lineWidth = dpr;
-      c.strokeRect(cx - width * 0.32 * unit, cy - (open / 2) * unit - 2, width * 0.64 * unit, 0.45 * unit + 2);
+      c.strokeRect(tx, ty, tw, th);
       const tongueTop = cy + (open / 2) * unit - clamp((tbY - 6.2) * 0.9 + 0.3 + jaw * 0.25, 0.1, 2.2) * unit;
-      c.strokeStyle = beam;
-      c.lineWidth = 1.4 * dpr;
       c.beginPath();
       c.ellipse(cx, tongueTop + 1.4 * unit, width * 0.38 * unit, 1.4 * unit, 0, Math.PI, 2 * Math.PI);
+      c.fillStyle = rose(0.3 + 0.15 * lit);
+      c.fill();
+      c.strokeStyle = lips;
+      c.lineWidth = 1.2 * dpr;
       c.stroke();
       c.restore();
+      c.strokeStyle = lips;
+      c.lineWidth = 1.3 * dpr;
+      mouth();
+      c.stroke();
     } else {
+      c.shadowBlur = 0;
+      c.strokeStyle = lips;
+      c.lineWidth = 1.4 * dpr;
       c.beginPath();
       c.moveTo(cx - (width / 2) * unit, cy);
-      c.lineTo(cx + (width / 2) * unit, cy);
+      c.quadraticCurveTo(cx, cy + 0.12 * unit, cx + (width / 2) * unit, cy);
       c.stroke();
     }
+    // gloss: a light streak on the lower lip and two on the upper lip's bow
+    c.shadowColor = hi;
+    c.shadowBlur = 6 * dpr;
+    c.strokeStyle = hi;
+    c.lineCap = "round";
+    c.globalAlpha = 0.45 + 0.35 * lit;
+    c.lineWidth = 1.6 * dpr;
+    c.beginPath();
+    c.ellipse(cx + 0.1 * width * unit, cy + (open / 2 + thick * 0.62) * unit, width * 0.2 * unit, thick * 0.28 * unit, 0, 1.2 * Math.PI, 1.75 * Math.PI);
+    c.stroke();
+    c.lineWidth = 1.1 * dpr;
+    c.globalAlpha *= 0.7;
+    for (const sx of [-1, 1]) {
+      c.beginPath();
+      c.ellipse(cx + sx * width * 0.16 * unit, cy - (open / 2 + thick * 0.5) * unit, width * 0.08 * unit, thick * 0.18 * unit, 0, 1.15 * Math.PI, 1.8 * Math.PI);
+      c.stroke();
+    }
+    c.lineCap = "butt";
     // nostrils light up as the velum opens
     const nas = clamp((velum + 0.1) / 0.6, 0, 1);
+    c.shadowColor = lips;
     c.shadowBlur = (4 + 14 * nas) * dpr;
-    c.strokeStyle = struct;
-    c.globalAlpha = 0.35 + 0.65 * nas;
+    c.strokeStyle = lips;
+    c.globalAlpha = 0.3 + 0.6 * nas;
     c.lineWidth = 1.2 * dpr;
     for (const s of [-1, 1]) {
       c.beginPath();
@@ -396,10 +451,6 @@ mouthEl.addEventListener("pointerdown", (e) => {
   padAt(e);
 });
 mouthEl.addEventListener("pointermove", (e) => e.buttons && padAt(e));
-$("pad-reset").onclick = () => {
-  setBase(rows[0], 0.5);
-  setBase(rows[1], 0.6);
-};
 new ResizeObserver(drawMouth).observe(mouthEl);
 
 let peakHold = 0;
@@ -445,14 +496,13 @@ async function start() {
   window.__suu = { ctx, analyser }; // for automated checks
   pushAll();
   await setSource(current);
-  $("start").textContent = "● ON";
-  $("start").setAttribute("aria-pressed", "true");
   status("loading words…", true);
   const gz = await fetch("cmudict.txt.gz");
   const bytes = new Uint8Array(await new Response(gz.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
   post({ type: "dict", bytes }, [bytes.buffer]);
 }
-$("start").onclick = start;
+// a browser starts audio only after a gesture: the first click, touch or key anywhere starts it
+for (const ev of ["pointerdown", "keydown"]) addEventListener(ev, () => start(), { capture: true, once: true });
 let statusTimer = 0;
 /** A short message in the bar that fades after a few seconds. */
 function status(t, keep = false) {
@@ -468,6 +518,8 @@ function onWorklet(m) {
   else if (m.type === "text") {
     textOn = m.syllables > 0;
     $("text-toggle").textContent = textOn ? `TEXT · ${m.syllables}` : "TEXT";
+    $("singtext").textContent = textOn ? "■ STOP" : "▶ SING";
+    $("singtext").setAttribute("aria-pressed", String(textOn));
   } else if (m.type === "ui") {
     ui = m.ui;
     showSeq(ui[19] > 0.5, ui[17]);
@@ -475,13 +527,19 @@ function onWorklet(m) {
 }
 
 function pushAll() {
-  for (const [key, c] of controls) if (c.target !== "space") send(c.target, state[key]);
+  for (const [key, c] of controls) {
+    if (c.target === "space") continue;
+    send(c.target, state[key]);
+    if (SYNCABLE[key]?.id) send(SYNCABLE[key].id, c.sync ? divBeats(c.sync) : 0);
+  }
   for (const r of rows) {
     send(r.param, r.base);
     sendMod(r);
   }
   send(19, bpm());
   send(1, lastNote);
+  gate();
+  sendTextRate();
   setSpace();
   steps.forEach((_, i) => sendStep(i));
   sendSeq();
@@ -533,7 +591,9 @@ function makeIR(len) {
 }
 
 function setSpace() {
-  if (!ctx) return;
+  // not before the graph is built: the first click starts the audio and may change a setting
+  // in the same moment (pushAll sends the settings once it is)
+  if (!ctx || !fx.dl) return;
   const on = spaceOn;
   const t = ctx.currentTime;
   fx.dl.delayTime.setTargetAtTime(eff("delayTime"), t, 0.05);
@@ -552,8 +612,18 @@ $("spaceon").onclick = () => {
 };
 
 // ---------------------------------------------------------------- sources
-let current = "2", fileName = "";
+let current = "2", fileName = "", autoHold = false;
 async function setSource(src) {
+  // keys gate an outside sound as they gate the synth: hold opens it at once (and keys then sing
+  // the text's syllables over it); back on the synth, a hold this turned on goes off again
+  const outside = (x) => x === "file" || x === "mic";
+  if (outside(src) && !outside(current) && !held) {
+    setHold(true);
+    autoHold = true;
+  } else if (!outside(src) && outside(current) && autoHold) {
+    setHold(false);
+    autoHold = false;
+  }
   current = src;
   document.querySelectorAll("[data-src]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.src === src)));
   const internal = src !== "file" && src !== "mic";
@@ -605,7 +675,7 @@ addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => {
   e.preventDefault();
   const f = e.dataTransfer.files[0];
-  if (f) loadFile(f);
+  if (f) /\.json$/i.test(f.name) ? openPreset(f) : loadFile(f);
 });
 
 // ---------------------------------------------------------------- keyboard
@@ -628,7 +698,15 @@ function shiftOctave(d) {
   for (const [i, m] of down) down.set(i, m + 12 * d);
 }
 const typing = (e) => e.target.tagName === "SELECT" || (e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "number"));
+/** Every key up: on blur, a hidden tab, Escape, or Cmd released (macOS sends no keyup for keys
+ *  released while Cmd is down, which left notes sounding). */
+function allKeysUp() {
+  if (!down.size) return;
+  down.clear();
+  gate();
+}
 addEventListener("keydown", async (e) => {
+  if (e.key === "Escape") return allKeysUp();
   if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   const key = e.key.toLowerCase();
   if (e.code === "Space") {
@@ -645,30 +723,37 @@ addEventListener("keydown", async (e) => {
   }
   const i = KEYS.indexOf(key);
   if (i < 0 || e.repeat) return;
-  await start();
+  // the key is down before any await: a keyup during the first start (audio still loading)
+  // must find it, or the note stays on
   const midi = 48 + 12 * octave + i;
   const legato = down.size > 0;
   down.set(i, midi);
+  await start();
+  if (!down.has(i)) return; // released while starting
   note(midi);
-  if (legato) post({ type: "retrigger" });
+  // a key while the gate is already open (another key, or hold) is still a new note for the text
+  if (legato || held) post({ type: "retrigger" });
   gate();
 });
 addEventListener("keyup", (e) => {
+  if (e.key === "Meta" || e.key === "Control" || e.key === "Alt") return allKeysUp();
   const i = KEYS.indexOf(e.key.toLowerCase());
   if (i < 0 || !down.has(i)) return;
   down.delete(i);
   if (down.size) note([...down.values()].pop()); // back to the key still held
   gate();
 });
-addEventListener("blur", () => {
-  down.clear();
-  gate();
-});
-$("hold").onclick = async () => {
-  await start();
-  held = !held;
+addEventListener("blur", allKeysUp);
+document.addEventListener("visibilitychange", () => document.hidden && allKeysUp());
+function setHold(on) {
+  held = on;
+  autoHold = false;
   $("hold").setAttribute("aria-pressed", String(held));
   gate();
+}
+$("hold").onclick = async () => {
+  await start();
+  setHold(!held);
 };
 $("octdown").onclick = () => shiftOctave(-1);
 $("octup").onclick = () => shiftOctave(1);
@@ -693,10 +778,21 @@ function sendStep(i) {
   const s = steps[i];
   post({ type: "step", i, on: s.on, note: s.note, tie: s.tie, vowel: s.vowel, accent: s.accent, len: s.len });
 }
+let seqGate = 1; // × every step's length
 function sendSeq() {
-  post({ type: "seq", mode: 0, len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: 0.6, order: 0, octaves: 1 });
+  post({ type: "seq", len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: seqGate });
+  $("seqgate").textContent = Math.round(seqGate * 100) + "%";
+  $("seqgate").classList.toggle("on", seqGate !== 1);
   renderSteps();
 }
+dragValue($("seqgate"), () => seqGate, (v) => {
+  seqGate = Math.round(clamp(v, 0.1, 2) * 100) / 100;
+  sendSeq();
+}, 1 / 200);
+$("seqgate").ondblclick = () => {
+  seqGate = 1;
+  sendSeq();
+};
 function renderSteps() {
   const len = clamp(+$("seqlen").value || 16, 1, 16);
   steps.forEach((s, i) => {
@@ -705,6 +801,7 @@ function renderSteps() {
     c.el.classList.toggle("tie", s.on && s.tie);
     c.el.classList.toggle("accent", s.on && s.accent);
     c.el.style.setProperty("--len", s.len);
+    c.el.style.setProperty("--glen", Math.min(1, s.len * seqGate));
     c.el.classList.toggle("off-len", i >= len);
     c.label.textContent = s.on ? (s.note > 0 ? "+" + s.note : s.note < 0 ? "−" + -s.note : "0") : "–";
     c.vowel.textContent = VOWELS[s.vowel + 1];
@@ -732,7 +829,9 @@ for (let i = 0; i < 16; i++) {
     lenEl.setPointerCapture(e.pointerId);
     const set = (ev) => {
       const r = lenEl.getBoundingClientRect();
-      steps[i].len = clamp(Math.round(((ev.clientX - r.left) / r.width) * 20) / 20, 0.05, 1);
+      // the bar shows the length after the global gate, so the cursor sets that
+      const at = clamp((ev.clientX - r.left) / r.width, 0, 1) / seqGate;
+      steps[i].len = clamp(Math.round(at * 20) / 20, 0.05, 1);
       sendStep(i);
       renderSteps();
     };
@@ -776,7 +875,7 @@ for (let i = 0; i < 16; i++) {
     renderSteps();
   });
 }
-renderSteps();
+sendSeq();
 
 function setPlaying(on) {
   playing = on;
@@ -818,23 +917,63 @@ $("text-form").onsubmit = async (e) => {
   sing($("text").value);
   $("text").blur(); // so the keys play again
 };
-$("stoptext").onclick = () => sing("");
-// typing applies the text by itself once it pauses; Enter or Escape hands the keys back to playing
+$("singtext").onclick = async () => {
+  await start();
+  sing(textOn ? "" : $("text").value);
+};
+// while it sings, typing applies the text once it pauses; Enter sings, Escape hands the keys back
 let typingTimer = 0;
 $("text").addEventListener("input", () => {
   clearTimeout(typingTimer);
-  typingTimer = setTimeout(() => node && sing($("text").value), 300);
+  typingTimer = setTimeout(() => node && textOn && sing($("text").value), 300);
 });
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("text").blur();
 });
+function setTextMode(m) {
+  textMode = m;
+  document.querySelectorAll("[data-tmode]").forEach((x) => x.setAttribute("aria-pressed", String(+x.dataset.tmode === m)));
+  $("looprate").hidden = m !== 0;
+}
 document.querySelectorAll("[data-tmode]").forEach((b) => {
   b.onclick = () => {
-    textMode = +b.dataset.tmode;
-    document.querySelectorAll("[data-tmode]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    setTextMode(+b.dataset.tmode);
     if (textOn) sing($("text").value);
   };
 });
+// the loop's own rate: free (syllables per second) or a note value per syllable
+const loop = { rate: 2, sync: "1/4" };
+function sendTextRate(final = true) {
+  send(22, loop.rate);
+  send(23, loop.sync ? divBeats(loop.sync) : 0);
+  $("loophz").textContent = loop.rate.toFixed(loop.rate < 10 ? 1 : 0) + "/s";
+  $("loophz").hidden = !!loop.sync;
+  $("loopdiv").hidden = !loop.sync;
+  if (loop.sync) $("loopdiv").value = loop.sync;
+  $("loopsync").setAttribute("aria-pressed", String(!!loop.sync));
+  // the loop plans a pass ahead: sing again so a new rate is heard now
+  if (final && textOn && textMode === 0) sing($("text").value);
+}
+$("loopdiv").innerHTML = DIVS.map(([n]) => `<option>${n}</option>`).join("");
+dragValue($("loophz"), () => Math.log(loop.rate), (lv, final) => {
+  loop.rate = clamp(Math.exp(lv), 0.25, 16);
+  sendTextRate(final);
+}, 1 / 60);
+$("loopsync").onclick = () => {
+  loop.sync = loop.sync ? null : "1/4";
+  sendTextRate();
+};
+$("loopdiv").onchange = () => {
+  loop.sync = $("loopdiv").value;
+  sendTextRate();
+};
+setTextMode(textMode);
+sendTextRate(false);
+
+// ---------------------------------------------------------------- focus
+// a focus ring only while moving by keys: Tab turns it on, any pointer turns it off
+addEventListener("keydown", (e) => e.key === "Tab" && (document.documentElement.dataset.nav = "keys"), true);
+addEventListener("pointerdown", () => delete document.documentElement.dataset.nav, true);
 
 // ---------------------------------------------------------------- help
 function showInfo(open) {
@@ -849,3 +988,224 @@ addEventListener("pointerdown", (e) => {
   if (!$("info").hidden && !$("info").contains(e.target) && e.target !== $("info-toggle")) showInfo(false);
 });
 addEventListener("keydown", (e) => e.key === "Escape" && showInfo(false));
+
+// ---------------------------------------------------------------- saved state: autosave, A/B, files
+// One JSON state holds every setting. The web app keeps it (two slots, A and B) in this browser's
+// storage, saved every second; SAVE / OPEN write and read it as a file (a preset). The plug-in
+// will keep the same JSON in the host's saved state instead, never in shared browser storage.
+// Reading is tolerant: a missing field takes its default, an unknown one is ignored, numbers are
+// clamped, and a wrong structure refuses the whole state before anything changes.
+const STATE_VERSION = 1;
+const MOTION_NAMES = ["vowelX", "vowelY", "round", "nasal", "inject", "damping"];
+const INTERNAL = ["1", "2", "3"];
+
+function getState() {
+  const knobs = {};
+  for (const [key, c] of controls) knobs[key] = c.sync ? { v: state[key], sync: c.sync } : state[key];
+  const motion = {};
+  rows.forEach((r, i) => (motion[MOTION_NAMES[i]] = { base: r.base, depth: r.depth, rate: r.rate, sync: r.sync, shape: r.shape }));
+  return {
+    suu: STATE_VERSION,
+    source: INTERNAL.includes(current) ? +current : undefined,
+    note: lastNote,
+    octave,
+    bpm: bpm(),
+    space: spaceOn,
+    knobs,
+    motion,
+    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
+    text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync },
+  };
+}
+
+const DEFAULTS = getState();
+
+/** A complete, clamped state from `raw` and the defaults; throws on a wrong structure. */
+function readState(raw) {
+  const obj = (x, what) => {
+    if (x === undefined) return {};
+    if (x === null || typeof x !== "object" || Array.isArray(x)) throw new Error(`${what} is not an object`);
+    return x;
+  };
+  const num = (x, d, lo, hi) => (Number.isFinite(x) ? clamp(x, lo, hi) : d);
+  const bool = (x, d) => (typeof x === "boolean" ? x : d);
+  const div = (x, d) => (x === null ? null : DIVS.some((q) => q[0] === x) ? x : d);
+  const r = obj(raw, "the state");
+  if (!Number.isFinite(r.suu)) throw new Error("not a Suu state");
+  const d = DEFAULTS;
+  const out = {
+    suu: STATE_VERSION,
+    source: INTERNAL.includes(String(r.source)) ? +r.source : d.source,
+    note: Math.round(num(r.note, d.note, 12, 108)),
+    octave: Math.round(num(r.octave, d.octave, -3, 3)),
+    bpm: num(r.bpm, d.bpm, 30, 300),
+    space: bool(r.space, d.space),
+    knobs: {},
+    motion: {},
+  };
+  const knobs = obj(r.knobs, "knobs");
+  for (const [key, c] of controls) {
+    const k = knobs[key], dk = d.knobs[key];
+    const dv = typeof dk === "object" ? dk.v : dk;
+    if (k !== null && typeof k === "object") {
+      const v = num(k.v, dv, c.min, c.max);
+      out.knobs[key] = SYNCABLE[key] && div(k.sync, null) ? { v, sync: div(k.sync, null) } : v;
+    } else out.knobs[key] = num(k, dv, c.min, c.max);
+  }
+  const motion = obj(r.motion, "motion");
+  rows.forEach((row, i) => {
+    const name = MOTION_NAMES[i], m = obj(motion[name], `motion ${name}`), dm = d.motion[name];
+    out.motion[name] = { base: num(m.base, dm.base, row.lo, row.hi), depth: num(m.depth, dm.depth, -1, 1), rate: num(m.rate, dm.rate, 0.02, 20), sync: div(m.sync, dm.sync), shape: Math.round(num(m.shape, dm.shape, 0, SHAPES.length - 1)) };
+  });
+  const seq = obj(r.seq, "seq");
+  if (seq.steps !== undefined && !Array.isArray(seq.steps)) throw new Error("steps is not a list");
+  out.seq = {
+    rate: [1, 2, 4, 8].includes(seq.rate) ? seq.rate : d.seq.rate,
+    length: Math.round(num(seq.length, d.seq.length, 1, 16)),
+    gate: num(seq.gate, d.seq.gate, 0.1, 2),
+    steps: d.seq.steps.map((ds, i) => {
+      const s = obj(seq.steps?.[i], `step ${i + 1}`);
+      return { on: bool(s.on, ds.on), note: Math.round(num(s.note, ds.note, -24, 24)), tie: bool(s.tie, ds.tie), vowel: Math.round(num(s.vowel, ds.vowel, -1, 4)), accent: bool(s.accent, ds.accent), len: num(s.len, ds.len, 0.05, 1) };
+    }),
+  };
+  const text = obj(r.text, "text");
+  out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync) };
+  return out;
+}
+
+/** Put a state read by `readState` on every control (and into the engine, if it runs). */
+function applyState(st) {
+  $("bpm").value = st.bpm;
+  send(19, bpm());
+  octave = st.octave;
+  note(st.note);
+  for (const [key, c] of controls) {
+    const k = st.knobs[key];
+    c.setSync?.(typeof k === "object" ? k.sync : null);
+    update(key, typeof k === "object" ? k.v : k);
+  }
+  rows.forEach((r, i) => {
+    const m = st.motion[MOTION_NAMES[i]];
+    Object.assign(r, { depth: m.depth, rate: m.rate, sync: m.sync, shape: m.shape });
+    r.shapeSel.value = String(m.shape);
+    r.rateSel.value = m.sync ?? "1/4";
+    setBase(r, m.base);
+    sendMod(r);
+  });
+  $("rate").value = String(st.seq.rate);
+  $("seqlen").value = String(st.seq.length);
+  seqGate = st.seq.gate;
+  st.seq.steps.forEach((s, i) => {
+    steps[i] = { ...s };
+    sendStep(i);
+  });
+  sendSeq();
+  spaceOn = st.space;
+  $("spaceon").setAttribute("aria-pressed", String(spaceOn));
+  $("spaceon").textContent = spaceOn ? "ON" : "OFF";
+  setSpace();
+  if (st.source !== undefined && current !== "file" && current !== "mic") setSource(String(st.source));
+  $("text").value = st.text.words;
+  setTextMode(st.text.mode);
+  Object.assign(loop, { rate: st.text.rate, sync: st.text.sync });
+  sendTextRate(false);
+  if (textOn) sing($("text").value);
+}
+
+// browser storage: the plug-in replaces this with the host's state
+const store = {
+  key: "suu.session.v1",
+  load() {
+    try {
+      return JSON.parse(localStorage.getItem(this.key) ?? "null");
+    } catch {
+      return null;
+    }
+  },
+  save(text) {
+    try {
+      localStorage.setItem(this.key, text);
+    } catch {}
+  },
+};
+
+const slots = { active: "A", A: null, B: null };
+let savedText = "";
+function save() {
+  slots[slots.active] = getState();
+  const text = JSON.stringify(slots);
+  if (text !== savedText) store.save((savedText = text));
+}
+function showSlots() {
+  for (const k of ["A", "B"]) $("slot" + k).setAttribute("aria-pressed", String(slots.active === k));
+  const other = slots.active === "A" ? "B" : "A";
+  $("copyab").textContent = `${slots.active}→${other}`;
+  $("copyab").title = `Copy ${slots.active} to ${other}`;
+}
+function load(st, what) {
+  try {
+    applyState(readState(st));
+    return true;
+  } catch (e) {
+    status(`${what} not loaded: ${e.message}`);
+    return false;
+  }
+}
+for (const k of ["A", "B"]) {
+  $("slot" + k).onclick = () => {
+    if (slots.active === k) return;
+    save();
+    slots.active = k;
+    // a slot used for the first time starts as a copy of the other
+    if (slots[k]) load(slots[k], k);
+    showSlots();
+    save();
+  };
+}
+$("init").onclick = () => {
+  applyState(DEFAULTS);
+  save();
+  status(`${slots.active}: initial settings`);
+};
+$("copyab").onclick = () => {
+  const other = slots.active === "A" ? "B" : "A";
+  slots[other] = getState();
+  save();
+  status(`${slots.active} copied to ${other}`);
+};
+$("savefile").onclick = () => {
+  const blob = new Blob([JSON.stringify(getState(), null, 1)], { type: "application/json" });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "suu-preset.json" });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("openfile").onclick = () => $("presetfile").click();
+async function openPreset(f) {
+  let raw;
+  try {
+    raw = JSON.parse(await f.text());
+  } catch {
+    return status(`${f.name}: not a preset`);
+  }
+  if (load(raw, f.name)) {
+    status(`${f.name} → ${slots.active}`);
+    save();
+  }
+}
+$("presetfile").onchange = (e) => {
+  if (e.target.files[0]) openPreset(e.target.files[0]);
+  e.target.value = "";
+};
+
+{
+  const saved = store.load();
+  if (saved && typeof saved === "object") {
+    slots.active = saved.active === "B" ? "B" : "A";
+    slots.A = saved.A ?? null;
+    slots.B = saved.B ?? null;
+    if (slots[slots.active]) load(slots[slots.active], "the saved settings");
+  }
+  showSlots();
+  setInterval(save, 1000);
+  addEventListener("pagehide", save);
+}

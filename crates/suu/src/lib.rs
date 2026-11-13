@@ -1,8 +1,9 @@
 //! Suu: a sound passed through CHIMERA's vocal tract, articulated by hand (vowel pad, nasal,
-//! rounding), by typed text looped on the beat, or by the step sequencer / arpeggiator, which also
-//! plays the internal oscillator's pitch.
+//! rounding), by typed text (sung per note, or looped at its own rate), or by the step sequencer,
+//! which also plays the internal oscillator's pitch.
 //!
-//! Chain, per block: source (input or the internal oscillator) → tilt (one-pole low-pass: the
+//! Chain, per block: source (input or the internal oscillator) → resonator (a comb tuned to the
+//! played note, so an outside sound can be played; off by default) → tilt (one-pole low-pass: the
 //! mouth radiates the derivative of the flow, so an unfiltered synth comes out a step too bright)
 //! → injected as volume velocity into the airway (`HumanVoice::render_driven`) → sub layer (the
 //! dry source's low end, which a mouth hardly radiates) → dry/wet mix → output gain.
@@ -90,7 +91,8 @@ pub struct Params {
     pub source: Source,
     /// root note (MIDI, fractional allowed): the oscillator's pitch, the sequence's transposition
     pub note: f64,
-    /// a key held (the oscillator sounds when the sequencer is not playing)
+    /// a key held: the oscillator sounds, or the external input passes (when the sequencer is not
+    /// playing)
     pub gate: bool,
     /// drive into the mouth, dB (0 dB = 100 cm³/s per unit of tilted input)
     pub drive_db: f64,
@@ -121,6 +123,16 @@ pub struct Params {
     pub out_db: f64,
     /// tempo for the sequencer and the text loop
     pub bpm: f64,
+    /// glide: the time a pitch change takes (linear in semitones), seconds; `glide_sync` > 0 locks
+    /// it to that many beats instead
+    pub glide_s: f64,
+    pub glide_sync: f64,
+    /// the text loop's syllable rate, Hz; `text_sync` > 0 makes a syllable that many beats instead
+    pub text_rate_hz: f64,
+    pub text_sync: f64,
+    /// 0..1 the resonator: a comb tuned to the sounding note (and its glide) that gives any sound
+    /// the played pitch; more rings longer and replaces more of the dry source. 0 = off.
+    pub reson: f64,
 }
 
 impl Default for Params {
@@ -145,6 +157,11 @@ impl Default for Params {
             mix: 1.0,
             out_db: 0.0,
             bpm: 100.0,
+            glide_s: 0.03,
+            glide_sync: 0.0,
+            text_rate_hz: 2.0,
+            text_sync: 1.0,
+            reson: 0.0,
         }
     }
 }
@@ -171,7 +188,7 @@ pub const ACCENT: f64 = 1.6;
 /// How typed text is sung.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextMode {
-    /// one syllable per beat, looping on its own
+    /// one syllable per `text_sync` beats (or at `text_rate_hz`), looping on its own
     Loop,
     /// each note sings the next syllable; its vowel holds while the gate is open, the coda
     /// comes at note-off
@@ -180,45 +197,19 @@ pub enum TextMode {
     OneShot,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SeqMode {
-    Steps,
-    Arp,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ArpOrder {
-    Up,
-    Down,
-    UpDown,
-    Random,
-}
-
 struct Seq {
-    mode: SeqMode,
     steps: [Step; STEPS],
     len: usize,
     /// steps per beat (4 = sixteenths)
     div: f64,
-    /// gate length, fraction of a step
-    gate: f64,
+    /// × every step's length (a global gate that keeps the steps' proportions)
+    gate_scale: f64,
     playing: bool,
     /// samples into the current step
     t: f64,
     step: usize,
     gate_open: bool,
     note: f64,
-    order: ArpOrder,
-    octaves: u32,
-    held: [i32; 16],
-    n_held: usize,
-    /// keys physically down (the held set can outlive them when latched)
-    down: [i32; 16],
-    n_down: usize,
-    /// arp hold: released keys keep playing until a new chord starts
-    latch: bool,
-    arp_i: usize,
-    rng: u32,
 }
 
 impl Seq {
@@ -243,25 +234,15 @@ impl Seq {
             (false, 0, false, -1),
         ];
         Seq {
-            mode: SeqMode::Steps,
             steps: pat.map(|(on, note, tie, vowel)| Step { on, note, tie, vowel, accent: false, len: 0.6 }),
             len: 16,
             div: 4.0,
-            gate: 0.6,
+            gate_scale: 1.0,
             playing: false,
             t: 0.0,
             step: 0,
             gate_open: false,
             note: 45.0,
-            order: ArpOrder::Up,
-            octaves: 1,
-            held: [0; 16],
-            n_held: 0,
-            down: [0; 16],
-            n_down: 0,
-            latch: false,
-            arp_i: 0,
-            rng: 0x2545_f491,
         }
     }
 }
@@ -322,6 +303,44 @@ impl Osc {
     }
 }
 
+/// A comb resonator tuned by its delay (Karplus-Strong style): a fractional delay line with a
+/// gentle low-pass in the loop, so the partials decay like a string's, and a DC blocker after.
+struct Reson {
+    buf: Vec<f64>,
+    w: usize,
+    lp: f64,
+    dc_x: f64,
+    dc_y: f64,
+}
+
+impl Reson {
+    /// A line long enough for 15 Hz (below MIDI 12) at `fs`. Allocates; build once.
+    fn new(fs: f64) -> Self {
+        Reson { buf: vec![0.0; ((fs / 15.0) as usize + 4).next_power_of_two()], w: 0, lp: 0.0, dc_x: 0.0, dc_y: 0.0 }
+    }
+
+    /// One sample through a comb of period `period` samples and loop gain `fb`.
+    fn tick(&mut self, x: f64, period: f64, fb: f64) -> f64 {
+        let mask = self.buf.len() - 1;
+        let d = clamp(period, 2.0, mask as f64 - 2.0);
+        let di = d as usize;
+        let fr = d - di as f64;
+        let a = self.buf[(self.w + mask + 1 - di) & mask];
+        let b = self.buf[(self.w + mask - di) & mask];
+        let delayed = a + fr * (b - a);
+        // the loop's low-pass: the high partials die first
+        self.lp += 0.7 * (delayed - self.lp);
+        let y = x + fb * self.lp;
+        self.buf[self.w] = y;
+        self.w = (self.w + 1) & mask;
+        // DC blocker (a tuned comb has gain at 0 Hz too)
+        let out = y - self.dc_x + 0.995 * self.dc_y;
+        self.dc_x = y;
+        self.dc_y = out;
+        out
+    }
+}
+
 /// Oversampling for a mouth of scale `k`: a small mouth has short cells and needs a finer time
 /// step (CFL); a large one is stable at the output rate and stays affordable there.
 fn oversample_for(fs: f64, k: f64) -> usize {
@@ -345,8 +364,13 @@ pub struct Suu {
     scale: f64,
     p: Params,
     osc: Osc,
+    /// the oscillator's pitch (MIDI, gliding toward `glide_to` by `glide_rate` per sample) and Hz
+    pitch: f64,
+    glide_to: f64,
+    glide_rate: f64,
     osc_hz: f64,
     osc_env: f64,
+    reson: Reson,
     tilt_y: f64,
     env: f64,
     sub1: f64,
@@ -403,7 +427,11 @@ impl Suu {
             scale: 1.0,
             p: Params::default(),
             osc: Osc::new(),
+            pitch: 45.0,
+            glide_to: 45.0,
+            glide_rate: 0.0,
             osc_hz: midi_to_hz(45.0),
+            reson: Reson::new(fs),
             osc_env: 0.0,
             tilt_y: 0.0,
             env: 0.0,
@@ -479,6 +507,11 @@ impl Suu {
         q.out_db = clamp(q.out_db, -40.0, 20.0);
         q.note = clamp(q.note, 12.0, 108.0);
         q.bpm = clamp(q.bpm, 30.0, 300.0);
+        q.glide_s = clamp(q.glide_s, 0.0, 4.0);
+        q.glide_sync = clamp(q.glide_sync, 0.0, 16.0);
+        q.text_rate_hz = clamp(q.text_rate_hz, 0.1, 16.0);
+        q.text_sync = clamp(q.text_sync, 0.0, 16.0);
+        q.reson = clamp(q.reson, 0.0, 1.0);
         self.p = q;
         self.configure_voice();
         self.refresh_mouth();
@@ -656,15 +689,12 @@ impl Suu {
         self.seq.steps[i.min(STEPS - 1)]
     }
 
-    /// mode, pattern length, steps per beat, gate (fraction of a step), arp order and octaves
-    pub fn set_seq(&mut self, mode: SeqMode, len: usize, div: f64, gate: f64, order: ArpOrder, octaves: u32) {
+    /// pattern length, steps per beat, and the global gate (× every step's length, 0.1..2)
+    pub fn set_seq(&mut self, len: usize, div: f64, gate_scale: f64) {
         let s = &mut self.seq;
-        s.mode = mode;
         s.len = len.clamp(1, STEPS);
         s.div = clamp(div, 0.25, 8.0);
-        s.gate = clamp(gate, 0.05, 1.0);
-        s.order = order;
-        s.octaves = octaves.clamp(1, 4);
+        s.gate_scale = clamp(gate_scale, 0.1, 2.0);
     }
 
     pub fn set_playing(&mut self, on: bool) {
@@ -674,7 +704,6 @@ impl Suu {
         self.seq.playing = on;
         self.seq.t = 0.0;
         self.seq.step = 0;
-        self.seq.arp_i = 0;
         if on {
             self.trigger();
         } else {
@@ -688,58 +717,9 @@ impl Suu {
         self.seq.playing
     }
 
-    /// A key down/up for the arpeggiator (held notes, in the order pressed). Latched, a key
-    /// pressed after every key was released starts a new chord.
-    pub fn note_on(&mut self, midi: i32) {
-        let s = &mut self.seq;
-        if s.latch && s.n_down == 0 {
-            s.n_held = 0;
-        }
-        if !s.down[..s.n_down].contains(&midi) && s.n_down < s.down.len() {
-            s.down[s.n_down] = midi;
-            s.n_down += 1;
-        }
-        if !s.held[..s.n_held].contains(&midi) && s.n_held < s.held.len() {
-            s.held[s.n_held] = midi;
-            s.n_held += 1;
-        }
-    }
-
-    pub fn note_off(&mut self, midi: i32) {
-        let s = &mut self.seq;
-        if let Some(i) = s.down[..s.n_down].iter().position(|&n| n == midi) {
-            s.down.copy_within(i + 1..s.n_down, i);
-            s.n_down -= 1;
-        }
-        if !s.latch
-            && let Some(i) = s.held[..s.n_held].iter().position(|&n| n == midi)
-        {
-            s.held.copy_within(i + 1..s.n_held, i);
-            s.n_held -= 1;
-        }
-    }
-
-    /// Arp hold on/off; switching it off keeps only the keys still down.
-    pub fn set_latch(&mut self, on: bool) {
-        let s = &mut self.seq;
-        s.latch = on;
-        if !on {
-            s.held[..s.n_down].copy_from_slice(&s.down[..s.n_down]);
-            s.n_held = s.n_down;
-        }
-    }
-
     /// A new key while another is held (legato on the keyboard): a new note for the text.
     pub fn retrigger(&mut self) {
         self.retrig = true;
-    }
-
-    /// Every key up (focus lost): latched notes stay, as after a normal release.
-    pub fn all_notes_off(&mut self) {
-        self.seq.n_down = 0;
-        if !self.seq.latch {
-            self.seq.n_held = 0;
-        }
     }
 
     /// (current step, gate open, sounding note) for the UI
@@ -751,68 +731,27 @@ impl Suu {
         self.fs * 60.0 / self.p.bpm / self.seq.div
     }
 
-    /// Start the current step (or arp note).
+    /// Start the current step.
     fn trigger(&mut self) {
-        match self.seq.mode {
-            SeqMode::Steps => {
-                let st = self.seq.steps[self.seq.step];
-                if st.on {
-                    self.seq.note = self.p.note + st.note as f64;
-                    // a tied step continues the previous note; any other starts a new one
-                    let prev = self.seq.steps[(self.seq.step + self.seq.len - 1) % self.seq.len];
-                    self.retrig = !(prev.tie && prev.on && self.seq.gate_open);
-                    self.seq.gate_open = true;
-                    self.accent = st.accent;
-                    if st.vowel >= 0 {
-                        self.seq_pad = Some(STEP_PAD[st.vowel as usize]);
-                    }
-                } else {
-                    self.seq.gate_open = false;
-                }
+        let st = self.seq.steps[self.seq.step];
+        if st.on {
+            self.seq.note = self.p.note + st.note as f64;
+            // a tied step continues the previous note; any other starts a new one
+            let prev = self.seq.steps[(self.seq.step + self.seq.len - 1) % self.seq.len];
+            self.retrig = !(prev.tie && prev.on && self.seq.gate_open);
+            self.seq.gate_open = true;
+            self.accent = st.accent;
+            if st.vowel >= 0 {
+                self.seq_pad = Some(STEP_PAD[st.vowel as usize]);
             }
-            SeqMode::Arp => {
-                let n = self.seq.n_held;
-                if n == 0 {
-                    self.seq.gate_open = false;
-                    return;
-                }
-                // held notes sorted low → high, spread over the octaves
-                let mut sorted = [0i32; 16];
-                sorted[..n].copy_from_slice(&self.seq.held[..n]);
-                sorted[..n].sort_unstable();
-                let total = n * self.seq.octaves as usize;
-                let i = self.seq.arp_i;
-                let idx = match self.seq.order {
-                    ArpOrder::Up => i % total,
-                    ArpOrder::Down => total - 1 - i % total,
-                    ArpOrder::UpDown => {
-                        let period = if total > 1 { 2 * total - 2 } else { 1 };
-                        let j = i % period;
-                        if j < total { j } else { period - j }
-                    }
-                    ArpOrder::Random => {
-                        let r = &mut self.seq.rng;
-                        *r ^= *r << 13;
-                        *r ^= *r >> 17;
-                        *r ^= *r << 5;
-                        (*r as usize) % total
-                    }
-                };
-                self.seq.arp_i += 1;
-                self.seq.note = (sorted[idx % n] + 12 * (idx / n) as i32) as f64;
-                self.seq.gate_open = true;
-                self.accent = false;
-                self.retrig = true;
-            }
+        } else {
+            self.seq.gate_open = false;
         }
     }
 
-    /// The current note's gate length (fraction of a step): the step's own, or the arp's.
+    /// The current step's gate length (fraction of a step), scaled by the global gate.
     fn gate_len(&self) -> f64 {
-        match self.seq.mode {
-            SeqMode::Steps => self.seq.steps[self.seq.step].len,
-            SeqMode::Arp => self.seq.gate,
-        }
+        clamp(self.seq.steps[self.seq.step].len * self.seq.gate_scale, 0.02, 1.0)
     }
 
     fn advance_seq(&mut self) {
@@ -824,8 +763,7 @@ impl Suu {
             self.trigger();
         } else if self.seq.gate_open && self.seq.t >= self.gate_len() * len {
             // a tie holds the gate into the next step
-            let tied = self.seq.mode == SeqMode::Steps && self.seq.steps[self.seq.step].tie;
-            if !tied {
+            if !self.seq.steps[self.seq.step].tie {
                 self.seq.gate_open = false;
             }
         }
@@ -910,7 +848,7 @@ impl Suu {
         }
     }
 
-    /// A note started (key, step or arp note) or ended: sing the text on it.
+    /// A note started (key or step) or ended: sing the text on it.
     fn text_note(&mut self, on: bool) {
         match self.text_mode {
             TextMode::Gate => {
@@ -935,11 +873,19 @@ impl Suu {
         }
     }
 
+    /// The text loop's beats per syllable: synced, or from its free rate; never under 60 ms.
+    fn loop_beats(&self) -> f64 {
+        let p = self.p;
+        let beats = if p.text_sync > 0.0 { p.text_sync } else { p.bpm / 60.0 / p.text_rate_hz };
+        js_max(beats, 0.06 * p.bpm / 60.0)
+    }
+
     fn schedule_loop(&mut self) {
-        let notes: Vec<SungNote> = self.text.iter().map(|s| SungNote { midi: self.note_now, beats: 1.0, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
+        let beats = self.loop_beats();
+        let notes: Vec<SungNote> = self.text.iter().map(|s| SungNote { midi: self.note_now, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
         let plan = plan_song(&notes, &SongOptions { body: BodyMix::new(0.0, 0.0), bpm: self.p.bpm, t0: self.next_loop, vibrato: 0.0 });
         self.voice.schedule(&plan.gestures);
-        self.next_loop += notes.len() as f64 * 60.0 / self.p.bpm;
+        self.next_loop += notes.len() as f64 * beats * 60.0 / self.p.bpm;
     }
 
     // ------------------------------------------------------------ audio
@@ -984,12 +930,20 @@ impl Suu {
         self.retrig = false;
         self.prev_gate = self.gate_now;
         let p = self.p;
+        if self.note_now != self.glide_to {
+            // a new pitch: glide there in the glide time, linear in semitones, from where it is
+            self.glide_to = self.note_now;
+            let secs = if p.glide_sync > 0.0 { p.glide_sync * 60.0 / p.bpm } else { p.glide_s };
+            let n = js_max(1.0, secs * self.fs);
+            self.glide_rate = (self.glide_to - self.pitch).abs() / n;
+        }
         let envn = clamp(self.env_peak * 4.0, 0.0, 1.0);
         self.env_peak = 0.0;
         self.run_mods(envn);
         self.apply_mouth();
         let pressure = 9.0 * p.breath * (1.0 - p.follow + p.follow * envn);
-        let f0 = midi_to_hz(self.note_now);
+        // the folds follow the glide too (at the control rate)
+        let f0 = midi_to_hz(self.pitch);
         if (pressure - self.voice.source.pressure).abs() > 1e-6 || (p.folds > 0.0 && f0 != self.folds_f0) {
             self.voice.set_source(&SourcePatch { pressure: Some(pressure), f0: Some(f0), ..Default::default() });
             self.folds_f0 = f0;
@@ -1003,8 +957,6 @@ impl Suu {
         let p = self.p;
         let fs = self.fs;
         // 1) source
-        let target = midi_to_hz(self.note_now);
-        let glide = 1.0 - exp(-1.0 / (0.012 * fs));
         let att = 1.0 - exp(-1.0 / (0.004 * fs));
         let rel = 1.0 - exp(-1.0 / (0.05 * fs));
         // a gated external sound closes fast, so a rhythm reads at sixteenths
@@ -1015,21 +967,32 @@ impl Suu {
         let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
         let mut env_peak = self.env_peak;
         for i in 0..n {
+            if self.pitch != self.glide_to {
+                let d = self.glide_to - self.pitch;
+                self.pitch = if d.abs() <= self.glide_rate { self.glide_to } else { self.pitch + self.glide_rate * d.signum() };
+                self.osc_hz = midi_to_hz(self.pitch);
+            }
             let x = if p.source == Source::Input {
-                // the sequencer and arp gate an external sound (it has no pitch to play)
-                if self.seq.playing {
-                    let g = if gate { level } else { 0.0 };
-                    self.osc_env += (g - self.osc_env) * if gate { att } else { rel_in };
-                    input[i] as f64 * self.osc_env
-                } else {
-                    self.osc_env = 1.0;
-                    input[i] as f64
-                }
+                // keys, hold and the sequencer gate an external sound as they gate the oscillator
+                // (it has no pitch to play); it closes fast, so a rhythm reads at sixteenths
+                let g = if gate { level } else { 0.0 };
+                self.osc_env += (g - self.osc_env) * if gate { att } else { rel_in };
+                input[i] as f64 * self.osc_env
             } else {
-                self.osc_hz += (target - self.osc_hz) * glide;
                 let g = if gate { level } else { 0.0 };
                 self.osc_env += (g - self.osc_env) * if gate { att } else { rel };
                 self.osc.next(p.source, self.osc_hz / fs) * self.osc_env * 0.5
+            };
+            // the resonator: the dry source crossfades into the comb, whose loop gain rises with
+            // the amount
+            let x = if p.reson > 0.0 {
+                let fb = 0.85 + 0.145 * p.reson;
+                // between noise power (^0.5, a noise input stays level) and a matched tone's
+                // peak gain: a tone on the played note rises 7-10 dB, noise falls 6 dB (measured)
+                let r = self.reson.tick(x, fs / self.osc_hz, fb) * pow(1.0 - fb * fb, 0.625);
+                x + p.reson * (r - x)
+            } else {
+                x
             };
             self.dry[i] = x as f32;
             let a = x.abs();
@@ -1141,7 +1104,7 @@ mod tests {
             for &(x, y, round, nasal, damping, folds, breath) in &[(-0.3, -0.3, -1.0, 1.5, 0.1, 2.0, 6.0), (1.3, 1.3, 1.0, 0.0, 20.0, 0.0, 0.0), (0.5, 0.5, 0.0, 0.7, 1.0, 1.0, 3.0)] {
                 let mut s = Suu::new(48000.0);
                 s.set_size(size);
-                s.set_params(Params { gate: true, vowel_x: x, vowel_y: y, round, nasal, damping, folds, breath, drive_db: 40.0, ..Params::default() });
+                s.set_params(Params { gate: true, vowel_x: x, vowel_y: y, round, nasal, damping, folds, breath, drive_db: 40.0, reson: x.clamp(0.0, 1.0), ..Params::default() });
                 let out = run(&mut s, 128, 24000);
                 let pk = peak(&out);
                 assert!(pk.is_finite() && pk < 1.0, "size {size} x {x} y {y}: peak {pk}");
@@ -1164,37 +1127,12 @@ mod tests {
     }
 
     #[test]
-    fn arp_hold_keeps_released_notes_until_a_new_chord() {
-        let mut s = Suu::new(48000.0);
-        s.set_seq(SeqMode::Arp, 16, 4.0, 0.6, ArpOrder::Up, 1);
-        s.set_latch(true);
-        s.note_on(48);
-        s.note_on(52);
-        s.note_off(48);
-        s.note_off(52);
-        assert_eq!(&s.seq.held[..s.seq.n_held], &[48, 52]);
-        // a new chord replaces the latched one
-        s.note_on(55);
-        assert_eq!(&s.seq.held[..s.seq.n_held], &[55]);
-        // hold off keeps only the keys still down
-        s.note_on(59);
-        s.note_off(55);
-        s.set_latch(false);
-        assert_eq!(&s.seq.held[..s.seq.n_held], &[59]);
-        // and the latched arp sounds
-        s.set_latch(true);
-        s.note_off(59);
-        s.set_playing(true);
-        let out = run(&mut s, 128, 24000);
-        assert!(peak(&out) > 0.01);
-    }
-
-    #[test]
-    fn the_arp_gates_an_external_sound() {
+    fn the_sequencer_gates_an_external_sound() {
         let mut s = Suu::new(48000.0);
         s.set_params(Params { source: Source::Input, bpm: 120.0, ..Params::default() });
-        s.set_seq(SeqMode::Arp, 16, 4.0, 0.5, ArpOrder::Up, 1);
-        s.note_on(48);
+        for i in 0..STEPS {
+            s.set_step(i, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 0.5 });
+        }
         s.set_playing(true);
         // a steady external tone
         let input: Vec<f32> = (0..48000).map(|i| (0.3 * (2.0 * std::f64::consts::PI * 110.0 * i as f64 / 48000.0).sin()) as f32).collect();
@@ -1207,6 +1145,134 @@ mod tests {
         let win: Vec<f64> = out[12000..].chunks(1500).map(rms).collect(); // 31 ms windows
         let (lo, hi) = win.iter().fold((f64::MAX, 0f64), |(l, h), v| (l.min(*v), h.max(*v)));
         assert!(hi > 4.0 * lo, "gated: max {hi} min {lo}");
+    }
+
+    #[test]
+    fn keys_gate_an_external_sound() {
+        let tone: Vec<f32> = (0..24000).map(|i| (0.3 * (2.0 * std::f64::consts::PI * 110.0 * i as f64 / 48000.0).sin()) as f32).collect();
+        let level = |gate: bool| {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { source: Source::Input, gate, ..Params::default() });
+            let mut out = vec![0f32; 24000];
+            for (o, x) in out.chunks_mut(128).zip(tone.chunks(128)) {
+                s.process(x, o);
+            }
+            (out[12000..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 12000.0).sqrt()
+        };
+        let (closed, open) = (level(false), level(true));
+        assert!(open > 0.005 && closed < 1e-4 * open, "closed {closed} open {open}");
+    }
+
+    /// Normalised autocorrelation of `x` at `lag`.
+    fn autocorr(x: &[f32], lag: usize) -> f64 {
+        let (mut num, mut den) = (0.0, 0.0);
+        for i in lag..x.len() {
+            num += x[i] as f64 * x[i - lag] as f64;
+            den += (x[i] as f64).powi(2);
+        }
+        num / den
+    }
+
+    #[test]
+    fn the_resonator_gives_an_outside_sound_the_played_pitch() {
+        // white noise in (a fixed seed), A3 (220 Hz) held
+        let mut r = 0x1234_5678u32;
+        let noise: Vec<f32> = (0..48000)
+            .map(|_| {
+                r ^= r << 13;
+                r ^= r >> 17;
+                r ^= r << 5;
+                (r as f64 / u32::MAX as f64 - 0.5) as f32 * 0.4
+            })
+            .collect();
+        let render = |reson: f64| {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { source: Source::Input, gate: true, note: 57.0, reson, ..Params::default() });
+            let mut out = vec![0f32; 48000];
+            for (o, x) in out.chunks_mut(128).zip(noise.chunks(128)) {
+                s.process(x, o);
+            }
+            out[24000..].to_vec()
+        };
+        let lag = (48000.0f64 / 220.0).round() as usize;
+        let (off, on) = (render(0.0), render(0.8));
+        let (a_off, a_on) = (autocorr(&off, lag), autocorr(&on, lag));
+        assert!(a_on > 0.6 && a_on > a_off + 0.3, "periodicity at 220 Hz: off {a_off:.2}, on {a_on:.2}");
+        assert!(peak(&on) < 1.0 && peak(&on) > 0.01, "peak {}", peak(&on));
+        let rms = |x: &[f32]| (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+        println!("rms off {:.4} on {:.4}, autocorr off {a_off:.2} on {a_on:.2}", rms(&off), rms(&on));
+    }
+
+    /// Samples until the oscillator's pitch reaches `to` after a jump there.
+    fn glide_samples(p: Params, to: f64) -> usize {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, ..p });
+        run(&mut s, 128, 4800);
+        s.set_params(Params { gate: true, note: to, ..p });
+        let mut n = 0;
+        while s.pitch != to && n < 480000 {
+            run(&mut s, 32, 32);
+            n += 32;
+        }
+        n
+    }
+
+    #[test]
+    fn glide_takes_its_time_free_or_synced() {
+        let base = Params { note: 45.0, ..Params::default() };
+        // free: 0.25 s, whatever the interval (linear in semitones)
+        for to in [57.0, 33.0, 46.0] {
+            let n = glide_samples(Params { glide_s: 0.25, ..base }, to);
+            assert!((n as i64 - 12000).abs() <= 64, "to {to}: {n} samples");
+        }
+        // synced: a beat at 120 bpm = 0.5 s
+        let n = glide_samples(Params { glide_s: 0.25, glide_sync: 1.0, bpm: 120.0, ..base }, 57.0);
+        assert!((n as i64 - 24000).abs() <= 64, "synced: {n} samples");
+        // off: at once
+        assert!(glide_samples(Params { glide_s: 0.0, ..base }, 57.0) <= 64);
+    }
+
+    #[test]
+    fn the_global_gate_scales_every_step_alike() {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { bpm: 120.0, ..Params::default() });
+        s.set_step(0, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 0.4 });
+        s.set_step(1, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 0.8 });
+        s.set_seq(2, 4.0, 0.5);
+        // sixteenths at 120 bpm: 6000 samples a step; open gate lengths 0.2 and 0.4 of a step
+        let mut open = [0usize; 2];
+        s.set_playing(true);
+        for _ in 0..(12000 / 32) {
+            run(&mut s, 32, 32);
+            if s.gate_now {
+                open[s.seq.step] += 32;
+            }
+        }
+        assert!((open[0] as i64 - 1200).abs() <= 64 && (open[1] as i64 - 2400).abs() <= 64, "{open:?}");
+        // above 100 % a step is capped at the whole step
+        s.set_seq(2, 4.0, 2.0);
+        s.seq.step = 0;
+        assert!((s.gate_len() - 0.8).abs() < 1e-12);
+        s.seq.step = 1;
+        assert_eq!(s.gate_len(), 1.0);
+    }
+
+    #[test]
+    fn the_text_loop_runs_at_its_own_rate() {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { bpm: 120.0, text_sync: 0.5, ..Params::default() });
+        assert_eq!(s.loop_beats(), 0.5);
+        s.set_params(Params { bpm: 120.0, text_sync: 0.0, text_rate_hz: 4.0, ..Params::default() });
+        assert_eq!(s.loop_beats(), 0.5);
+        // never shorter than 60 ms (a 1/32 at 300 bpm would be 25 ms)
+        s.set_params(Params { bpm: 300.0, text_sync: 0.125, ..Params::default() });
+        assert!((s.loop_beats() - 0.3).abs() < 1e-12);
+        // and it sings: a looped word, a syllable per eighth
+        s.load_dict("WOW  W AW1\nYEAH  Y AE1\n");
+        s.set_params(Params { gate: true, bpm: 120.0, text_sync: 0.5, ..Params::default() });
+        assert_eq!(s.set_text("wow yeah", TextMode::Loop), 2);
+        let out = run(&mut s, 128, 48000);
+        assert!(peak(&out).is_finite() && peak(&out) < 1.0 && peak(&out) > 0.01);
     }
 
     #[test]
@@ -1237,7 +1303,7 @@ mod tests {
     fn steps_have_their_own_length_and_accent() {
         let mut s = Suu::new(48000.0);
         s.set_params(Params { bpm: 120.0, ..Params::default() });
-        s.set_seq(SeqMode::Steps, 2, 4.0, 0.6, ArpOrder::Up, 1);
+        s.set_seq(2, 4.0, 1.0);
         // step 0 short and plain, step 1 long and accented (sixteenths at 120 bpm: 6000 samples)
         s.set_step(0, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 0.2 });
         s.set_step(1, Step { on: true, note: 0, tie: false, vowel: -1, accent: true, len: 0.9 });

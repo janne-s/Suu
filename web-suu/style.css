@@ -1,27 +1,37 @@
 /* Suu: a blue-grey vector instrument. Surfaces, not outlines: sections are raised panels
    separated by gaps, wells and fields are pressed in with soft inner shadows. Blue-grey is
-   structure, cyan is what you play, amber is time and sound. One window; only the views stretch. */
+   structure, cyan is what you play, amber is time and sound. Only the mouth itself is drawn in the
+   lips' rose. One window; only the views stretch. */
 @font-face { font-family: "Hershey"; src: url("fonts/AVHersheySimplexLight.otf") format("opentype"); font-weight: 100 400; font-display: swap; }
 @font-face { font-family: "Hershey"; src: url("fonts/AVHersheySimplexMedium.otf") format("opentype"); font-weight: 401 900; font-display: swap; }
 :root {
   color-scheme: dark;
   --bg: #040608;
   --panel: #0d1217;
+  --panel-top: #121a21; /* a panel's lit upper edge */
   --well: #06090c;
   --field: #141b22;
   --field-hi: #1b242d;
+  --step-on: #16212a;
   --line: #1c2731;
   --struct: #4f6b7d;
+  --struct-rgb: 79, 107, 125;
   --ink: #c3d1db;
   --dim: #93a8b4;    /* secondary text: 6.6-8.1:1 on every surface (WCAG AA) */
   --label: #aabfc8;  /* control names: 8.6-10.5:1 */
   --title: #b4cbd8;  /* section titles, bright blue-grey with a soft glow: 10+:1 */
   --off: #62788a;    /* unset marks (·, ◆ off): 3.6-4.3:1 */
   --beam: #8fd8ff;
+  --beam-rgb: 143, 216, 255;
   --beam-line: #2f6f8f;
   --sound: #ff9d3c;
+  --sound-rgb: 255, 157, 60;
+  --lips: #ff6f91;   /* the mouth drawing only */
+  --lips-hi: #ffc2d0;
+  --lips-rgb: 255, 111, 145;
+  --led-off: #1d1710;
   --warn: #ff4b2b;
-  --glow: 0 0 6px rgba(143, 216, 255, 0.45);
+  --glow: 0 0 6px rgba(var(--beam-rgb), 0.45);
   --raise: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 1px 3px rgba(0, 0, 0, 0.5);
   --press: inset 0 1px 4px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.015);
   --fh: 24px; /* every field, button and box is this tall */
@@ -29,7 +39,9 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--ink); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* an instrument, not a document: dragging over it selects nothing (only text fields and the credits) */
+body { margin: 0; background: var(--bg); color: var(--ink); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; -webkit-user-select: none; user-select: none; }
+input[type=text], input:not([type]), .popover p { -webkit-user-select: text; user-select: text; }
 body::before {
   content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9;
   background: repeating-linear-gradient(0deg, transparent 0 3px, #00000014 3px 4px);
@@ -46,7 +58,7 @@ button {
   background: var(--field); color: var(--ink); box-shadow: var(--raise); font-size: 11px;
 }
 button:hover { background: var(--field-hi); }
-button[aria-pressed=true], button[aria-expanded=true], button.primary { color: var(--beam); text-shadow: var(--glow); box-shadow: var(--raise), inset 0 0 0 1px rgba(143, 216, 255, 0.18); }
+button[aria-pressed=true], button[aria-expanded=true], button.primary { color: var(--beam); text-shadow: var(--glow); box-shadow: var(--raise), inset 0 0 0 1px rgba(var(--beam-rgb), 0.18); }
 button.square { width: var(--fh); padding: 0; }
 button.tiny { height: 16px; padding: 0 5px; font-size: 9px; vertical-align: 1px; margin-left: 6px; }
 .field {
@@ -58,18 +70,19 @@ button.tiny { height: 16px; padding: 0 5px; font-size: 9px; vertical-align: 1px;
 select.field { cursor: pointer; color: var(--beam); }
 .field.drag { cursor: ns-resize; user-select: none; touch-action: none; }
 .field.on { color: var(--beam); text-shadow: var(--glow); }
-:is(button, .field, a):focus-visible { outline: 1px solid var(--beam); outline-offset: 1px; }
+:focus, :focus-visible { outline: none; }
+/* focus shows only while moving by keys (Tab), as a faint ring; never after a click */
+[data-nav=keys] :is(button, .field, a, input, select):focus { outline: 1px solid rgba(var(--beam-rgb), 0.35); outline-offset: 0; }
 .labeled { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--label); }
 .seg { display: inline-flex; gap: 2px; }
 
 .instrument {
   height: 100vh; height: 100dvh; max-width: 1440px; margin: 0 auto; padding: 6px;
-  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: 6px; position: relative;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; grid-template-columns: minmax(0, 1fr); gap: 6px; position: relative;
 }
-.panel { background: linear-gradient(180deg, #121a21 0, var(--panel) 46px); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
-.bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: linear-gradient(180deg, #121a21, var(--panel)); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
-h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500; letter-spacing: 6px; text-shadow: 0 0 8px rgba(143, 216, 255, 0.6); }
-#start { width: 84px; }
+.panel { background: linear-gradient(180deg, var(--panel-top) 0, var(--panel) 46px); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
+.bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: linear-gradient(180deg, var(--panel-top), var(--panel)); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
+h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500; letter-spacing: 6px; text-shadow: 0 0 8px rgba(var(--beam-rgb), 0.6); }
 #status { flex: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; transition: opacity 0.6s; }
 #status.fade { opacity: 0; }
 .keys { display: inline-flex; align-items: center; gap: 2px; }
@@ -79,10 +92,10 @@ h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500;
 .mouth-panel, .motion-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; }
 .panel-title > div { display: flex; gap: 2px; }
-h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: var(--title); letter-spacing: 3px; text-shadow: 0 0 7px rgba(143, 216, 255, 0.35); display: flex; align-items: center; }
+h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: var(--title); letter-spacing: 3px; text-shadow: 0 0 7px rgba(var(--beam-rgb), 0.35); display: flex; align-items: center; }
 /* a small lit mark before each section title, so the eye finds where a section starts */
 .panel-title h2::before, .stage h2::before {
-  content: ''; width: 3px; height: 11px; margin-right: 8px; border-radius: 2px; background: var(--beam); box-shadow: 0 0 6px var(--beam), 0 0 12px rgba(143, 216, 255, 0.4);
+  content: ''; width: 3px; height: 11px; margin-right: 8px; border-radius: 2px; background: var(--beam); box-shadow: 0 0 6px var(--beam), 0 0 12px rgba(var(--beam-rgb), 0.4);
 }
 .well { position: relative; flex: 1; min-height: 110px; margin: 0 8px 8px; background: var(--well); border-radius: 4px; box-shadow: inset 0 2px 14px rgba(0, 0, 0, 0.7), inset 0 0 0 1px rgba(255, 255, 255, 0.015); overflow: hidden; }
 .well canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -90,6 +103,8 @@ h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: v
 .overlay { position: absolute; z-index: 2; inset: 8px 8px auto; padding: 8px; display: grid; gap: 6px; background: var(--panel); border-radius: 4px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6), var(--raise); }
 .overlay form { display: flex; gap: 2px; }
 #text { flex: 1; width: auto; text-align: left; padding: 0 8px; }
+#singtext { width: 72px; }
+.text-timing { display: flex; gap: 8px; align-items: center; }
 
 /* Motion: name · base · depth · rate (♪) · shape; every value box the same size */
 .motion-head, .motion-row { display: grid; grid-template-columns: 70px minmax(60px, 1fr) 64px 90px 64px; gap: 8px; align-items: center; padding: 0 10px; }
@@ -113,15 +128,15 @@ h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: v
 
 /* sequencer: a step is note (with its length bar and accent) over a vowel half */
 .sequencer { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 8px 10px; }
-.seq-controls { display: grid; gap: 4px; align-content: start; justify-items: end; }
+.seq-controls { display: grid; grid-template-columns: auto auto; gap: 4px 10px; align-content: start; justify-items: end; }
 #play { width: 100%; }
 .steps { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 3px; }
 .step { display: grid; grid-template-rows: auto auto 8px; gap: 2px; min-width: 0; user-select: none; justify-items: stretch; }
-.step:nth-child(4n + 1) .note { box-shadow: var(--raise), inset 2px 0 0 rgba(79, 107, 125, 0.45); }
+.step:nth-child(4n + 1) .note { box-shadow: var(--raise), inset 2px 0 0 rgba(var(--struct-rgb), 0.45); }
 .step .note { position: relative; height: 38px; border-radius: 3px; background: var(--field); box-shadow: var(--raise); display: grid; place-items: center; padding-bottom: 6px; cursor: ns-resize; touch-action: none; color: var(--dim); font-size: 11px; }
-.step.on .note { color: var(--beam); text-shadow: var(--glow); background: #16212a; }
+.step.on .note { color: var(--beam); text-shadow: var(--glow); background: var(--step-on); }
 .step .len { position: absolute; left: 4px; right: 4px; bottom: 4px; height: 4px; border-radius: 2px; background: var(--well); cursor: ew-resize; }
-.step .len b { display: block; height: 100%; width: calc(var(--len) * 100%); border-radius: 2px; background: var(--beam-line); }
+.step .len b { display: block; height: 100%; width: calc(var(--glen, var(--len)) * 100%); border-radius: 2px; background: var(--beam-line); }
 .step.on .len b { background: var(--beam); box-shadow: 0 0 4px var(--beam); }
 .step.tie .len { right: -5px; }
 .step .acc { position: absolute; top: 2px; right: 3px; font-size: 9px; line-height: 1; color: var(--off); cursor: pointer; padding: 1px; }
@@ -130,11 +145,11 @@ h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: v
 .step .vowel { height: 38px; border-radius: 3px; background: var(--well); box-shadow: var(--press); display: grid; place-items: center; font-size: 17px; color: var(--off); cursor: pointer; }
 .step .vowel.set { color: var(--ink); }
 /* the running step: a point of light under it, as on old drum machines */
-.step .led { justify-self: center; align-self: end; width: 5px; height: 5px; border-radius: 50%; background: #1d1710; box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6); }
-.step.now .led { background: var(--sound); box-shadow: 0 0 4px var(--sound), 0 0 10px rgba(255, 157, 60, 0.55); }
+.step .led { justify-self: center; align-self: end; width: 5px; height: 5px; border-radius: 50%; background: var(--led-off); box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6); }
+.step.now .led { background: var(--sound); box-shadow: 0 0 4px var(--sound), 0 0 10px rgba(var(--sound-rgb), 0.55); }
 
 /* knobs */
-.stages { display: grid; grid-template-columns: 2fr 2fr 4fr 5fr 2fr; padding: 6px 4px 8px; }
+.stages { display: grid; grid-template-columns: 2fr 2fr 5fr 5fr 2fr; padding: 6px 4px 8px; }
 .stage { min-width: 0; padding: 0 6px; }
 .stage + .stage { box-shadow: -1px 0 0 rgba(0, 0, 0, 0.35), -2px 0 0 rgba(255, 255, 255, 0.02); }
 .stage h2 { padding: 2px 6px 0; display: flex; align-items: center; }
@@ -147,7 +162,7 @@ h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: v
   appearance: none; width: 42px; height: 42px; margin: 4px 0 0; flex-shrink: 0; border: 0;
   border-radius: 50%; cursor: ns-resize; touch-action: none;
   background: radial-gradient(circle, var(--panel) 59%, transparent 62%), conic-gradient(from 225deg, var(--beam) var(--turn, 0deg), var(--well) var(--turn, 0deg) 270deg, transparent 270deg);
-  filter: drop-shadow(0 0 2px rgba(143, 216, 255, 0.15));
+  filter: drop-shadow(0 0 2px rgba(var(--beam-rgb), 0.15));
 }
 .knob input[type=range]::-webkit-slider-thumb { appearance: none; width: 0; height: 0; }
 .knob input[type=range]::-moz-range-thumb { width: 0; height: 0; border: 0; }
