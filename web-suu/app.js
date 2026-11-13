@@ -814,7 +814,7 @@ function pushAll() {
   send(1, lastNote);
   sendHorn();
   gate();
-  sendTextRate();
+  sendText(false);
   setSpace();
   steps.forEach((_, i) => sendStep(i));
   sendSeq();
@@ -1175,11 +1175,14 @@ function showSeq(isPlaying, step) {
 for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 
 // ---------------------------------------------------------------- text
-let textMode = 1;
+// What moves the text on (note or its own clock), what it says at a time (syllable or word),
+// how (held or said through, and on the clock how long a held one lasts), where it starts (free
+// or with the sequence), how often (over and over or once a pass) and how fast it is spoken.
+const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1 };
 function sing(text) {
   if (!node) return;
   const bytes = new TextEncoder().encode(text);
-  post({ type: "text", bytes, mode: textMode }, [bytes.buffer]);
+  post({ type: "text", bytes }, [bytes.buffer]);
 }
 $("text-toggle").onclick = () => {
   const open = $("text-panel").hidden;
@@ -1206,71 +1209,76 @@ $("text").addEventListener("input", () => {
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("text").blur();
 });
-function setTextMode(m) {
-  textMode = m;
-  document.querySelectorAll("[data-tmode]").forEach((x) => x.setAttribute("aria-pressed", String(+x.dataset.tmode === m)));
-  $("looprate").hidden = m !== 0;
-}
-document.querySelectorAll("[data-tmode]").forEach((b) => {
-  b.onclick = () => {
-    setTextMode(+b.dataset.tmode);
-    if (textOn) sing($("text").value);
-  };
-});
-// the loop's own rate: free (syllables per second) or a note value per syllable
-const loop = { rate: 2, sync: "1/4", seq: true, once: false, speech: 1 };
-function sendTextRate(final = true) {
-  send(22, loop.rate);
-  send(23, loop.sync ? divBeats(loop.sync) : 0);
-  send(28, loop.seq ? 1 : 0);
-  send(29, loop.speech);
-  send(30, loop.once ? 1 : 0);
-  $("looponce").setAttribute("aria-pressed", String(loop.once));
-  $("speech").textContent = "×" + loop.speech.toFixed(2);
-  $("speech").classList.toggle("on", loop.speech !== 1);
-  $("loopseq").textContent = loop.seq ? "SEQ" : "FREE";
-  $("loopseq").setAttribute("aria-pressed", String(loop.seq));
-  $("loophz").textContent = loop.rate.toFixed(loop.rate < 10 ? 1 : 0) + "/s";
-  $("loophz").hidden = !!loop.sync;
-  $("loopdiv").hidden = !loop.sync;
-  if (loop.sync) $("loopdiv").value = loop.sync;
-  $("loopsync").setAttribute("aria-pressed", String(!!loop.sync));
-  // the text is planned ahead (the loop's pass, every syllable's pace): sing again so a change
-  // is heard now
+/** Send the text settings and show them; `final`: say the text again (it is planned ahead, so a
+ *  change of unit, rate, length or speed is heard only then). */
+function sendText(final = true) {
+  send(31, tx.step);
+  send(32, tx.unit);
+  send(33, tx.say);
+  send(34, tx.len);
+  send(22, tx.rate);
+  send(23, tx.sync ? divBeats(tx.sync) : 0);
+  send(28, tx.seq ? 1 : 0);
+  send(30, tx.once ? 1 : 0);
+  send(29, tx.speech);
+  const press = (attr, v) => document.querySelectorAll(`[${attr}]`).forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute(attr) === String(v))));
+  press("data-tstep", tx.step);
+  press("data-tunit", tx.unit);
+  press("data-tsay", tx.say);
+  press("data-tseq", +tx.seq);
+  press("data-tonce", +tx.once);
+  $("clockrate").hidden = tx.step !== 1;
+  $("lenbox").hidden = !(tx.step === 1 && tx.say === 0);
+  $("textlen").textContent = Math.round(tx.len * 100) + "%";
+  $("loophz").textContent = tx.rate.toFixed(tx.rate < 10 ? 1 : 0) + "/s";
+  $("loophz").hidden = !!tx.sync;
+  $("loopdiv").hidden = !tx.sync;
+  if (tx.sync) $("loopdiv").value = tx.sync;
+  $("loopsync").setAttribute("aria-pressed", String(!!tx.sync));
+  $("speech").textContent = "×" + tx.speech.toFixed(2);
+  $("speech").classList.toggle("on", tx.speech !== 1);
   if (final && textOn) sing($("text").value);
 }
+for (const [attr, key, bool] of [["data-tstep", "step"], ["data-tunit", "unit"], ["data-tsay", "say"], ["data-tseq", "seq", true], ["data-tonce", "once", true]]) {
+  document.querySelectorAll(`[${attr}]`).forEach((b) => {
+    b.onclick = () => {
+      const v = +b.getAttribute(attr);
+      tx[key] = bool ? !!v : v;
+      sendText();
+    };
+  });
+}
 $("loopdiv").innerHTML = DIVS.map(([n]) => `<option>${n}</option>`).join("");
-dragValue($("loophz"), () => Math.log(loop.rate), (lv, final) => {
-  loop.rate = clamp(Math.exp(lv), 0.25, 16);
-  sendTextRate(final);
+dragValue($("loophz"), () => Math.log(tx.rate), (lv, final) => {
+  tx.rate = clamp(Math.exp(lv), 0.25, 16);
+  sendText(final);
 }, 1 / 60);
-$("looponce").onclick = () => {
-  loop.once = !loop.once;
-  sendTextRate(); // sing again so it takes effect now
-};
-// speaking speed ×0.25 … ×4 (log); planned with the text, so it is sung again when let go
-dragValue($("speech"), () => Math.log(loop.speech), (lv, final) => {
-  loop.speech = Math.round(clamp(Math.exp(lv), 0.25, 4) * 100) / 100;
-  sendTextRate(final);
-}, 1 / 80);
-$("speech").ondblclick = () => {
-  loop.speech = 1;
-  sendTextRate();
-};
-$("loopseq").onclick = () => {
-  loop.seq = !loop.seq;
-  sendTextRate(false);
-};
 $("loopsync").onclick = () => {
-  loop.sync = loop.sync ? null : "1/4";
-  sendTextRate();
+  tx.sync = tx.sync ? null : "1/4";
+  sendText();
 };
 $("loopdiv").onchange = () => {
-  loop.sync = $("loopdiv").value;
-  sendTextRate();
+  tx.sync = $("loopdiv").value;
+  sendText();
 };
-setTextMode(textMode);
-sendTextRate(false);
+dragValue($("textlen"), () => tx.len, (v, final) => {
+  tx.len = Math.round(clamp(v, 0.05, 1) * 100) / 100;
+  sendText(final);
+}, 1 / 150);
+$("textlen").ondblclick = () => {
+  tx.len = 1;
+  sendText();
+};
+// speaking speed ×0.25 … ×4 (log)
+dragValue($("speech"), () => Math.log(tx.speech), (lv, final) => {
+  tx.speech = Math.round(clamp(Math.exp(lv), 0.25, 4) * 100) / 100;
+  sendText(final);
+}, 1 / 80);
+$("speech").ondblclick = () => {
+  tx.speech = 1;
+  sendText();
+};
+sendText(false);
 
 // ---------------------------------------------------------------- focus
 // a focus ring only while moving by keys: Tab turns it on, any pointer turns it off
@@ -1316,7 +1324,7 @@ function getState() {
     knobs,
     motion,
     seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
-    text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync, seq: loop.seq, once: loop.once, speech: loop.speech },
+    text: { words: $("text").value, ...tx },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
     hornWave: { ...hornWave, snap: snapVals.slice(), drawn: { mean: Math.round(drawn.mean * 1e4) / 1e4, w: drawn.w.slice() } },
@@ -1392,7 +1400,21 @@ function readState(raw) {
     snap,
     drawn: drawnOk ? { mean: num(dr.mean, 3, 0, HORN_MAX), w: dr.w.map((v) => num(v, 0, -50, 50)) } : null,
   };
-  out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync), seq: bool(text.seq, d.text.seq), once: bool(text.once, d.text.once), speech: num(text.speech, d.text.speech, 0.25, 4) };
+  // an older state's one mode becomes the three it stood for (loop, gate, one-shot)
+  const old = [[1, 0, 0], [0, 0, 0], [0, 1, 1]][text.mode] ?? null;
+  const pick = (v, dv, n) => (Number.isInteger(v) && v >= 0 && v < n ? v : dv);
+  out.text = {
+    words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words,
+    step: pick(text.step, old ? old[0] : d.text.step, 2),
+    unit: pick(text.unit, old ? old[1] : d.text.unit, 2),
+    say: pick(text.say, old ? old[2] : d.text.say, 2),
+    len: num(text.len, d.text.len, 0.05, 1),
+    rate: num(text.rate, d.text.rate, 0.25, 16),
+    sync: div(text.sync, d.text.sync),
+    seq: bool(text.seq, d.text.seq),
+    once: bool(text.once, d.text.once),
+    speech: num(text.speech, d.text.speech, 0.25, 4),
+  };
   return out;
 }
 
@@ -1437,9 +1459,9 @@ function applyState(st) {
   showHornWave();
   sendHorn();
   $("text").value = st.text.words;
-  setTextMode(st.text.mode);
-  Object.assign(loop, { rate: st.text.rate, sync: st.text.sync, seq: st.text.seq, once: st.text.once, speech: st.text.speech });
-  sendTextRate(false);
+  const { words, ...settings } = st.text;
+  Object.assign(tx, settings);
+  sendText(false);
   if (textOn) sing($("text").value);
 }
 

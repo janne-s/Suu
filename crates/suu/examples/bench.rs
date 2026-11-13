@@ -2,7 +2,7 @@
 //! Prints, for each, the time to render that many seconds at 48 kHz in 128-sample blocks, as a
 //! percentage of one core (real time = 100 %), the best of three runs.
 use std::time::Instant;
-use suu::{HORN_POINTS, Mod, Params, Shape, Source, Step, Suu, TextMode};
+use suu::{HORN_POINTS, Mod, Params, Shape, Source, Step, Suu, TextStep};
 
 fn main() {
     let secs: f64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(4.0);
@@ -37,14 +37,14 @@ fn main() {
         ("folds 1", Box::new(move |s: &mut Suu| s.set_params(Params { folds: 1.0, ..gate }))),
         ("sequencer + text gate", Box::new(move |s: &mut Suu| {
             s.load_dict(dict);
-            s.set_text("wow yeah oh yeah now", TextMode::Gate);
+            s.set_text("wow yeah oh yeah now");
             for i in 0..16 { s.set_step(i, Step { on: true, note: (i as i32 * 5) % 12, tie: false, vowel: (i % 5) as i32, accent: i % 4 == 0, len: 0.6 }); }
             s.set_playing(true);
         })),
         ("text loop", Box::new(move |s: &mut Suu| {
             s.load_dict(dict);
-            s.set_params(gate);
-            s.set_text("wow yeah oh yeah now", TextMode::Loop);
+            s.set_params(Params { text_step: TextStep::Clock, ..gate });
+            s.set_text("wow yeah oh yeah now");
         })),
     ];
     println!("{secs} s at 48 kHz, 128-sample blocks; % of one core (best of 3)");

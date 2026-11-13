@@ -25,10 +25,13 @@ purpose.
   Drag to draw your own, build it from a **Wave** (cycles and depth), or take
   one period of the sound with the camera; ↺ restores the original. **Morph** blends the horn in, **Shift** slides it
   along the tract (a wave wraps, so it can travel through), **Open** widens it.
-- **Text** — Type words. **Gate** sings a syllable per note, **One-shot** a
-  word per note, **Loop** syllables at its own rate or ♪, starting over with the
-  sequence (**Seq**) or running free (**Free**), or said once a pass (**1×**).
-  **Speed** sets how fast it is spoken, from ×0.25 to ×4.
+- **Text** — Type words, and choose how they are said. **Step**: each note says
+  the next one, or the text's own **Clock** (rate or ♪). **Unit**: a syllable or
+  a word at a time. **Say**: **Hold** keeps the vowel while the note lasts (on
+  the clock, for **Len** of a tick; 100% joins them), **Shot** says it through.
+  **Start**: **Free**, or **Seq** to start over with the sequence. **Repeat**:
+  **Loop**, or **1×** once a pass. **Speed** sets how fast it is spoken, from
+  ×0.25 to ×4.
 - **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
   Open, each with Depth, Rate or ♪, a shape (sine, triangle, saw, square,
   random, envelope) and Smooth, from sharp jumps to gliding ones.

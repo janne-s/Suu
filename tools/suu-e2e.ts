@@ -83,25 +83,33 @@ await page.click("#text-toggle");
 ok("text button starts as SING", (await page.textContent("#singtext"))!.includes("SING"));
 await page.click("#singtext"); await page.waitForTimeout(500);
 ok("SING → STOP", (await page.textContent("#singtext"))!.includes("STOP"));
-await page.click('[data-tmode="0"]');
-ok("loop shows its rate", await page.isVisible("#looprate"));
-ok("loop rate synced 1/4 by default", (await page.inputValue("#loopdiv")) === "1/4");
+// the text's choices: STEP, UNIT, SAY, START, REPEAT (the clock's rate and LEN only when they apply)
+const pressed = async (sel: string) => (await page.getAttribute(sel, "aria-pressed")) === "true";
+ok("defaults: note, syllable, hold, seq, loop", (await pressed('[data-tstep="0"]')) && (await pressed('[data-tunit="0"]')) && (await pressed('[data-tsay="0"]')) && (await pressed('[data-tseq="1"]')) && (await pressed('[data-tonce="0"]')));
+ok("no clock rate or length on notes", !(await page.isVisible("#clockrate")) && !(await page.isVisible("#lenbox")));
+await page.click('[data-tstep="1"]');
+ok("the clock shows its rate and length", (await page.isVisible("#clockrate")) && (await page.isVisible("#lenbox")));
+ok("clock rate synced 1/4 by default", (await page.inputValue("#loopdiv")) === "1/4");
 await page.click("#loopsync");
-ok("free loop rate shown", await page.isVisible("#loophz"), await page.textContent("#loophz") ?? "");
-ok("the loop follows the sequence by default", (await page.textContent("#loopseq")) === "SEQ");
-await page.click("#loopseq");
-ok("SEQ → FREE", (await page.textContent("#loopseq")) === "FREE");
-await page.click("#loopseq");
-await page.click("#looponce");
-ok("once toggles", (await page.getAttribute("#looponce", "aria-pressed")) === "true");
-await page.click("#looponce");
+ok("free clock rate shown", await page.isVisible("#loophz"), await page.textContent("#loophz") ?? "");
+await page.click("#loopsync");
+{
+  const b = await page.locator("#textlen").boundingBox();
+  await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down(); await page.mouse.move(b!.x + 20, b!.y + 40, { steps: 5 }); await page.mouse.up();
+  ok("length drags", (await page.textContent("#textlen")) !== "100%", await page.textContent("#textlen") ?? "");
+}
+await page.click('[data-tsay="1"]');
+ok("a shot has no length", !(await page.isVisible("#lenbox")));
+await page.click('[data-tunit="1"]'); await page.click('[data-tonce="1"]'); await page.click('[data-tseq="0"]');
+ok("word, once, free", (await pressed('[data-tunit="1"]')) && (await pressed('[data-tonce="1"]')) && (await pressed('[data-tseq="0"]')));
+await page.screenshot({ path: `${out}/2-text.png` });
+await page.click('[data-tstep="0"]'); await page.click('[data-tunit="0"]'); await page.click('[data-tsay="0"]'); await page.click('[data-tonce="0"]'); await page.click('[data-tseq="1"]');
 {
   const b = await page.locator("#speech").boundingBox();
   await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down(); await page.mouse.move(b!.x + 20, b!.y - 60, { steps: 5 }); await page.mouse.up();
   ok("speech speed drags", (await page.textContent("#speech")) !== "×1.00", await page.textContent("#speech") ?? "");
   await page.dblclick("#speech");
 }
-await page.screenshot({ path: `${out}/2-text.png` });
 await page.click("#singtext"); await page.waitForTimeout(300);
 ok("STOP → SING", (await page.textContent("#singtext"))!.includes("SING"));
 await page.click("#text-toggle");

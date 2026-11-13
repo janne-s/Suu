@@ -54,9 +54,18 @@
       </div>
       <div id="text-panel" class="overlay" hidden>
         <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false">▶ SING</button></form>
-        <div class="text-timing"><div class="seg" role="group" aria-label="Text timing"><button data-tmode="1" aria-pressed="true" title="A syllable per note, held while the note is">GATE</button><button data-tmode="2" aria-pressed="false" title="A whole word per note">ONE-SHOT</button><button data-tmode="0" aria-pressed="false" title="Syllables on their own, at the loop's rate">LOOP</button></div>
-        <span id="looprate" class="rate" hidden><span id="loophz" class="field drag" tabindex="0" aria-label="Loop rate, syllables per second"></span><select id="loopdiv" class="field" aria-label="Loop rate as a note value per syllable"></select><button id="loopsync" title="Sync to tempo">♪</button><button id="loopseq" aria-pressed="true" title="SEQ: the text starts over each time the sequence does · FREE: it runs on its own">SEQ</button><button id="looponce" class="square" aria-pressed="false" title="Once: say the text one time per pass of the sequence (or once when sung), not over and over">1×</button></span>
-        <label class="labeled" title="Speaking speed: how fast the consonants and the moves between sounds go; double-click resets">SPEED<span id="speech" class="field drag" tabindex="0" aria-label="Speaking speed"></span></label></div>
+        <div class="text-row">
+          <span class="tgroup"><span class="tlabel">STEP</span><span class="seg" role="group" aria-label="What moves the text on"><button data-tstep="0" title="Each note (a key, hold or a step) says the next one">NOTE</button><button data-tstep="1" title="The text's own clock (it does not gate the sound)">CLOCK</button></span>
+            <span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync" title="Sync to tempo">♪</button></span></span>
+          <span class="tgroup"><span class="tlabel">UNIT</span><span class="seg" role="group" aria-label="What is said at a time"><button data-tunit="0" title="A syllable at a time">SYL</button><button data-tunit="1" title="A word at a time">WORD</button></span></span>
+          <span class="tgroup"><span class="tlabel">SAY</span><span class="seg" role="group" aria-label="How each is said"><button data-tsay="0" title="Its vowel holds while the note does (on the clock: for LEN of a tick), then its ending">HOLD</button><button data-tsay="1" title="Said through, however long the note">SHOT</button></span>
+            <label id="lenbox" class="labeled" title="On the clock, how long a held one lasts: 100% joins them (legato); double-click resets">LEN<span id="textlen" class="field drag" tabindex="0" aria-label="Held length on the clock"></span></label></span>
+        </div>
+        <div class="text-row">
+          <span class="tgroup"><span class="tlabel">START</span><span class="seg" role="group" aria-label="Where the text starts"><button data-tseq="0" title="Goes on where it was">FREE</button><button data-tseq="1" title="Starts over each time the sequence does">SEQ</button></span></span>
+          <span class="tgroup"><span class="tlabel">REPEAT</span><span class="seg" role="group" aria-label="How often"><button data-tonce="0" title="Over and over">LOOP</button><button data-tonce="1" title="Once per pass of the sequence (or once when sung)">1×</button></span></span>
+          <label class="labeled" title="Speaking speed: how fast the consonants and the moves between sounds go; double-click resets">SPEED<span id="speech" class="field drag" tabindex="0" aria-label="Speaking speed"></span></label>
+        </div>
       </div>
     </div>
   </section>

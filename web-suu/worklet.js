@@ -1,5 +1,5 @@
 // Suu's AudioWorklet: one wasm instance, mono in → mono out (copied to both channels).
-// From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes, mode}
+// From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes}
 //   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", len, div, gate}
 //   · {type:"play", on} · {type:"retrigger"} · {type:"profile", areas: Float32Array, wrap}
 //   · {type:"mod", target, depth, rate, sync, shape, smooth}
@@ -48,7 +48,7 @@ class SuuProcessor extends AudioWorkletProcessor {
       }
       case "text": {
         const p = this.bytes(m.bytes);
-        const n = x.suu_set_text(h, p, m.bytes.length, m.mode);
+        const n = x.suu_set_text(h, p, m.bytes.length);
         x.suu_free(p, m.bytes.length);
         this.port.postMessage({ type: "text", syllables: n });
         break;

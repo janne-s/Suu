@@ -2,7 +2,7 @@
 //! writes and reads through the wasm memory, parameters by index (see `PARAMS`), and text and
 //! the dictionary passed as UTF-8 in buffers from `suu_alloc`.
 
-use suu::{MAX_BLOCK, Mod, Params, Shape, Source, Step, Suu, TextMode};
+use suu::{MAX_BLOCK, Mod, Params, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
 
 pub struct Handle {
     suu: Suu,
@@ -18,7 +18,8 @@ pub struct Handle {
 /// 14 sub_hz, 15 sub_level, 16 mix, 17 out_db, 18 size (rebuilds the airway), 19 bpm,
 /// 20 glide_s, 21 glide_sync (beats, 0 = free), 22 text_rate_hz, 23 text_sync (beats, 0 = free),
 /// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn), 28 text_seq (0/1), 29 speech,
-/// 30 text_once (0/1)
+/// 30 text_once (0/1), 31 text_step (0 note, 1 clock), 32 text_unit (0 syllable, 1 word),
+/// 33 text_say (0 hold, 1 shot), 34 text_len
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Input, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -51,6 +52,10 @@ fn set(p: &mut Params, id: u32, v: f64) {
         28 => p.text_seq = v > 0.5,
         29 => p.speech = v,
         30 => p.text_once = v > 0.5,
+        31 => p.text_step = if v > 0.5 { TextStep::Clock } else { TextStep::Note },
+        32 => p.text_unit = if v > 0.5 { TextUnit::Word } else { TextUnit::Syllable },
+        33 => p.text_say = if v > 0.5 { TextSay::Shot } else { TextSay::Hold },
+        34 => p.text_len = v,
         _ => {}
     }
 }
@@ -115,16 +120,14 @@ pub extern "C" fn suu_load_dict(h: *mut Handle, ptr: *const u8, len: usize) {
     h.suu.load_dict(text(ptr, len));
 }
 
-/// Sing `text` (mode 0 loop, 1 gate, 2 one-shot); returns the syllable count (0 = the pad).
+/// Say `text` as the text parameters (28-34, 22, 23) say; returns the syllable count (0 = the
+/// pad). Call again after changing the unit, the clock's rate or length, the tempo or the speed.
 #[unsafe(no_mangle)]
-pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize, mode: u32) -> u32 {
+pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize) -> u32 {
     let h = unsafe { &mut *h };
-    let m = match mode { 1 => TextMode::Gate, 2 => TextMode::OneShot, _ => TextMode::Loop };
-    h.suu.set_text(text(ptr, len), m) as u32
+    h.suu.set_text(text(ptr, len)) as u32
 }
 
-/// The drawn horn: `n` little-endian f32 areas (cm²) at `ptr`, glottis → lips (see
-/// `suu::HORN_POINTS`); `wrap` 1 = one period of a wave, Shift wraps around.
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_set_profile(h: *mut Handle, ptr: *const u8, n: usize, wrap: u32) {
     let h = unsafe { &mut *h };
