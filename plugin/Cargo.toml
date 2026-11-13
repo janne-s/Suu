@@ -1,0 +1,28 @@
+[package]
+name = "suu_plugin"
+description = "Suu as a plug-in: the shared code of the effect (suu_fx) and the instrument (suu_synth)"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+members = ["fx", "synth", "xtask"]
+
+[dependencies]
+suu = { path = "../crates/suu" }
+chimera = { path = "../crates/chimera" }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683", features = ["assert_process_allocs"] }
+crossbeam-channel = "0.5"
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = false
+
+[profile.profiling]
+inherits = "release"
+debug = true

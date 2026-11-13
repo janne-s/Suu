@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/chimera", "crates/chimera-wasm", "crates/chimera-cli", "crates/suu", "crates/suu-wasm"]
+exclude = ["plugin"]
 
 [workspace.package]
 version = "0.1.0"

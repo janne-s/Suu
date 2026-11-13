@@ -24,6 +24,7 @@ use chimera::math::{PI, clamp, cos, exp, js_max, midi_to_hz, pow, sin};
 use chimera::phonetics::Syllable;
 use chimera::phonetics::english::EnglishG2P;
 use chimera::phonetics::planner::vowel_artic;
+use chimera::control::articulators::ArticulatorBank;
 use chimera::control::score::{ControlKey, Gesture};
 use chimera::phonetics::sing::{NoteOnOptions, SongOptions, SungNote, plan_note_off, plan_note_on, plan_song_at};
 use chimera::phonetics::syllables::lyrics_to_syllables;
@@ -319,29 +320,34 @@ struct Seq {
     note: f64,
 }
 
+/// The sequencer's starting pattern: root, octave, fifth, flat seventh, with vowels.
+pub fn default_pattern() -> [Step; STEPS] {
+    // a starting pattern: root, octave, fifth, flat seventh, with vowels
+    let pat: [(bool, i32, bool, i32); STEPS] = [
+        (true, 0, false, 0),
+        (false, 0, false, -1),
+        (true, 12, false, 4),
+        (true, 0, false, 2),
+        (true, 0, true, 0),
+        (true, 7, false, 3),
+        (false, 0, false, -1),
+        (true, 10, false, 1),
+        (true, 0, false, 0),
+        (false, 0, false, -1),
+        (true, 12, false, 4),
+        (true, 0, false, 2),
+        (true, 3, false, 3),
+        (true, 5, false, 0),
+        (true, 7, false, 1),
+        (false, 0, false, -1),
+    ];
+    pat.map(|(on, note, tie, vowel)| Step { on, note, tie, vowel, accent: false, len: 0.6 })
+}
+
 impl Seq {
     fn new() -> Self {
-        // a starting pattern: root, octave, fifth, flat seventh, with vowels
-        let pat: [(bool, i32, bool, i32); STEPS] = [
-            (true, 0, false, 0),
-            (false, 0, false, -1),
-            (true, 12, false, 4),
-            (true, 0, false, 2),
-            (true, 0, true, 0),
-            (true, 7, false, 3),
-            (false, 0, false, -1),
-            (true, 10, false, 1),
-            (true, 0, false, 0),
-            (false, 0, false, -1),
-            (true, 12, false, 4),
-            (true, 0, false, 2),
-            (true, 3, false, 3),
-            (true, 5, false, 0),
-            (true, 7, false, 1),
-            (false, 0, false, -1),
-        ];
         Seq {
-            steps: pat.map(|(on, note, tie, vowel)| Step { on, note, tie, vowel, accent: false, len: 0.6 }),
+            steps: default_pattern(),
             len: 16,
             div: 4.0,
             gate_scale: 1.0,
@@ -474,11 +480,257 @@ fn oversample_for(fs: f64, k: f64) -> usize {
     if fs > 60000.0 { base.div_ceil(2).max(1) } else { base }
 }
 
+/// What building a mouth of a new size needs from the playing one (`Suu::mouth_seed`): plain
+/// values, made on the audio thread without allocating and sent to the thread that builds.
+#[derive(Clone)]
+pub struct MouthSeed {
+    fs: f64,
+    scale: f64,
+    artic: ArticulatorBank,
+    profile: [f64; HORN_POINTS],
+    wrap: bool,
+    horn: (f64, f64, f64),
+    inject: f64,
+    damping: f64,
+    folds: f64,
+    pressure: f64,
+}
+
+impl MouthSeed {
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+}
+
+/// A mouth (an airway and its voice) built off the audio thread, for `Suu::set_mouth`; also an
+/// old one handed back by `Suu::take_retired`, to be dropped there.
+pub struct Mouth {
+    voice: Box<HumanVoice>,
+    scale: f64,
+}
+
+impl Mouth {
+    /// Build a mouth of the seed's size, shaped like the seed's, and let it settle in silence at
+    /// its breath (250 ms rendered and dropped: a cold airway blew a transient that set the
+    /// output limiter clamping for 300 ms). Allocates; a few milliseconds.
+    pub fn build(seed: &MouthSeed) -> Mouth {
+        let body = HumanBody { name: "suu", scale: seed.scale, ..BODY_MALE };
+        let mut v = Box::new(HumanVoice::new(seed.fs, body, oversample_for(seed.fs, seed.scale)));
+        v.artic = seed.artic.clone();
+        v.airway.profile = seed.profile.to_vec();
+        v.airway.profile_wrap = seed.wrap;
+        (v.airway.profile_mix, v.airway.profile_shift, v.airway.profile_open) = seed.horn;
+        let x = v.artic.x;
+        v.airway.apply(&x, 0.0);
+        v.airway.net.snap_to_targets();
+        v.glottal_area_scale = seed.folds;
+        v.set_source(&SourcePatch { voiced: Some(true), tension: Some(0.55), drift: Some(0.0), glide: Some(0.002), ..Default::default() });
+        v.set_gate(1.0);
+        v.set_injection(seed.inject);
+        v.airway.net.viscous_scale = seed.damping;
+        v.set_source(&SourcePatch { pressure: Some(seed.pressure), ..Default::default() });
+        let zeros = [0f32; MAX_BLOCK];
+        let mut out = [0f32; MAX_BLOCK];
+        let mut left = (0.25 * seed.fs) as usize;
+        while left > 0 {
+            let n = left.min(MAX_BLOCK);
+            v.render_driven(&zeros[..n], 100.0, &mut out[..n]);
+            left -= n;
+        }
+        Mouth { voice: v, scale: seed.scale }
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+}
+
+/// What the text's timing depends on: a plan made for other values is stale.
+#[derive(Clone, Copy, PartialEq)]
+struct PlanKey {
+    unit: TextUnit,
+    beats: f64,
+    len: f64,
+    bpm: f64,
+    speech: f64,
+}
+
+impl PlanKey {
+    fn of(p: &Params) -> Self {
+        PlanKey { unit: p.text_unit, beats: loop_beats(p), len: p.text_len, bpm: p.bpm, speech: p.speech }
+    }
+}
+
+/// The text clock's beats per unit: synced, or from its free rate; never under 60 ms.
+fn loop_beats(p: &Params) -> f64 {
+    let beats = if p.text_sync > 0.0 { p.text_sync } else { p.bpm / 60.0 / p.text_rate_hz };
+    js_max(beats, 0.06 * p.bpm / 60.0)
+}
+
+/// Typed text, planned: its syllables and, per unit (syllable or word), the gestures the audio
+/// thread only copies: a note's held unit (its last vowel open until the note-off) and its
+/// ending; a unit said through, with how far it reaches before its vowel; a unit on the clock,
+/// held `text_len` of a tick, the same; and the joined pass (on the clock, held, `text_len` 1).
+/// Made by `TextPlan::new`, which allocates (off the audio thread in the plug-in); put in place
+/// by `Suu::set_text_plan`, which does not.
+pub struct TextPlan {
+    text: Vec<Syllable>,
+    hold_on: Vec<Vec<Gesture>>,
+    hold_off: Vec<Vec<Gesture>>,
+    shot: Vec<Vec<Gesture>>,
+    shot_lead: f64,
+    /// each unit's spoken length (s), for `text_gate` on notes
+    shot_len: Vec<f64>,
+    tick_plan: Vec<Vec<Gesture>>,
+    tick_lead: f64,
+    pass_plan: Vec<Gesture>,
+    /// the joined pass's length (s) and how far it reaches before its start
+    pass_len: f64,
+    pass_lead: f64,
+    /// the text clock's tick (s) when planned
+    tick_s: f64,
+    /// the copy buffer, holding the largest plan, so scheduling never grows it
+    scratch: Vec<Gesture>,
+    key: PlanKey,
+}
+
+impl TextPlan {
+    /// No text (the pad). Does not allocate.
+    pub fn empty() -> Self {
+        TextPlan {
+            text: Vec::new(),
+            hold_on: Vec::new(),
+            hold_off: Vec::new(),
+            shot: Vec::new(),
+            shot_lead: 0.0,
+            shot_len: Vec::new(),
+            tick_plan: Vec::new(),
+            tick_lead: 0.0,
+            pass_plan: Vec::new(),
+            pass_len: 0.0,
+            pass_lead: 0.0,
+            tick_s: 0.5,
+            scratch: Vec::new(),
+            key: PlanKey::of(&Params::default()),
+        }
+    }
+
+    /// Plan `text` (with the dictionary `g2p`; without one, or with blank text, the plan is
+    /// empty) for the parameters `p` (clamped ones: `Suu::params`). Allocates.
+    pub fn new(text: &str, g2p: Option<&EnglishG2P>, p: &Params) -> Self {
+        let syllables = match g2p {
+            Some(g) if !text.trim().is_empty() => lyrics_to_syllables(text, g),
+            _ => Vec::new(),
+        };
+        let mut plan = TextPlan { text: syllables, key: PlanKey::of(p), ..TextPlan::empty() };
+        plan.plan(p);
+        plan
+    }
+
+    /// The number of syllables (0: no text).
+    pub fn syllables(&self) -> usize {
+        self.text.len()
+    }
+
+    /// The syllable ranges of the units (each syllable, or each word).
+    fn units(&self, unit: TextUnit) -> Vec<core::ops::Range<usize>> {
+    match unit {
+        TextUnit::Syllable => (0..self.text.len()).map(|i| i..i + 1).collect(),
+        TextUnit::Word => {
+            let mut out = Vec::new();
+            let mut start = 0;
+            for (i, s) in self.text.iter().enumerate() {
+                if s.word_end || i + 1 == self.text.len() {
+                    out.push(start..i + 1);
+                    start = i + 1;
+                }
+            }
+            out
+        }
+    }
+    }
+
+    fn plan(&mut self, p: &Params) {
+    let p = *p;
+    let body = BodyMix::new(0.0, 0.0);
+    let beat = 60.0 / p.bpm;
+    let units = self.units(p.text_unit);
+    // pitch comes from the oscillator or the sequencer, not the text: drop pitch gestures
+    let unpitched = |gs: Vec<Gesture>| -> Vec<Gesture> { gs.into_iter().filter(|g| !g.targets.has(ControlKey::F0) && !g.targets.has(ControlKey::VIBRATO)).collect() };
+    // speaking speed: a plan's times stretch from its first gesture's start (so nothing
+    // slips into the past), slower = longer
+    let k = 1.0 / p.speech;
+    let paced = move |mut gs: Vec<Gesture>| -> Vec<Gesture> {
+        let from = start_of(&gs);
+        if k != 1.0 && from.is_finite() {
+            for g in gs.iter_mut() {
+                g.t0 = from + (g.t0 - from) * k;
+                g.t1 = from + (g.t1 - from) * k;
+                g.ramp_in *= k;
+                g.ramp_out *= k;
+                g.release_hold = g.release_hold.map(|h| h * k);
+            }
+        }
+        gs
+    };
+    let shift = |gs: &mut Vec<Gesture>, dt: f64| {
+        for g in gs.iter_mut() {
+            g.t0 += dt;
+            g.t1 += dt;
+        }
+    };
+    let notes = |r: &core::ops::Range<usize>, beats: f64| -> Vec<SungNote> { self.text[r.clone()].iter().map(|s| SungNote { midi: 57.0, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect() };
+    let sung = |n: &[SungNote], cons: f64| unpitched(plan_song_at(n, &SongOptions { body, bpm: p.bpm, t0: 0.0, vibrato: 0.0 }, cons).gestures);
+    let (mut hold_on, mut hold_off, mut shot, mut tick) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // the clock's tick, and a held unit's length on it
+    let beats = loop_beats(&p);
+    let tick_s = beats * beat;
+    for r in &units {
+        let last = &self.text[r.end - 1];
+        // on a note, held: the unit's syllables before the last said through, then the last
+        // with its vowel open (`plan_note_on`), all starting now
+        let mut on = Vec::new();
+        let mut at = 0.0;
+        if r.len() > 1 {
+            on = sung(&notes(&(r.start..r.end - 1), 0.5), 0.8);
+            at = (r.len() - 1) as f64 * 0.5 * beat;
+        }
+        let mut held = unpitched(plan_note_on(last, 57.0, &NoteOnOptions { body, vibrato: 0.0, tag: 0.0, legato_from: None }));
+        shift(&mut held, at);
+        on.extend(held);
+        let lead = start_of(&on);
+        shift(&mut on, LIVE_LEAD - lead);
+        hold_on.push(paced(on));
+        hold_off.push(paced(unpitched(plan_note_off(last, 57.0, body))));
+        // said through: its first vowel at 0, its onset before
+        shot.push(paced(sung(&notes(r, 0.5), 0.8)));
+        // on the clock, held for `text_len` of a tick (its syllables share it)
+        tick.push(sung(&notes(r, p.text_len * beats / r.len() as f64), 0.8 / p.speech));
+    }
+    let lead_of = |plans: &[Vec<Gesture>]| plans.iter().fold(0.0f64, |m, gs| m.max(-start_of(gs)));
+    self.shot_lead = lead_of(&shot);
+    self.shot_len = shot.iter().map(|gs| gs.iter().map(|g| g.t1 + g.ramp_out).fold(0.0, f64::max) - start_of(gs)).collect();
+    self.tick_lead = lead_of(&tick);
+    // the joined pass: every unit a tick, its syllables sharing it
+    let all: Vec<SungNote> = units.iter().flat_map(|r| notes(r, beats / r.len() as f64)).collect();
+    self.pass_plan = sung(&all, 0.8 / p.speech);
+    self.pass_len = units.len() as f64 * tick_s;
+    self.pass_lead = -start_of(&self.pass_plan).min(0.0);
+    self.tick_s = tick_s;
+    (self.hold_on, self.hold_off, self.shot, self.tick_plan) = (hold_on, hold_off, shot, tick);
+    // the copy buffer holds the largest plan, so scheduling never grows it
+    let most = self.hold_on.iter().chain(&self.hold_off).chain(&self.shot).chain(&self.tick_plan).map(Vec::len).chain([self.pass_plan.len()]).max().unwrap_or(0);
+    self.scratch = Vec::with_capacity(most.max(256));
+    }
+}
+
 pub struct Suu {
     fs: f64,
-    voice: HumanVoice,
+    voice: Box<HumanVoice>,
     /// the airway being faded out after a rebuild, and the samples left
-    fade: Option<(HumanVoice, u32)>,
+    fade: Option<(Box<HumanVoice>, u32)>,
+    /// the faded-out airway, kept until `take_retired` (so the audio thread never frees it)
+    retired: Option<Box<HumanVoice>>,
     scale: f64,
     p: Params,
     osc: Osc,
@@ -522,25 +774,7 @@ pub struct Suu {
     /// a step's vowel holds the pad here while the sequencer plays
     seq_pad: Option<(f64, f64)>,
     g2p: Option<EnglishG2P>,
-    text: Vec<Syllable>,
-    /// Plans per unit (syllable or word), made in `set_text` so the audio thread only copies:
-    /// a note's held unit (its last vowel open until the note-off) and its ending; a unit said
-    /// through, with how far it reaches before its vowel; a unit on the clock, held `text_len`
-    /// of a tick, the same; and the joined pass (on the clock, held, `text_len` 1)
-    hold_on: Vec<Vec<Gesture>>,
-    hold_off: Vec<Vec<Gesture>>,
-    shot: Vec<Vec<Gesture>>,
-    shot_lead: f64,
-    /// each unit's spoken length (s), for `text_gate` on notes
-    shot_len: Vec<f64>,
-    tick_plan: Vec<Vec<Gesture>>,
-    tick_lead: f64,
-    pass_plan: Vec<Gesture>,
-    /// the joined pass's length (s) and how far it reaches before its start
-    pass_len: f64,
-    pass_lead: f64,
-    /// the text clock's tick (s) when planned
-    tick_s: f64,
+    plan: TextPlan,
     /// next unit, and units said since the text or the pattern pass started (for `text_once`)
     cursor: usize,
     fired: usize,
@@ -565,7 +799,6 @@ pub struct Suu {
     said: u64,
     last_unit: usize,
     next_tag: f64,
-    scratch: Vec<Gesture>,
     prev_gate: bool,
     retrig: bool,
     pos: u64,
@@ -587,8 +820,9 @@ impl Suu {
         chimera::phonetics::planner::init();
         let mut s = Suu {
             fs,
-            voice: HumanVoice::new(fs, BODY_MALE, oversample_for(fs, 1.0)),
+            voice: Box::new(HumanVoice::new(fs, BODY_MALE, oversample_for(fs, 1.0))),
             fade: None,
+            retired: None,
             scale: 1.0,
             p: Params::default(),
             osc: Osc::new(),
@@ -624,18 +858,7 @@ impl Suu {
             applied: [f64::NAN; N_MOD],
             seq_pad: None,
             g2p: None,
-            text: Vec::new(),
-            hold_on: Vec::new(),
-            hold_off: Vec::new(),
-            shot: Vec::new(),
-            shot_lead: 0.0,
-            shot_len: Vec::new(),
-            tick_plan: Vec::new(),
-            tick_lead: 0.0,
-            pass_plan: Vec::new(),
-            pass_len: 0.0,
-            pass_lead: 0.0,
-            tick_s: 0.5,
+            plan: TextPlan::empty(),
             cursor: 0,
             fired: 0,
             next_tick: 0.0,
@@ -651,7 +874,6 @@ impl Suu {
             said: 0,
             last_unit: 0,
             next_tag: 1000.0,
-            scratch: Vec::with_capacity(256),
             prev_gate: false,
             retrig: false,
             pos: 0,
@@ -739,35 +961,72 @@ impl Suu {
     }
 
     /// Mouth size: body scale 0.4 … 4 (1 = adult male). Builds a new airway (allocates) that takes
-    /// over the old one's articulation, gestures and clock, and crossfades into it.
+    /// over the old one's articulation, gestures and clock, and crossfades into it. The plug-in
+    /// splits this: `mouth_seed` and `set_mouth` on the audio thread, `Mouth::build` elsewhere.
     pub fn set_size(&mut self, scale: f64) {
         let s = clamp(scale, 0.4, 4.0);
         if s == self.scale {
             return;
         }
-        self.scale = s;
-        let body = HumanBody { name: "suu", scale: s, ..BODY_MALE };
-        let mut nv = HumanVoice::new(self.fs, body, oversample_for(self.fs, s));
+        let m = Mouth::build(&self.mouth_seed(s));
+        // a change during a crossfade replaces the fading airway
+        (self.fade, self.retired) = (None, None);
+        let _ = self.set_mouth(m);
+    }
+
+    /// What `Mouth::build` needs to make a mouth of scale `scale` (clamped to 0.4 … 4) that
+    /// takes over from this one. No allocation.
+    pub fn mouth_seed(&self, scale: f64) -> MouthSeed {
+        let aw = &self.voice.airway;
+        let mut profile = [0.0; HORN_POINTS];
+        for (d, &a) in profile.iter_mut().zip(&aw.profile) {
+            *d = a;
+        }
+        MouthSeed {
+            fs: self.fs,
+            scale: clamp(scale, 0.4, 4.0),
+            artic: self.voice.artic.clone(),
+            profile,
+            wrap: aw.profile_wrap,
+            horn: (aw.profile_mix, aw.profile_shift, aw.profile_open),
+            inject: self.eff[4],
+            damping: self.eff[5],
+            folds: self.voice.glottal_area_scale,
+            pressure: self.voice.source.pressure,
+        }
+    }
+
+    /// Put a mouth from `Mouth::build` in place: it takes over this one's articulation, horn,
+    /// gestures and clock, and the old one crossfades out. No allocation. Refused (the mouth is
+    /// handed back) while an earlier change still fades or its airway waits in `take_retired`.
+    pub fn set_mouth(&mut self, m: Mouth) -> Result<(), Mouth> {
+        if self.fade.is_some() || self.retired.is_some() {
+            return Err(m);
+        }
+        let Mouth { voice: mut nv, scale } = m;
+        self.scale = scale;
         nv.artic = self.voice.artic.clone();
-        nv.airway.profile = self.voice.airway.profile.clone();
+        nv.airway.profile.copy_from_slice(&self.voice.airway.profile);
         nv.airway.profile_wrap = self.voice.airway.profile_wrap;
-        nv.score = self.voice.score.clone();
+        nv.score.copy_from(&self.voice.score);
         nv.clock = self.voice.clock;
         let x = nv.artic.x;
         nv.airway.apply(&x, 0.0);
         nv.airway.net.snap_to_targets();
         let old = core::mem::replace(&mut self.voice, nv);
+        let pressure = old.source.pressure;
         self.fade = Some((old, FADE));
         self.folds_f0 = 0.0;
         self.applied = [f64::NAN; N_MOD];
         self.configure_voice();
         self.refresh_mouth();
-        self.voice.set_source(&SourcePatch { pressure: Some(self.fade.as_ref().map_or(9.0, |f| f.0.source.pressure)), ..Default::default() });
-        // let the new airway settle before it is heard (a cold one blew a transient that set the
-        // output limiter clamping for 300 ms), keeping its clock where the old one's is
-        let clock = self.voice.clock;
-        self.warm_up(&mut |v: &mut HumanVoice, inp, out| v.render_driven(inp, 100.0, out));
-        self.voice.clock = clock;
+        self.voice.set_source(&SourcePatch { pressure: Some(pressure), ..Default::default() });
+        Ok(())
+    }
+
+    /// The airway a size change faded out, once it has (to be dropped off the audio thread).
+    pub fn take_retired(&mut self) -> Option<Mouth> {
+        self.retired.take().map(|voice| Mouth { voice, scale: 0.0 })
     }
 
     /// The drawn horn: `HORN_POINTS` areas (cm², adult scale) from the glottis to the lips,
@@ -1013,7 +1272,7 @@ impl Suu {
             // count for "once" anew either way
             self.fired = 0;
             self.once_pending = true;
-            if self.p.text_seq && !self.text.is_empty() {
+            if self.p.text_seq && !self.plan.text.is_empty() {
                 self.cursor = 0;
                 if self.p.text_step == TextStep::Clock {
                     let now = self.voice.clock;
@@ -1099,20 +1358,30 @@ impl Suu {
         self.g2p = Some(g);
     }
 
+    /// The dictionary loaded by `load_dict` (for `TextPlan::new`).
+    pub fn g2p(&self) -> Option<&EnglishG2P> {
+        self.g2p.as_ref()
+    }
+
     /// Typed text, said as the `text_*` parameters say; empty text returns the mouth to the
     /// pad. Returns the number of syllables. Allocates (it plans every unit up front, so the
     /// audio thread only copies gestures): call off the audio thread, and again after a change
-    /// of the unit, the clock's rate or length, the tempo or the speaking speed.
+    /// of the unit, the clock's rate or length, the tempo or the speaking speed (`text_stale`).
     pub fn set_text(&mut self, text: &str) -> usize {
+        let plan = TextPlan::new(text, self.g2p.as_ref(), &self.p);
+        drop(self.set_text_plan(plan));
+        self.plan.text.len()
+    }
+
+    /// Put a plan from `TextPlan::new` in place, as `set_text` does, and return the old one (to
+    /// be dropped off the audio thread). Does not allocate.
+    pub fn set_text_plan(&mut self, plan: TextPlan) -> TextPlan {
         self.voice.cancel_score();
-        self.text = match &self.g2p {
-            Some(g) if !text.trim().is_empty() => lyrics_to_syllables(text, g),
-            _ => Vec::new(),
-        };
+        let old = core::mem::replace(&mut self.plan, plan);
         // an edit keeps the place in the text (taken modulo the new length when used), so typing
         // while it sings carries on instead of starting over
         self.open_unit = None;
-        if self.text.is_empty() {
+        if self.plan.text.is_empty() {
             self.cursor = 0;
         }
         self.fired = 0;
@@ -1120,112 +1389,29 @@ impl Suu {
         self.restart_for = None;
         let now = self.voice.clock;
         (self.next_tick, self.next_pass) = (now + 0.1, now + 0.1);
-        self.plan_text();
         self.applied = [f64::NAN; N_MOD];
         self.refresh_mouth();
-        self.text.len()
+        old
     }
 
-    /// The syllable ranges of the units (each syllable, or each word).
-    fn units(&self) -> Vec<core::ops::Range<usize>> {
-        match self.p.text_unit {
-            TextUnit::Syllable => (0..self.text.len()).map(|i| i..i + 1).collect(),
-            TextUnit::Word => {
-                let mut out = Vec::new();
-                let mut start = 0;
-                for (i, s) in self.text.iter().enumerate() {
-                    if s.word_end || i + 1 == self.text.len() {
-                        out.push(start..i + 1);
-                        start = i + 1;
-                    }
-                }
-                out
-            }
-        }
+    /// The text's plan was made for other values of what its timing depends on (the unit, the
+    /// clock's rate or length, the tempo, the speaking speed): plan it again (`set_text`).
+    pub fn text_stale(&self) -> bool {
+        !self.plan.text.is_empty() && self.plan.key != PlanKey::of(&self.p)
     }
 
-    fn plan_text(&mut self) {
-        let p = self.p;
-        let body = BodyMix::new(0.0, 0.0);
-        let beat = 60.0 / p.bpm;
-        let units = self.units();
-        // pitch comes from the oscillator or the sequencer, not the text: drop pitch gestures
-        let unpitched = |gs: Vec<Gesture>| -> Vec<Gesture> { gs.into_iter().filter(|g| !g.targets.has(ControlKey::F0) && !g.targets.has(ControlKey::VIBRATO)).collect() };
-        // speaking speed: a plan's times stretch from its first gesture's start (so nothing
-        // slips into the past), slower = longer
-        let k = 1.0 / p.speech;
-        let paced = move |mut gs: Vec<Gesture>| -> Vec<Gesture> {
-            let from = start_of(&gs);
-            if k != 1.0 && from.is_finite() {
-                for g in gs.iter_mut() {
-                    g.t0 = from + (g.t0 - from) * k;
-                    g.t1 = from + (g.t1 - from) * k;
-                    g.ramp_in *= k;
-                    g.ramp_out *= k;
-                    g.release_hold = g.release_hold.map(|h| h * k);
-                }
-            }
-            gs
-        };
-        let shift = |gs: &mut Vec<Gesture>, dt: f64| {
-            for g in gs.iter_mut() {
-                g.t0 += dt;
-                g.t1 += dt;
-            }
-        };
-        let notes = |r: &core::ops::Range<usize>, beats: f64| -> Vec<SungNote> { self.text[r.clone()].iter().map(|s| SungNote { midi: 57.0, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect() };
-        let sung = |n: &[SungNote], cons: f64| unpitched(plan_song_at(n, &SongOptions { body, bpm: p.bpm, t0: 0.0, vibrato: 0.0 }, cons).gestures);
-        let (mut hold_on, mut hold_off, mut shot, mut tick) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        // the clock's tick, and a held unit's length on it
-        let beats = self.loop_beats();
-        let tick_s = beats * beat;
-        for r in &units {
-            let last = &self.text[r.end - 1];
-            // on a note, held: the unit's syllables before the last said through, then the last
-            // with its vowel open (`plan_note_on`), all starting now
-            let mut on = Vec::new();
-            let mut at = 0.0;
-            if r.len() > 1 {
-                on = sung(&notes(&(r.start..r.end - 1), 0.5), 0.8);
-                at = (r.len() - 1) as f64 * 0.5 * beat;
-            }
-            let mut held = unpitched(plan_note_on(last, 57.0, &NoteOnOptions { body, vibrato: 0.0, tag: 0.0, legato_from: None }));
-            shift(&mut held, at);
-            on.extend(held);
-            let lead = start_of(&on);
-            shift(&mut on, LIVE_LEAD - lead);
-            hold_on.push(paced(on));
-            hold_off.push(paced(unpitched(plan_note_off(last, 57.0, body))));
-            // said through: its first vowel at 0, its onset before
-            shot.push(paced(sung(&notes(r, 0.5), 0.8)));
-            // on the clock, held for `text_len` of a tick (its syllables share it)
-            tick.push(sung(&notes(r, p.text_len * beats / r.len() as f64), 0.8 / p.speech));
-        }
-        let lead_of = |plans: &[Vec<Gesture>]| plans.iter().fold(0.0f64, |m, gs| m.max(-start_of(gs)));
-        self.shot_lead = lead_of(&shot);
-        self.shot_len = shot.iter().map(|gs| gs.iter().map(|g| g.t1 + g.ramp_out).fold(0.0, f64::max) - start_of(gs)).collect();
-        self.tick_lead = lead_of(&tick);
-        // the joined pass: every unit a tick, its syllables sharing it
-        let all: Vec<SungNote> = units.iter().flat_map(|r| notes(r, beats / r.len() as f64)).collect();
-        self.pass_plan = sung(&all, 0.8 / p.speech);
-        self.pass_len = units.len() as f64 * tick_s;
-        self.pass_lead = -start_of(&self.pass_plan).min(0.0);
-        self.tick_s = tick_s;
-        (self.hold_on, self.hold_off, self.shot, self.tick_plan) = (hold_on, hold_off, shot, tick);
-        // the copy buffer holds the largest plan, so scheduling never grows it
-        let most = self.hold_on.iter().chain(&self.hold_off).chain(&self.shot).chain(&self.tick_plan).map(Vec::len).chain([self.pass_plan.len()]).max().unwrap_or(0);
-        self.scratch.reserve(most.saturating_sub(self.scratch.len()));
+    /// The number of syllables in the text (0: the pad).
+    pub fn syllables(&self) -> usize {
+        self.plan.text.len()
     }
 
-    /// The text clock's beats per unit: synced, or from its free rate; never under 60 ms.
+    #[cfg(test)]
     fn loop_beats(&self) -> f64 {
-        let p = self.p;
-        let beats = if p.text_sync > 0.0 { p.text_sync } else { p.bpm / 60.0 / p.text_rate_hz };
-        js_max(beats, 0.06 * p.bpm / 60.0)
+        loop_beats(&self.p)
     }
 
     fn on_clock(&self) -> bool {
-        !self.text.is_empty() && self.p.text_step == TextStep::Clock
+        !self.plan.text.is_empty() && self.p.text_step == TextStep::Clock
     }
 
     /// On the clock, held at full length: the joined pass (as sung legato) rather than unit by
@@ -1238,14 +1424,14 @@ impl Suu {
     /// allocation: the copy buffer was sized in `plan_text`.
     fn schedule_at(&mut self, which: Plan, at: f64, tag: Option<f64>) {
         let src = match which {
-            Plan::HoldOn(u) => &self.hold_on[u],
-            Plan::HoldOff(u) => &self.hold_off[u],
-            Plan::Shot(u) => &self.shot[u],
-            Plan::Tick(u) => &self.tick_plan[u],
-            Plan::Pass => &self.pass_plan,
+            Plan::HoldOn(u) => &self.plan.hold_on[u],
+            Plan::HoldOff(u) => &self.plan.hold_off[u],
+            Plan::Shot(u) => &self.plan.shot[u],
+            Plan::Tick(u) => &self.plan.tick_plan[u],
+            Plan::Pass => &self.plan.pass_plan,
         };
-        self.scratch.clear();
-        self.scratch.extend(src.iter().map(|g| {
+        self.plan.scratch.clear();
+        self.plan.scratch.extend(src.iter().map(|g| {
             let mut g = g.clone();
             g.t0 += at;
             g.t1 += at;
@@ -1254,12 +1440,12 @@ impl Suu {
             }
             g
         }));
-        self.voice.schedule(&self.scratch);
+        self.voice.schedule(&self.plan.scratch);
     }
 
     /// The next unit to say, or None once the text has been said through and `text_once` holds.
     fn next_unit(&mut self) -> Option<usize> {
-        let n = self.hold_on.len();
+        let n = self.plan.hold_on.len();
         if n == 0 || (self.p.text_once && self.fired >= n) {
             return None;
         }
@@ -1286,7 +1472,7 @@ impl Suu {
             TextSay::Hold => {
                 self.close_unit();
                 if on && let Some(u) = self.next_unit() {
-                    self.cut = (now, now + self.p.text_gate * self.shot_len[u]);
+                    self.cut = (now, now + self.p.text_gate * self.plan.shot_len[u]);
                     self.next_tag += 1.0;
                     let tag = self.next_tag;
                     self.schedule_at(Plan::HoldOn(u), now, Some(tag));
@@ -1295,9 +1481,9 @@ impl Suu {
             }
             TextSay::Shot => {
                 if on && let Some(u) = self.next_unit() {
-                    self.cut = (now, now + self.p.text_gate * self.shot_len[u]);
+                    self.cut = (now, now + self.p.text_gate * self.plan.shot_len[u]);
                     // its first gesture now, its vowel a lead later
-                    let at = now + self.shot_lead;
+                    let at = now + self.plan.shot_lead;
                     self.schedule_at(Plan::Shot(u), at, None);
                 }
             }
@@ -1306,7 +1492,7 @@ impl Suu {
 
     /// The text at each control period: note edges, the pattern's passes, the clock.
     fn run_text(&mut self) {
-        if self.text.is_empty() {
+        if self.plan.text.is_empty() {
             return;
         }
         let p = self.p;
@@ -1339,7 +1525,7 @@ impl Suu {
             return;
         }
         let joined = self.joined();
-        let lead = if joined { self.pass_lead } else if p.text_say == TextSay::Hold { self.tick_lead } else { self.shot_lead };
+        let lead = if joined { self.plan.pass_lead } else if p.text_say == TextSay::Hold { self.plan.tick_lead } else { self.plan.shot_lead };
         // following the sequence: start the text over where the pattern next returns to its
         // first step, scheduled ahead by the lead so its first consonants land before it
         if p.text_seq && self.seq.playing {
@@ -1361,41 +1547,41 @@ impl Suu {
             if now + 0.5 + lead >= self.next_pass && (!p.text_once || self.once_pending) {
                 let at = self.next_pass;
                 // passes that follow on extend the span the ticks are heard in
-                self.pass_cut = if (at - self.pass_cut.1).abs() < 1e-9 { (self.pass_cut.0, at + self.pass_len) } else { (at, at + self.pass_len) };
+                self.pass_cut = if (at - self.pass_cut.1).abs() < 1e-9 { (self.pass_cut.0, at + self.plan.pass_len) } else { (at, at + self.plan.pass_len) };
                 self.schedule_at(Plan::Pass, at, None);
-                self.next_pass += self.pass_len;
+                self.next_pass += self.plan.pass_len;
                 self.once_pending = false;
             }
             return;
         }
         // unit by unit, just in time: each unit's vowel on its tick
-        if self.next_tick < now - self.tick_s {
+        if self.next_tick < now - self.plan.tick_s {
             self.next_tick = now + lead; // the clock fell behind (it was stopped): pick it up
         }
         let horizon = now + 2.0 * CTRL as f64 / self.fs;
         while self.next_tick - lead <= horizon {
             let at = self.next_tick;
             if let Some(u) = self.next_unit() {
-                let from = at - lead.min(0.5 * self.tick_s);
-                self.cut = (from, from + p.text_gate * self.tick_s);
+                let from = at - lead.min(0.5 * self.plan.tick_s);
+                self.cut = (from, from + p.text_gate * self.plan.tick_s);
                 let plan = if p.text_say == TextSay::Hold { Plan::Tick(u) } else { Plan::Shot(u) };
                 self.schedule_at(plan, at, None);
             }
-            self.next_tick += self.tick_s;
+            self.next_tick += self.plan.tick_s;
         }
     }
 
     /// `text_gate`: is the sound let through now? Always, unless the text sings and is cut.
     fn text_window_open(&self) -> bool {
         let p = self.p;
-        if self.text.is_empty() || p.text_gate >= 1.0 {
+        if self.plan.text.is_empty() || p.text_gate >= 1.0 {
             return true;
         }
         let now = self.voice.clock;
         if self.on_clock() && self.joined() {
             // joined passes: a window at each tick, from just before its vowel
-            let tick = self.tick_s;
-            let from = self.pass_cut.0 - self.pass_lead.min(0.5 * tick);
+            let tick = self.plan.tick_s;
+            let from = self.pass_cut.0 - self.plan.pass_lead.min(0.5 * tick);
             return now >= from && now < self.pass_cut.1 && (now - from).rem_euclid(tick) < p.text_gate * tick;
         }
         now >= self.cut.0 && now < self.cut.1
@@ -1575,7 +1761,7 @@ impl Suu {
             }
             *left = left.saturating_sub(n as u32);
             if *left == 0 {
-                self.fade = None;
+                self.retired = self.fade.take().map(|(v, _)| v);
             }
         }
         // 4) sub, mix, gain
@@ -1812,7 +1998,7 @@ mod tests {
             s.set_params(Params { text_len: len, ..text_params(TextStep::Clock, TextUnit::Syllable, TextSay::Hold) });
             s.set_text("wow yeah");
             // the longest-held gesture of a tick's plan, as a fraction of the tick
-            s.tick_plan[1].iter().map(|g| g.t1).fold(0.0, f64::max) / s.tick_s
+            s.plan.tick_plan[1].iter().map(|g| g.t1).fold(0.0, f64::max) / s.plan.tick_s
         };
         let (half, full) = (held_until(0.5), held_until(0.9));
         // (the coda reaches a little past the vowel's end)
@@ -2022,7 +2208,7 @@ mod tests {
             s.set_params(Params { speech, ..text_params(TextStep::Note, TextUnit::Word, TextSay::Shot) });
             s.set_text("stop wow");
             let span = |gs: &[Gesture]| gs.iter().map(|g| g.t1 + g.ramp_out).fold(0.0, f64::max) - gs.iter().map(|g| g.t0 - g.ramp_in).fold(f64::MAX, f64::min);
-            (span(&s.shot[0]), s.pass_len)
+            (span(&s.plan.shot[0]), s.plan.pass_len)
         };
         let ((slow, len_slow), (normal, len), (fast, len_fast)) = (plans(0.5), plans(1.0), plans(2.0));
         assert!((slow / normal - 2.0).abs() < 0.05 && (normal / fast - 2.0).abs() < 0.05, "word: {slow:.3} {normal:.3} {fast:.3}");
@@ -2346,5 +2532,73 @@ mod tests {
         // in the second half: the middle of step 0 (gate closed) vs the middle of step 1 (open)
         let (a, b) = (rms(&out[24000 + 2400..24000 + 3600]), rms(&out[30000 + 2400..30000 + 3600]));
         assert!(b > 3.0 * a, "short step {a}, long accented step {b}");
+    }
+
+    /// The plug-in's split: a mouth built and a text planned elsewhere are put in place, and the
+    /// old ones handed back, without allocating on the audio thread; a rebuilt mouth crossfades
+    /// in without a jump.
+    #[test]
+    fn swapping_mouth_and_text_does_not_allocate() {
+        let dict = "WOW\tW AW1\nYEAH\tY AE1\nNOW\tN AW1\n";
+        let mut s = Suu::new(48000.0);
+        s.load_dict(dict);
+        s.set_params(Params { gate: true, ..Params::default() });
+        let mut out = vec![0f32; 128];
+        let inp = vec![0f32; 128];
+        for _ in 0..100 {
+            s.process(&inp, &mut out);
+        }
+        let plan = TextPlan::new("wow yeah now", s.g2p(), &s.params());
+        assert_eq!(plan.syllables(), 3);
+        let seed = s.mouth_seed(1.6);
+        let mouth = Mouth::build(&seed);
+        assert_eq!(mouth.scale(), 1.6);
+        let before = alloc_count::count();
+        let old = s.set_text_plan(plan);
+        assert!(s.set_mouth(mouth).is_ok());
+        let mut peak_step = 0f32;
+        let mut last = out[127];
+        let mut retired = None;
+        for _ in 0..100 {
+            s.process(&inp, &mut out);
+            for &y in out.iter() {
+                peak_step = peak_step.max((y - last).abs());
+                last = y;
+            }
+            if retired.is_none() {
+                retired = s.take_retired();
+            }
+        }
+        assert_eq!(alloc_count::count(), before, "the swap or processing allocated");
+        assert_eq!(old.syllables(), 0);
+        assert!(retired.is_some(), "the old airway was not handed back");
+        assert_eq!(s.size(), 1.6);
+        assert!(peak_step < 0.2, "a jump of {peak_step} at the swap");
+        // a second change waits while the first fades: refused, then accepted
+        let m2 = Mouth::build(&s.mouth_seed(0.8));
+        assert!(s.set_mouth(m2).is_ok());
+        let m3 = Mouth::build(&s.mouth_seed(1.0));
+        assert!(s.set_mouth(m3).is_err());
+    }
+
+    /// A text plan goes stale when what its timing depends on changes, and not otherwise.
+    #[test]
+    fn text_plan_goes_stale() {
+        let mut s = Suu::new(48000.0);
+        s.load_dict("WOW\tW AW1\n");
+        assert!(!s.text_stale(), "no text, nothing to replan");
+        s.set_text("wow wow");
+        assert!(!s.text_stale());
+        s.set_params(Params { vowel_x: 0.2, mix: 0.5, ..s.params() });
+        assert!(!s.text_stale(), "the pad and the mix do not touch the plan");
+        s.set_params(Params { text_rate_hz: 5.0, ..s.params() });
+        assert!(!s.text_stale(), "the free rate does not count while synced");
+        for change in [Params { bpm: 120.0, ..s.params() }, Params { speech: 2.0, ..s.params() }, Params { text_unit: TextUnit::Word, ..s.params() }, Params { text_len: 0.5, ..s.params() }, Params { text_sync: 0.0, ..s.params() }] {
+            let keep = s.params();
+            s.set_params(change);
+            assert!(s.text_stale());
+            s.set_params(keep);
+            assert!(!s.text_stale());
+        }
     }
 }

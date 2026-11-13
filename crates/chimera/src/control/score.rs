@@ -323,6 +323,14 @@ impl GestureScore {
         }
     }
 
+    /// Become a copy of `other` (no allocation: both have the fixed capacity).
+    pub fn copy_from(&mut self, other: &GestureScore) {
+        self.gestures.clear();
+        self.gestures.extend_from_slice(&other.gestures);
+        self.end = other.end;
+        self.dropped = other.dropped;
+    }
+
     pub fn clear(&mut self) {
         self.gestures.clear();
         self.end = 0.0;
