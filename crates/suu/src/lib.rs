@@ -53,6 +53,10 @@ const MOD_RANGE: [(f64, f64); N_MOD] = [(-0.3, 1.3), (-0.3, 1.3), (-1.0, 1.0), (
 const MOD_LOG: [bool; N_MOD] = [false, false, false, false, false, true, false, false, true];
 /// The drawn horn: this many areas from the glottis to the lips.
 pub const HORN_POINTS: usize = 32;
+/// Sleep: below this level (dry source and mouth output, −120 dB) a control period is quiet,
+/// and after SLEEP_AFTER quiet seconds with nothing to wake it the airway is not rendered.
+const QUIET: f32 = 1e-6;
+const SLEEP_AFTER: f64 = 0.1;
 /// The source history a snapshot reads from (samples, a power of two: 85 ms at 48 kHz).
 const SNAP_RING: usize = 4096;
 /// The live area function the UI gets: this many samples from the glottis to the lips.
@@ -398,6 +402,10 @@ pub struct Suu {
     osc_hz: f64,
     osc_env: f64,
     reson: Reson,
+    /// sleep: the loudest dry and wet sample this control period, quiet samples so far, asleep
+    period_peak: f32,
+    quiet: u64,
+    asleep: bool,
     /// the last SNAP_RING samples of the ungated source (for `snapshot`)
     snap_ring: Vec<f32>,
     snap_w: usize,
@@ -429,6 +437,10 @@ pub struct Suu {
     syl_off: Vec<Vec<Gesture>>,
     /// per word: the whole word, relative to now
     words: Vec<Vec<Gesture>>,
+    /// the text loop's pass, relative to its start, and its length (s); planned in `set_text`
+    /// at the tempo and loop rate then (a change of either needs `set_text` again)
+    loop_plan: Vec<Gesture>,
+    loop_len: f64,
     cursor: usize,
     /// the open syllable (index, tag) in gate mode
     open_syl: Option<(usize, f64)>,
@@ -462,6 +474,9 @@ impl Suu {
             glide_rate: 0.0,
             osc_hz: midi_to_hz(45.0),
             reson: Reson::new(fs),
+            period_peak: 0.0,
+            quiet: 0,
+            asleep: false,
             snap_ring: vec![0.0; SNAP_RING],
             snap_w: 0,
             osc_env: 0.0,
@@ -489,6 +504,8 @@ impl Suu {
             syl_on: Vec::new(),
             syl_off: Vec::new(),
             words: Vec::new(),
+            loop_plan: Vec::new(),
+            loop_len: 0.0,
             cursor: 0,
             open_syl: None,
             next_tag: 1000.0,
@@ -874,8 +891,9 @@ impl Suu {
     }
 
     /// Typed text, sung as `mode` says; empty text returns the mouth to the pad. Returns the
-    /// number of syllables. Allocates (planning every syllable and word up front, so a note only
-    /// copies gestures); call between blocks.
+    /// number of syllables. Allocates (planning every syllable, word and the loop's pass up
+    /// front, so the audio thread only copies gestures); call off the audio thread, and again
+    /// after a change of tempo or loop rate.
     pub fn set_text(&mut self, text: &str, mode: TextMode) -> usize {
         self.voice.cancel_score();
         self.text_mode = mode;
@@ -907,6 +925,14 @@ impl Suu {
                 start = i + 1;
             }
         }
+        // the loop's pass, unpitched like the rest (the pitch comes from the note)
+        let beats = self.loop_beats();
+        let notes: Vec<SungNote> = self.text.iter().map(|s| SungNote { midi: 57.0, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
+        self.loop_plan = unpitched(plan_song(&notes, &SongOptions { body, bpm: self.p.bpm, t0: 0.0, vibrato: 0.0 }).gestures);
+        self.loop_len = notes.len() as f64 * beats * 60.0 / self.p.bpm;
+        // the copy buffer holds the largest plan, so scheduling never grows it
+        let most = self.syl_on.iter().chain(&self.syl_off).chain(&self.words).map(Vec::len).chain([self.loop_plan.len()]).max().unwrap_or(0);
+        self.scratch.reserve(most.saturating_sub(self.scratch.len()));
         self.refresh_mouth();
         self.text.len()
     }
@@ -975,12 +1001,18 @@ impl Suu {
         js_max(beats, 0.06 * p.bpm / 60.0)
     }
 
+    /// Schedule the next pass of the text loop (copies the plan; no allocation).
     fn schedule_loop(&mut self) {
-        let beats = self.loop_beats();
-        let notes: Vec<SungNote> = self.text.iter().map(|s| SungNote { midi: self.note_now, beats, syl: Syllable { phrase_end: false, ..s.clone() } }).collect();
-        let plan = plan_song(&notes, &SongOptions { body: BodyMix::new(0.0, 0.0), bpm: self.p.bpm, t0: self.next_loop, vibrato: 0.0 });
-        self.voice.schedule(&plan.gestures);
-        self.next_loop += notes.len() as f64 * beats * 60.0 / self.p.bpm;
+        let t = self.next_loop;
+        self.scratch.clear();
+        self.scratch.extend(self.loop_plan.iter().map(|g| {
+            let mut g = g.clone();
+            g.t0 += t;
+            g.t1 += t;
+            g
+        }));
+        self.voice.schedule(&self.scratch);
+        self.next_loop += self.loop_len;
     }
 
     // ------------------------------------------------------------ audio
@@ -1025,6 +1057,22 @@ impl Suu {
         self.retrig = false;
         self.prev_gate = self.gate_now;
         let p = self.p;
+        // sleep: nothing sounds and nothing can start a sound on its own (no note, no folds, no
+        // text loop, no crossfade), and the last SLEEP_AFTER s were quiet; decided per control
+        // period, so it does not depend on the host's block size
+        let quiet_period = self.period_peak < QUIET;
+        self.period_peak = 0.0;
+        self.quiet = if quiet_period { self.quiet + CTRL } else { 0 };
+        let looping = !self.text.is_empty() && self.text_mode == TextMode::Loop;
+        let may_sleep = !self.gate_now && p.folds == 0.0 && !looping && self.fade.is_none();
+        let asleep = may_sleep && self.quiet as f64 >= SLEEP_AFTER * self.fs;
+        if asleep && !self.asleep {
+            // the voice's clock stops while asleep: drop what the text still had scheduled (it
+            // would have sounded silent, the source being gated), or it would fire on waking
+            self.voice.cancel_score();
+            self.open_syl = None;
+        }
+        self.asleep = asleep;
         let secs = if p.glide_sync > 0.0 { p.glide_sync * 60.0 / p.bpm } else { p.glide_s };
         // Glide moves the vowels too: the articulators' speed is ×1 at the default 30 ms, up to
         // ×4 at 0 (the airway's area slew limits still keep a change click-free) and down to
@@ -1109,7 +1157,12 @@ impl Suu {
         }
         // 3) the mouth (and the old one, fading out after a rebuild)
         let scale = 100.0 * pow(10.0, p.drive_db / 20.0);
-        self.voice.render_driven(&self.drive[..n], scale, &mut self.wet[..n]);
+        if self.asleep {
+            // asleep: the airway has rung out and nothing drives it (see `control`)
+            self.wet[..n].fill(0.0);
+        } else {
+            self.voice.render_driven(&self.drive[..n], scale, &mut self.wet[..n]);
+        }
         if let Some((old, left)) = &mut self.fade {
             old.render_driven(&self.drive[..n], scale, &mut self.wet_old[..n]);
             for i in 0..n {
@@ -1132,12 +1185,91 @@ impl Suu {
             let wet = self.wet[i] as f64 + p.sub_level * self.sub2;
             out[off + i] = ((p.mix * wet + (1.0 - p.mix) * d) * g) as f32;
         }
+        let peak = self.dry[..n].iter().chain(&self.wet[..n]).fold(self.period_peak, |m, v| m.max(v.abs()));
+        self.period_peak = peak;
+    }
+}
+
+#[cfg(test)]
+mod alloc_count {
+    //! Counts heap allocations on this thread, so a test can assert that `process` makes none.
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        pub static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    struct Counting;
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+            let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+            unsafe { System.realloc(p, l, n) }
+        }
+    }
+
+    #[global_allocator]
+    static A: Counting = Counting;
+
+    pub fn count() -> u64 {
+        COUNT.with(|c| c.get())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `process` and the control calls the audio thread makes do not allocate, in every mode.
+    #[test]
+    fn processing_does_not_allocate() {
+        let dict = "WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n";
+        let wave: Vec<f64> = (0..HORN_POINTS).map(|i| 3.0 + 2.0 * (i as f64 * 0.4).sin()).collect();
+        for mode in [TextMode::Gate, TextMode::OneShot, TextMode::Loop] {
+            let mut s = Suu::new(48000.0);
+            s.load_dict(dict);
+            s.set_text("wow yeah now wow", mode);
+            s.set_profile(&wave, true);
+            s.set_params(Params { gate: true, morph: 0.6, reson: 0.5, folds: 0.5, glide_s: 0.1, ..Params::default() });
+            for t in 0..N_MOD {
+                s.set_mod(t, Mod { depth: 0.4, rate_hz: 1.0 + t as f64, sync: 0.0, shape: Shape::Random });
+            }
+            let input = vec![0.1f32; 256];
+            let mut out = vec![0f32; 256];
+            // warm-up, then everything the audio thread does: notes, steps, sleep and waking
+            for _ in 0..200 {
+                s.process(&input, &mut out);
+            }
+            // the counter sees an allocation (so a pass below means none happened)
+            let c = alloc_count::count();
+            std::hint::black_box(vec![0u8; 64]);
+            assert!(alloc_count::count() > c);
+            let before = alloc_count::count();
+            s.set_playing(true);
+            for i in 0..2000 {
+                s.process(&input[..(i % 7) * 32 + 32], &mut out[..(i % 7) * 32 + 32]);
+                if i == 700 {
+                    s.set_playing(false);
+                    s.set_params(Params { gate: false, folds: 0.0, ..s.params() });
+                }
+                if i == 1500 {
+                    s.retrigger();
+                    s.set_params(Params { gate: true, note: 50.0, ..s.params() });
+                }
+            }
+            let mut snap = [0.0; HORN_POINTS];
+            s.snapshot(&mut snap);
+            s.set_profile(&wave, false);
+            assert_eq!(alloc_count::count() - before, 0, "{mode:?}: process allocated");
+        }
+    }
 
     fn run(s: &mut Suu, block: usize, n: usize) -> Vec<f32> {
         let input = vec![0f32; n];
@@ -1327,6 +1459,28 @@ mod tests {
         let jump = |x: &[f32]| x.windows(2).fold(0f32, |m, w| m.max((w[1] - w[0]).abs()));
         let (still, moving) = (mk(0.0), mk(1.0));
         assert!(jump(&moving) < 1.5 * jump(&still), "jump moving {} still {}", jump(&moving), jump(&still));
+    }
+
+    #[test]
+    fn it_sleeps_when_silent_and_wakes_on_a_note() {
+        let run_gated = |block: usize| {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { gate: true, ..Params::default() });
+            let mut out = run(&mut s, block, 14400);
+            s.set_params(Params { gate: false, ..Params::default() });
+            out.extend(run(&mut s, block, 48000));
+            let slept = s.asleep;
+            s.set_params(Params { gate: true, ..Params::default() });
+            let again = run(&mut s, block, 9600);
+            out.extend(&again);
+            (out, slept, again)
+        };
+        let (a, slept, again) = run_gated(128);
+        assert!(slept, "silent for a second: asleep");
+        let rms = (again[4800..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 4800.0).sqrt();
+        assert!(rms > 0.005, "a note wakes it: rms {rms}");
+        // still the same at any block size
+        assert_eq!(a, run_gated(37).0);
     }
 
     #[test]

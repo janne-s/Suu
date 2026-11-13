@@ -3,7 +3,10 @@
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const css = getComputedStyle(document.documentElement);
-const color = (n) => css.getPropertyValue(n).trim();
+const colors = new Map(); // the palette is fixed: read each token once
+const color = (n) => colors.get(n) ?? (colors.set(n, css.getPropertyValue(n).trim()), colors.get(n));
+// redraw only when something changed: new engine state, a resize, or an edit
+let dirty = true;
 
 let ctx, node, srcNode, fileBuf, micStream, analyser, fx = {};
 function post(m, transfer) {
@@ -188,6 +191,7 @@ const baseNorm = (r, v) => (r.log ? Math.log(v / r.lo) / Math.log(r.hi / r.lo) :
 const baseFrom = (r, n) => (r.log ? r.lo * Math.pow(r.hi / r.lo, n) : r.lo + n * (r.hi - r.lo));
 
 function setBase(r, v, sendIt = true) {
+  dirty = true;
   r.base = clamp(v, r.lo, r.hi);
   r.input.value = baseNorm(r, r.base);
   r.out.textContent = r.fmt(r.base);
@@ -302,6 +306,7 @@ let horn = defaultHorn(), view = "pad";
 let hornWrap = false;
 const hornWave = { shape: -1, cycles: 2, depth: 0.6 }; // shape −1: drawn by hand
 function sendHorn() {
+  dirty = true;
   post({ type: "profile", areas: horn.slice(), wrap: hornWrap });
 }
 const hornU = (i) => i / (hornWrap ? HORN_POINTS : HORN_POINTS - 1);
@@ -465,6 +470,7 @@ function hornAt(e) {
   sendHorn();
 }
 function setView(v) {
+  dirty = true;
   view = v;
   $("view-pad").setAttribute("aria-pressed", String(v === "pad"));
   $("view-horn").setAttribute("aria-pressed", String(v === "horn"));
@@ -649,11 +655,16 @@ mouthEl.addEventListener("pointerdown", (e) => {
 });
 mouthEl.addEventListener("pointermove", (e) => e.buttons && (view === "horn" ? hornAt(e) : padAt(e)));
 mouthEl.addEventListener("dblclick", () => view === "horn" && resetHorn());
-new ResizeObserver(drawMouth).observe(mouthEl);
+new ResizeObserver(() => {
+  dirty = true;
+  drawMouth();
+}).observe(mouthEl);
 
-let peakHold = 0;
+let peakHold = 0, scope = null;
 function frameLoop() {
   requestAnimationFrame(frameLoop);
+  if (!dirty) return;
+  dirty = false;
   drawMouth();
   if (ui) {
     // live markers on the Motion rows
@@ -667,7 +678,7 @@ function frameLoop() {
     }
   }
   if (analyser) {
-    const t = new Float32Array(analyser.fftSize);
+    const t = (scope ??= new Float32Array(analyser.fftSize));
     analyser.getFloatTimeDomainData(t);
     let p = 0;
     for (const v of t) p = Math.max(p, Math.abs(v));
@@ -722,6 +733,7 @@ function onWorklet(m) {
     $("singtext").setAttribute("aria-pressed", String(textOn));
   } else if (m.type === "ui") {
     ui = m.ui;
+    dirty = true;
     showSeq(ui[19] > 0.5, ui[17]);
   }
 }
