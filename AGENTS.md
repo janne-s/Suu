@@ -8,8 +8,8 @@ and the CLI) under a React UI. See the README.
 - Do what was asked, the simplest way. Side work nobody asked for (experiments, tooling, paid
   runs) is a proposal with its cost. If the work grows well past the estimate, stop and say so.
 - Before repeating or reversing earlier work, read its history (`git log -- <path>`, `git log -S`).
-- Commit small. The subject names what changed and the trap, in searchable words; the body gives
-  the why, what you ruled out, what you ran (with numbers) and what you didn't test.
+- Commit small, with a short, clear subject line and no long body (the owner's preference);
+  measurements and reasoning go in the design document.
 - Keep each fixed bug's reproduction as a test.
 - Code outranks this file: fix the file when they disagree. When something breaks unnoticed, add
   a rule here, with a check.

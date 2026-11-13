@@ -1,63 +1,85 @@
-# CHIMERA
+# Suu
 
-A physical-modeling voice synthesizer in the browser. Every sound comes from a simulated
-airway (lungs, vocal folds or syrinx, a branched vocal tract, lips, nose), not from samples.
-The engine is Rust, compiled to WebAssembly for an AudioWorklet; the same code runs natively
-for tests and the `chimera` CLI.
+Suu is a talking filter: any sound through a simulated human vocal tract.
+Shape the mouth on a vowel pad, set it moving, type words for it to sing, or
+sequence vowels and notes. A browser app now; VST3 and CLAP plug-ins are in
+progress.
 
-## What it does
+See it live: [**https://janne-s.github.io/Suu/**](https://janne-s.github.io/Suu/)
 
-- **Play**: drag the tongue, lips and jaw in a live cutaway of the head; vowel pad, encoders,
-  computer keyboard and Web MIDI.
-- **Speak**: English text (CMUdict with a letter-to-sound fallback) or IPA, turned into
-  gestures and prosody, with the gestural score and a consonant chart on screen.
-- **Sing**: piano roll with lyrics per note; consonants land before the beat.
-- **Beatbox**: pads and a step sequencer, every drum an articulatory gesture.
-- **Bestiary**: songbird (two-voice syrinx), seal, alligator and elephant.
-- **Duet** (`?show=<id>`): two 3D heads replay a pre-rendered song.
+![Suu interface](web-suu/assets/screenshot.jpg)
 
-Male, female and child bodies blend continuously. Everything on screen animates from live
-engine state: pressure in the airway, airflow, the vocal folds, spectra and formants.
+## How it works
 
-## Run it
+The sound enters the airway as airflow and leaves through the lips, so the
+mouth's shape filters it as it would a voice. The airway, articulators and
+vocal folds are a physical simulation. Tilt, the sub layer, the resonator,
+glide and Space are production extras. Ranges go past human anatomy on
+purpose.
 
-Needs Rust with the `wasm32-unknown-unknown` target, and Bun.
+## Mouth
+
+- **Vowel pad** — Drag the mouth: left to right front to back, top to bottom
+  close to open. The edge beyond the corner vowels extrapolates.
+- **Text** — Type words. **Gate** sings a syllable per note, **One-shot** a
+  word per note, **Loop** syllables at its own rate or ♪.
+- **Motion** — Vowel X/Y, Round, Nasal, Inject and Damping, each with Depth,
+  Rate or ♪, and a shape (sine, triangle, saw, square, random, envelope).
+
+## Sequencer
+
+Sixteen steps, each with a note, vowel, accent ◆ and length. Drag a step up or
+down for its note, click to turn it on, Shift-click to tie, click the vowel
+to change it. **Gate** scales every step's length alike.
+
+## Sound
+
+- **Source** — Supersaw, saw, square, an audio file or the mic. Keys, Hold
+  and the sequencer gate every source.
+- **Body** — Size of the mouth (0.4–4×) and Folds, the model's own vocal
+  folds at the played note.
+- **Breath** — Lung pressure for the consonants, and how far it follows the
+  source.
+- **Reson** — A resonator tuned to the played note, so a file or mic plays in
+  pitch. Off by default.
+- **Glide**, **Drive**, **Tilt**, **Sub** — Pitch glide (♪ syncs it), level
+  into the mouth, source brightness, and the dry low end.
+- **Space** — Delay and reverb, web only. Off is what the plug-in does.
+
+Keys **A W S E D F T G Y H U J K** play, **Z X** change octave, **Space**
+plays the sequencer, **Esc** releases all notes. Settings are kept in the
+browser with A/B and Init. Save and Open write and read preset files.
+
+## Run
+
+Rust with the `wasm32-unknown-unknown` target, and Bun.
 
 ```sh
 bun install
-bun run dev        # builds the wasm, then Vite on 127.0.0.1:5317
-bun run test       # wasm build, cargo test --workspace, bun test tests
+bun run suu        # http://127.0.0.1:5318/
 ```
 
-The AudioWorklet needs a secure context, so open it on localhost or over HTTPS (for example
-`tailscale serve`). Vercel builds it with `vercel.json`.
-
-Offline renders and measurement:
+## Tests
 
 ```sh
-cargo run --release -p chimera-cli -- render speech|text|song|notes|beatbox|creature|vowels …
-cargo run --release -p chimera-cli -- diagnose       # nasal leakage, formants, bandwidths, pitch
-cargo run --release -p chimera-cli -- compare csd    # against a real singer (docs/csd-comparison.md)
-bun tools/spectrogram.ts in.wav out.png
+bun run test       # cargo test --workspace and bun tests
+bun tools/suu-e2e.ts   # headless Chrome, with bun run suu running
 ```
 
-## Docs
+## Limits
 
-- [docs/architecture.md](docs/architecture.md): the acoustic model (FDTD airway, sources,
-  anatomy, gestures).
-- [docs/rust-engine.md](docs/rust-engine.md): the engine's real-time and determinism contract,
-  and the browser boundary.
-- [docs/ui-redesign.md](docs/ui-redesign.md) and [docs/mockups/](docs/mockups/): the vector
-  display look.
-- [docs/csd-comparison.md](docs/csd-comparison.md): scoring the voice against the Children's
-  Song Dataset.
-- [docs/hill-climb/](docs/hill-climb/): the rules and log for tuning the voice one measured
-  step at a time.
+English text only. Mono. Tested in Chrome. No plug-in yet.
 
-Agents: see [AGENTS.md](AGENTS.md).
+## Credits
+
+Built on [CHIMERA](https://github.com/jamesondh/chimera-vocal-synth) by Jameson
+Hodge, not affiliated. Suu adds the driven airway and the effect core
+(`crates/suu`, `crates/suu-wasm`, `web-suu/`). CHIMERA's own voice app and
+docs remain in `src/` and `docs/`. See [AGENTS.md](AGENTS.md) for the engine's
+rules.
 
 ## License
 
-[MIT](LICENSE). Bundled third-party files keep their own licenses: the CMU Pronouncing
-Dictionary ([public/data/CMUDICT-LICENSE.txt](public/data/CMUDICT-LICENSE.txt)) and the fonts
-([public/fonts/](public/fonts/)).
+Suu by Janne Särkelä; CHIMERA by Jameson Hodge. [MIT](LICENSE). The CMU
+Pronouncing Dictionary and the AVHershey fonts keep their own licenses
+([public/data/](public/data/), [public/fonts/](public/fonts/)).
