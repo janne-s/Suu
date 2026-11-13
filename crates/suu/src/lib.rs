@@ -71,6 +71,9 @@ const MOD_RANGE: [(f64, f64); N_MOD] = [(-0.3, 1.3), (-0.3, 1.3), (-1.0, 1.0), (
 const MOD_LOG: [bool; N_MOD] = [false, false, false, false, false, true, false, false, true];
 /// The drawn horn: this many areas from the glottis to the lips.
 pub const HORN_POINTS: usize = 32;
+/// The injected source's flow per unit at 0 dB (cm³/s): calibrated so that the oscillator at 0 dB
+/// and Folds at 100 % sound about as loud at the default breath.
+const INJECT_REF: f64 = 562.0;
 /// Sleep: below this level (dry source and mouth output, −120 dB) a control period is quiet,
 /// and after SLEEP_AFTER quiet seconds with nothing to wake it the airway is not rendered.
 const QUIET: f32 = 1e-6;
@@ -112,9 +115,10 @@ impl Default for Mod {
     }
 }
 
+/// The internal oscillator's wave (Off: none; the input and the folds can still sound).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Source {
-    Input,
+    Off,
     Saw,
     Supersaw,
     Square,
@@ -123,7 +127,11 @@ pub enum Source {
 /// Every control, in the units the UI shows. `Suu::set_params` clamps.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Params {
+    /// the oscillator's wave, and its level and the input's into the mouth (dB; −60 and below is
+    /// silent). The two are mixed, and keys, hold and the sequencer gate the mix.
     pub source: Source,
+    pub osc_db: f64,
+    pub input_db: f64,
     /// root note (MIDI, fractional allowed): the oscillator's pitch, the sequence's transposition
     pub note: f64,
     /// a key held: the oscillator sounds, or the external input passes (when the sequencer is not
@@ -198,6 +206,8 @@ impl Default for Params {
     fn default() -> Self {
         Params {
             source: Source::Supersaw,
+            osc_db: 0.0,
+            input_db: 0.0,
             note: 45.0,
             gate: false,
             drive_db: 0.0,
@@ -374,7 +384,7 @@ impl Osc {
     }
     fn next(&mut self, src: Source, dt: f64) -> f64 {
         match src {
-            Source::Saw | Source::Input => Self::saw(&mut self.phase[0], dt),
+            Source::Saw | Source::Off => Self::saw(&mut self.phase[0], dt),
             Source::Square => {
                 let p = &mut self.phase[0];
                 let mut y = if *p < 0.5 { 1.0 } else { -1.0 };
@@ -488,6 +498,8 @@ pub struct Suu {
     sub2: f64,
     dry: Vec<f32>,
     drive: Vec<f32>,
+    /// the drive into a rebuilt mouth while it fades in
+    drive_new: Vec<f32>,
     wet: Vec<f32>,
     wet_old: Vec<f32>,
     rest: [f64; N_ARTIC],
@@ -586,6 +598,7 @@ impl Suu {
             sub2: 0.0,
             dry: vec![0.0; MAX_BLOCK],
             drive: vec![0.0; MAX_BLOCK],
+            drive_new: vec![0.0; MAX_BLOCK],
             wet: vec![0.0; MAX_BLOCK],
             wet_old: vec![0.0; MAX_BLOCK],
             rest: [0.0; N_ARTIC],
@@ -655,10 +668,12 @@ impl Suu {
     /// the lungs filling from zero blew a −44 dBFS blip through it in its first 50 ms, heard
     /// when an instance is created. Runs the voice alone, so Suu's own clock and timing are untouched.
     fn warm_up(&mut self, render: &mut dyn FnMut(&mut HumanVoice, &[f32], &mut [f32])) {
-        // at the breath's resting pressure, as the first control period will set it (a jump
-        // there from zero was the blip)
+        // at the breath's pressure now (the resting one when new, as the first control period
+        // will set it: a jump there from zero was the blip)
         let p = self.p;
-        self.voice.set_source(&SourcePatch { pressure: Some(9.0 * p.breath * (1.0 - p.follow)), ..Default::default() });
+        if self.fade.is_none() {
+            self.voice.set_source(&SourcePatch { pressure: Some(9.0 * p.breath * (1.0 - p.follow)), ..Default::default() });
+        }
         let zeros = [0f32; MAX_BLOCK];
         let mut left = (0.25 * self.fs) as usize;
         while left > 0 {
@@ -675,6 +690,8 @@ impl Suu {
     pub fn set_params(&mut self, p: Params) {
         let mut q = p;
         q.drive_db = clamp(q.drive_db, -40.0, 40.0);
+        q.osc_db = clamp(q.osc_db, -60.0, 12.0);
+        q.input_db = clamp(q.input_db, -60.0, 12.0);
         q.tilt_hz = clamp(q.tilt_hz, 0.0, 2000.0);
         q.breath = clamp(q.breath, 0.0, 6.0);
         q.vowel_x = clamp(q.vowel_x, -0.3, 1.3);
@@ -730,6 +747,11 @@ impl Suu {
         self.configure_voice();
         self.refresh_mouth();
         self.voice.set_source(&SourcePatch { pressure: Some(self.fade.as_ref().map_or(9.0, |f| f.0.source.pressure)), ..Default::default() });
+        // let the new airway settle before it is heard (a cold one blew a transient that set the
+        // output limiter clamping for 300 ms), keeping its clock where the old one's is
+        let clock = self.voice.clock;
+        self.warm_up(&mut |v: &mut HumanVoice, inp, out| v.render_driven(inp, 100.0, out));
+        self.voice.clock = clock;
     }
 
     /// The drawn horn: `HORN_POINTS` areas (cm², adult scale) from the glottis to the lips,
@@ -1421,7 +1443,11 @@ impl Suu {
         self.env_peak = 0.0;
         self.run_mods(envn);
         self.apply_mouth();
-        let pressure = 9.0 * p.breath * (1.0 - p.follow + p.follow * envn);
+        // the breath follows the source's level; while the folds sound, at their full pressure
+        // (so their level depends on Folds and Breath alone: a louder oscillator drove them up
+        // by 20 dB before)
+        let drive_env = if p.folds > 0.0 { js_max(envn, self.fold_env) } else { envn };
+        let pressure = 9.0 * p.breath * (1.0 - p.follow + p.follow * drive_env);
         // the folds follow the glide too (at the control rate)
         let f0 = midi_to_hz(self.pitch);
         if (pressure - self.voice.source.pressure).abs() > 1e-6 || (p.folds > 0.0 && f0 != self.folds_f0) {
@@ -1441,6 +1467,8 @@ impl Suu {
         let env_a = 1.0 - exp(-1.0 / (0.005 * fs));
         let env_r = 1.0 - exp(-1.0 / (0.08 * fs));
         let gate = self.gate_now;
+        let level_of = |db: f64| if db <= -60.0 { 0.0 } else { pow(10.0, db / 20.0) };
+        let (osc_g, input_g) = (level_of(p.osc_db), level_of(p.input_db));
         let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
         let mut env_peak = self.env_peak;
         for i in 0..n {
@@ -1449,10 +1477,11 @@ impl Suu {
                 self.pitch = if d.abs() <= self.glide_rate { self.glide_to } else { self.pitch + self.glide_rate * d.signum() };
                 self.osc_hz = midi_to_hz(self.pitch);
             }
-            // keys, hold and the sequencer gate an external sound as they gate the oscillator (it
-            // has no pitch to play); it closes fast, so a rhythm reads at sixteenths
-            let input_src = p.source == Source::Input;
-            let raw = if input_src { input[i] as f64 } else { self.osc.next(p.source, self.osc_hz / fs) * 0.5 };
+            // the oscillator and the input, mixed at their levels; keys, hold and the sequencer
+            // gate the mix (with no oscillator it closes fast, so a rhythm reads at sixteenths)
+            let input_src = p.source == Source::Off;
+            let osc = if input_src { 0.0 } else { self.osc.next(p.source, self.osc_hz / fs) * 0.5 * osc_g };
+            let raw = osc + input[i] as f64 * input_g;
             // the ungated source, for a snapshot of its waveform
             self.snap_ring[self.snap_w] = raw as f32;
             self.snap_w = (self.snap_w + 1) & (SNAP_RING - 1);
@@ -1483,10 +1512,17 @@ impl Suu {
             self.drive[i] = self.tilt_y as f32;
         }
         // 3) the mouth (and the old one, fading out after a rebuild)
-        let scale = 100.0 * pow(10.0, p.drive_db / 20.0);
+        let scale = INJECT_REF * pow(10.0, p.drive_db / 20.0);
         if self.asleep {
             // asleep: the airway has rung out and nothing drives it (see `control`)
             self.wet[..n].fill(0.0);
+        } else if let Some((_, left)) = &self.fade {
+            // a rebuilt mouth: its input rises as it fades in (a step into it was a transient)
+            for i in 0..n {
+                let k = left.saturating_sub(i as u32) as f64 / FADE as f64;
+                self.drive_new[i] = (self.drive[i] as f64 * (0.5 + 0.5 * cos(PI * k))) as f32;
+            }
+            self.voice.render_driven(&self.drive_new[..n], scale, &mut self.wet[..n]);
         } else {
             self.voice.render_driven(&self.drive[..n], scale, &mut self.wet[..n]);
         }
@@ -1746,7 +1782,7 @@ mod tests {
     #[test]
     fn the_sequencer_gates_an_external_sound() {
         let mut s = Suu::new(48000.0);
-        s.set_params(Params { source: Source::Input, bpm: 120.0, ..Params::default() });
+        s.set_params(Params { source: Source::Off, bpm: 120.0, ..Params::default() });
         for i in 0..STEPS {
             s.set_step(i, Step { on: true, note: 0, tie: false, vowel: -1, accent: false, len: 0.5 });
         }
@@ -1769,7 +1805,7 @@ mod tests {
         let tone: Vec<f32> = (0..24000).map(|i| (0.3 * (2.0 * std::f64::consts::PI * 110.0 * i as f64 / 48000.0).sin()) as f32).collect();
         let level = |gate: bool| {
             let mut s = Suu::new(48000.0);
-            s.set_params(Params { source: Source::Input, gate, ..Params::default() });
+            s.set_params(Params { source: Source::Off, gate, ..Params::default() });
             let mut out = vec![0f32; 24000];
             for (o, x) in out.chunks_mut(128).zip(tone.chunks(128)) {
                 s.process(x, o);
@@ -1954,6 +1990,37 @@ mod tests {
         assert!(len_slow == len && len_fast == len);
     }
 
+    /// rms (dBFS) of the second second, a note held.
+    fn level_db(p: Params, input: f32) -> f64 {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, ..p });
+        let inp: Vec<f32> = (0..96000).map(|i| input * (2.0 * ((i as f64 * 110.0 / 48000.0) % 1.0) - 1.0) as f32).collect();
+        let mut out = vec![0f32; 96000];
+        for (o, i) in out.chunks_mut(128).zip(inp.chunks(128)) {
+            s.process(i, o);
+        }
+        20.0 * (out[48000..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 48000.0).sqrt().max(1e-12).log10()
+    }
+
+    #[test]
+    fn the_sources_mix_at_matched_levels() {
+        let osc = level_db(Params { folds: 0.0, ..Params::default() }, 0.0);
+        let folds = level_db(Params { source: Source::Off, folds: 1.0, ..Params::default() }, 0.0);
+        let input = level_db(Params { source: Source::Off, folds: 0.0, ..Params::default() }, 0.5);
+        let both = level_db(Params { folds: 1.0, ..Params::default() }, 0.0);
+        // the oscillator at 0 dB and Folds at 100 % alike (calibrated), and together as two
+        // equal sources: louder by a few dB, not the folds taking over (they rose 20 dB before)
+        assert!((osc - folds).abs() < 3.0, "osc {osc:.1}, folds {folds:.1}");
+        assert!(both - osc.max(folds) < 4.5, "both {both:.1}");
+        // a saw input at half scale sounds like the oscillator; −60 dB is silent
+        assert!((input - osc).abs() < 6.0, "input {input:.1}, osc {osc:.1}");
+        assert!(level_db(Params { osc_db: -60.0, folds: 0.0, ..Params::default() }, 0.0) < -100.0);
+        // the folds' level no longer follows the oscillator's
+        let folds_quiet_osc = level_db(Params { folds: 1.0, osc_db: -60.0, ..Params::default() }, 0.0);
+        let folds_with_osc_low = level_db(Params { folds: 1.0, osc_db: -30.0, ..Params::default() }, 0.0);
+        assert!((folds_quiet_osc - folds_with_osc_low).abs() < 1.5, "{folds_quiet_osc:.1} vs {folds_with_osc_low:.1}");
+    }
+
     #[test]
     fn a_gate_of_zero_is_silent() {
         // the same as no note at all, and that is quiet from the first sample (warmed up)
@@ -2009,7 +2076,7 @@ mod tests {
         assert!(snap.iter().all(|v| v.abs() <= 1.0 + 1e-9) && snap.iter().any(|v| v.abs() > 0.99));
         // silence: nothing to take
         let mut q = Suu::new(48000.0);
-        q.set_params(Params { source: Source::Input, ..Params::default() });
+        q.set_params(Params { source: Source::Off, ..Params::default() });
         run(&mut q, 128, 4800);
         assert!(!q.snapshot(&mut snap));
     }
@@ -2038,7 +2105,7 @@ mod tests {
             .collect();
         let render = |reson: f64| {
             let mut s = Suu::new(48000.0);
-            s.set_params(Params { source: Source::Input, gate: true, note: 57.0, reson, ..Params::default() });
+            s.set_params(Params { source: Source::Off, gate: true, note: 57.0, reson, ..Params::default() });
             let mut out = vec![0f32; 48000];
             for (o, x) in out.chunks_mut(128).zip(noise.chunks(128)) {
                 s.process(x, o);

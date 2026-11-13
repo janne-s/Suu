@@ -44,17 +44,17 @@ to change it. **Gate** scales every step's length alike.
 
 ## Sound
 
-- **Source** — Supersaw, saw, square, an audio file or the mic. Keys, Hold
-  and the sequencer gate every source.
-- **Body** — Size of the mouth (0.4–4×) and Folds, the model's own vocal
-  folds at the played note.
-- **Breath** — Lung pressure for the consonants, and how far it follows the
-  source.
-- **Reson** — A resonator tuned to the played note, so a file or mic plays in
-  pitch. Off by default.
-- **Glide**, **Drive**, **Tilt**, **Sub** — Pitch and vowel glide (♪ syncs it; ↕ ↑ ↓
-  glides both ways, only up or only down), level
-  into the mouth, source brightness, and the dry low end.
+- **Osc** and **In** — The oscillator (supersaw, saw, square or off) and an
+  input (a file or the mic; in the plug-in, the track) sound together, each at
+  its level. Keys, Hold and the sequencer gate both.
+- **Body** — Size of the mouth (0.4–4×), Breath (lung pressure for the
+  consonants and folds) and Follow (how far it follows the sound).
+- **Source** — Osc and Input levels, Folds (the model's own vocal folds at the
+  played note; 100% is about as loud as Osc at 0 dB), Reson (a resonator tuned
+  to the played note, so an input plays in pitch) and Glide (pitch and vowel;
+  ♪ syncs it; ↕ ↑ ↓ both ways, only up or only down).
+- **Tone** — Drive into the mouth, Tilt (source brightness), and Sub (the dry
+  low end).
 - **Space** — Delay and reverb, web only. Off is what the plug-in does.
 
 Keys **A W S E D F T G Y H U J K** play, **Z X** change octave, **Space**

@@ -13,16 +13,16 @@ pub struct Handle {
 }
 
 /// Parameter indices, in this order (the web app's `PARAMS` list mirrors it).
-/// 0 source (0 input, 1 saw, 2 supersaw, 3 square), 1 note, 2 gate, 3 drive_db, 4 tilt_hz,
+/// 0 source (the oscillator: 0 off, 1 saw, 2 supersaw, 3 square), 1 note, 2 gate, 3 drive_db, 4 tilt_hz,
 /// 5 breath, 6 follow, 7 vowel_x, 8 vowel_y, 9 round, 10 nasal, 11 inject, 12 damping, 13 folds,
 /// 14 sub_hz, 15 sub_level, 16 mix, 17 out_db, 18 size (rebuilds the airway), 19 bpm,
 /// 20 glide_s, 21 glide_sync (beats, 0 = free), 22 text_rate_hz, 23 text_sync (beats, 0 = free),
 /// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn), 28 text_seq (0/1), 29 speech,
 /// 30 text_once (0/1), 31 text_step (0 note, 1 clock), 32 text_unit (0 syllable, 1 word),
-/// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down)
+/// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down), 36 osc_db, 37 input_db
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
-        0 => p.source = match v as i32 { 0 => Source::Input, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
+        0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
         1 => p.note = v,
         2 => p.gate = v > 0.5,
         3 => p.drive_db = v,
@@ -56,6 +56,8 @@ fn set(p: &mut Params, id: u32, v: f64) {
         32 => p.text_unit = if v > 0.5 { TextUnit::Word } else { TextUnit::Syllable },
         33 => p.text_say = if v > 0.5 { TextSay::Shot } else { TextSay::Hold },
         34 => p.text_len = v,
+        36 => p.osc_db = v,
+        37 => p.input_db = v,
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}
     }

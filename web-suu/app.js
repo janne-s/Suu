@@ -27,18 +27,21 @@ const divBeats = (n) => DIVS.find((d) => d[0] === n)[1];
 // key, label, min, max, default, format, curve, target (engine id or "space"), anatomical [lo, hi]
 const pct = (v) => Math.round(v * 100) + "%";
 const times = (v) => "×" + v.toFixed(2);
+const dbOff = (v) => (v <= -59.95 ? "off" : (v > 0 ? "+" : "") + v.toFixed(1) + " dB");
 const KNOBS = {
   "k-mouth": [
     ["size", "SIZE", 0.4, 4, 1, times, "log", 18, [0.7, 1.25]],
-    ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
-  ],
-  "k-breath": [
     ["breath", "BREATH", 0, 6, 1, times, null, 5, [0, 2]],
     ["follow", "FOLLOW", 0, 1, 0.7, pct, null, 6],
   ],
-  "k-drive": [
+  "k-source": [
+    ["osc", "OSC", -60, 12, 0, dbOff, null, 36],
+    ["input", "INPUT", -60, 12, 0, dbOff, null, 37],
+    ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
+  ],
+  "k-drive": [
     ["drive", "DRIVE", -40, 40, 0, (v) => v.toFixed(1) + " dB", null, 3],
     ["tilt", "TILT", 0, 2000, 150, (v) => (v < 1 ? "off" : v.toFixed(0) + " Hz"), null, 4],
     ["sub", "SUB", 0, 1, 0, pct, null, 15],
@@ -59,7 +62,9 @@ const KNOBS = {
 // what each knob does, for its tooltip
 const KNOB_TIPS = {
   size: "Size\nThe mouth's size: small is bright and high, large dark and low.",
-  folds: "Folds\nThe model's own vocal folds, at the played note, mixed in.",
+  osc: "Osc\nThe oscillator's level into the mouth. At 0 dB as loud as Folds at 100%.",
+  input: "Input\nThe file's or mic's level into the mouth (in the plug-in: the track).",
+  folds: "Folds\nThe model's own vocal folds at the played note: a third source. 100% ≈ Osc at 0 dB.",
   breath: "Breath\nLung pressure: the air in the consonants and the folds.",
   follow: "Follow\nHow far the breath follows the sound's level (0: steady air).",
   reson: "Reson\nA resonator tuned to the played note: gives a file or mic pitch. 0: off.",
@@ -824,7 +829,8 @@ async function start() {
   analyser.connect(ctx.destination);
   window.__suu = { ctx, analyser }; // for automated checks
   pushAll();
-  await setSource(current);
+  setOsc(oscWave);
+  await setInput(inputKind);
   status("loading words…", true);
   const gz = await fetch("cmudict.txt.gz");
   const bytes = new Uint8Array(await new Response(gz.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
@@ -945,36 +951,40 @@ $("spaceon").onclick = () => {
 };
 
 // ---------------------------------------------------------------- sources
-let current = "2", fileName = "", autoHold = false;
-async function setSource(src) {
-  // keys gate an outside sound as they gate the synth: hold opens it at once (and keys then sing
-  // the text's syllables over it); back on the synth, a hold this turned on goes off again
-  const outside = (x) => x === "file" || x === "mic";
-  if (outside(src) && !outside(current) && !held) {
+// The oscillator's wave (0 off) and the input (a file or the mic, or none) sound together, each
+// at its level (OSC and INPUT); keys, hold and the sequencer gate both.
+let oscWave = "2", inputKind = null, fileName = "", autoHold = false;
+function setOsc(w) {
+  oscWave = w;
+  document.querySelectorAll("[data-osc]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.osc === w)));
+  send(0, +w);
+}
+async function setInput(kind) {
+  // an input turned on opens hold, so it sounds at once (keys then say the text over it); turned
+  // off, a hold this turned on goes off again
+  if (kind && !inputKind && !held) {
     setHold(true);
     autoHold = true;
-  } else if (!outside(src) && outside(current) && autoHold) {
+  } else if (!kind && inputKind && autoHold) {
     setHold(false);
     autoHold = false;
   }
-  current = src;
-  document.querySelectorAll("[data-src]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.src === src)));
-  const internal = src !== "file" && src !== "mic";
-  if (src === "file" && fileName) status(fileName);
+  inputKind = kind;
+  document.querySelectorAll("[data-in]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.in === kind)));
+  if (kind === "file" && fileName) status(fileName);
   if (!ctx) return;
   srcNode?.disconnect();
   try {
     srcNode?.stop?.();
   } catch {}
   srcNode = null;
-  send(0, internal ? +src : 0);
-  if (src === "file" && fileBuf) {
+  if (kind === "file" && fileBuf) {
     srcNode = ctx.createBufferSource();
     srcNode.buffer = fileBuf;
     srcNode.loop = true;
     srcNode.connect(node);
     srcNode.start();
-  } else if (src === "mic") {
+  } else if (kind === "mic") {
     try {
       micStream ??= await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
       srcNode = ctx.createMediaStreamSource(micStream);
@@ -985,11 +995,18 @@ async function setSource(src) {
     }
   }
 }
-document.querySelectorAll("[data-src]").forEach((b) => {
+document.querySelectorAll("[data-osc]").forEach((b) => {
   b.onclick = async () => {
-    if (b.dataset.src === "file" && (!fileBuf || current === "file")) return $("file").click();
     await start();
-    setSource(b.dataset.src);
+    setOsc(b.dataset.osc);
+  };
+});
+document.querySelectorAll("[data-in]").forEach((b) => {
+  b.onclick = async () => {
+    // FILE with no file yet asks for one; a pressed input turns off
+    if (b.dataset.in === "file" && !fileBuf) return $("file").click();
+    await start();
+    setInput(inputKind === b.dataset.in ? null : b.dataset.in);
   };
 });
 async function loadFile(f) {
@@ -997,7 +1014,7 @@ async function loadFile(f) {
   try {
     fileBuf = await ctx.decodeAudioData(await f.arrayBuffer());
     fileName = f.name;
-    await setSource("file");
+    await setInput("file");
     status(f.name);
   } catch {
     status(`could not decode ${f.name}`);
@@ -1365,7 +1382,6 @@ addEventListener("keydown", (e) => e.key === "Escape" && showInfo(false));
 // clamped, and a wrong structure refuses the whole state before anything changes.
 const STATE_VERSION = 1;
 const MOTION_NAMES = ["vowelX", "vowelY", "round", "nasal", "inject", "damping", "morph", "shift", "open"];
-const INTERNAL = ["1", "2", "3"];
 
 function getState() {
   const knobs = {};
@@ -1374,7 +1390,7 @@ function getState() {
   rows.forEach((r, i) => (motion[MOTION_NAMES[i]] = { base: r.base, depth: r.depth, rate: r.rate, sync: r.sync, shape: r.shape, smooth: r.smooth }));
   return {
     suu: STATE_VERSION,
-    source: INTERNAL.includes(current) ? +current : undefined,
+    source: +oscWave,
     note: lastNote,
     octave,
     bpm: bpm(),
@@ -1407,7 +1423,7 @@ function readState(raw) {
   const d = DEFAULTS;
   const out = {
     suu: STATE_VERSION,
-    source: INTERNAL.includes(String(r.source)) ? +r.source : d.source,
+    source: [0, 1, 2, 3].includes(r.source) ? r.source : d.source,
     note: Math.round(num(r.note, d.note, 12, 108)),
     octave: Math.round(num(r.octave, d.octave, -3, 3)),
     bpm: num(r.bpm, d.bpm, 30, 300),
@@ -1510,7 +1526,7 @@ function applyState(st) {
   $("spaceon").setAttribute("aria-pressed", String(spaceOn));
   $("spaceon").textContent = spaceOn ? "ON" : "OFF";
   setSpace();
-  if (st.source !== undefined && current !== "file" && current !== "mic") setSource(String(st.source));
+  setOsc(String(st.source));
   horn = Float32Array.from(st.horn);
   hornWrap = st.hornWrap;
   snapVals = st.hornWave.snap.slice();
@@ -1653,11 +1669,12 @@ $("presetfile").onchange = (e) => {
 // Every control says what it does, briefly, after a moment's hover; the ? in the bar turns them
 // off or on (remembered in this browser). Native titles can't be turned off, so they become tips.
 const TIPS = {
-  '[data-src="2"]': "Supersaw\nFive detuned saws: the built-in synth, played by keys and steps.",
-  '[data-src="1"]': "Saw\nOne saw: bright, every harmonic.",
-  '[data-src="3"]': "Square\nOdd harmonics only: hollow.",
-  '[data-src="file"]': "File\nAn audio file through the mouth, looped. Keys and steps gate it; Reson gives it pitch. Drop one anywhere.",
-  '[data-src="mic"]': "Mic\nThe microphone through the mouth. Use headphones.",
+  '[data-osc="2"]': "Supersaw\nFive detuned saws: the built-in synth, played by keys and steps.",
+  '[data-osc="1"]': "Saw\nOne saw: bright, every harmonic.",
+  '[data-osc="3"]': "Square\nOdd harmonics only: hollow.",
+  '[data-osc="0"]': "Off\nNo oscillator: only the input and the folds.",
+  '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. Drop one anywhere to load another.",
+  '[data-in="mic"]': "Mic\nThe microphone, mixed with the oscillator. Use headphones.",
   "#hold": "Hold\nKeeps the note on: a drone, or a file or mic passing through. Keys then say the text's next part.",
   "#octdown": "Octave down (Z)",
   "#octup": "Octave up (X)",

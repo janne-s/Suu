@@ -82,6 +82,9 @@ select.field { cursor: pointer; color: var(--beam); }
 .panel { background: linear-gradient(180deg, var(--panel-top) 0, var(--panel) 46px); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
 .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: linear-gradient(180deg, var(--panel-top), var(--panel)); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
 h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500; letter-spacing: 6px; text-shadow: 0 0 8px rgba(var(--beam-rgb), 0.6); }
+/* only the status line gives way; at narrow widths the bar's group names go */
+.bar > :not(#status) { flex-shrink: 0; }
+@media (max-width: 1180px) { .bar .tlabel { display: none; } }
 #status { flex: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; transition: opacity 0.6s; }
 #status.fade { opacity: 0; }
 .keys { display: inline-flex; align-items: center; gap: 2px; }
@@ -154,7 +157,7 @@ button.icon svg { display: block; margin: auto; }
 .step.now .led { background: var(--sound); box-shadow: 0 0 4px var(--sound), 0 0 10px rgba(var(--sound-rgb), 0.55); }
 
 /* knobs */
-.stages { display: grid; grid-template-columns: 2fr 2fr 5fr 5fr 2fr; padding: 6px 4px 8px; }
+.stages { display: grid; grid-template-columns: 3fr 5fr 4fr 5fr 2fr; padding: 6px 4px 8px; }
 .stage { min-width: 0; padding: 0 6px; }
 .stage + .stage { box-shadow: -1px 0 0 rgba(0, 0, 0, 0.35), -2px 0 0 rgba(255, 255, 255, 0.02); }
 .stage h2 { padding: 2px 6px 0; display: flex; align-items: center; }

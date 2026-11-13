@@ -33,7 +33,7 @@ fn main() {
             s.set_params(Params { morph: 1.0, ..gate });
             s.set_mod(7, Mod { depth: 1.0, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw, smooth: 0.0 });
         })),
-        ("input + reson 0.8", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Input, reson: 0.8, ..gate }))),
+        ("input + reson 0.8", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, ..gate }))),
         ("folds 1", Box::new(move |s: &mut Suu| s.set_params(Params { folds: 1.0, ..gate }))),
         ("sequencer + text gate", Box::new(move |s: &mut Suu| {
             s.load_dict(dict);

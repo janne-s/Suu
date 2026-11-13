@@ -57,8 +57,10 @@ await page.evaluate(() => dispatchEvent(new KeyboardEvent("keydown", { key: "Met
 await page.evaluate(() => dispatchEvent(new KeyboardEvent("keyup", { key: "Meta", code: "MetaLeft" })));
 await page.waitForTimeout(600); db = await peakDb(); ok("Cmd release frees a key whose keyup was lost", db < -60, `${db.toFixed(1)} dB`);
 await page.keyboard.up("s");
-// a file: hold opens it at once, keys gate it without hold, and the synth gets hold back off
+// a file (the oscillator off, so only it sounds): hold opens it at once, keys gate it without
+// hold; turned off, the file leaves hold as the player set it
 {
+  await page.click('[data-osc="0"]');
   const n = 48000, buf = Buffer.alloc(44 + 2 * n);
   buf.write("RIFF", 0); buf.writeUInt32LE(36 + 2 * n, 4); buf.write("WAVEfmt ", 8); buf.writeUInt32LE(16, 16);
   buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22); buf.writeUInt32LE(48000, 24); buf.writeUInt32LE(96000, 28);
@@ -74,8 +76,14 @@ await page.keyboard.up("s");
   db = await peakDb(); ok("a key opens the file", db > -40, `${db.toFixed(1)} dB`);
   await page.keyboard.up("d");
   await page.click("#hold");
-  await page.click('[data-src="2"]');
-  ok("back on the synth, hold is the player's", (await page.getAttribute("#hold", "aria-pressed")) === "true");
+  await page.click('[data-in="file"]');
+  ok("the file off, hold is the player's", (await page.getAttribute("#hold", "aria-pressed")) === "true" && (await page.getAttribute('[data-in="file"]', "aria-pressed")) === "false");
+  await page.waitForTimeout(500);
+  db = await peakDb(); ok("with no oscillator and no input, hold is silent", db < -60, `${db.toFixed(1)} dB`);
+  // the oscillator and the file together, each at its level
+  await page.click('[data-in="file"]'); await page.click('[data-osc="2"]'); await page.waitForTimeout(500);
+  db = await peakDb(); ok("oscillator and file mix", db > -40, `${db.toFixed(1)} dB`);
+  await page.click('[data-in="file"]');
   await page.click("#hold");
 }
 // text: one button

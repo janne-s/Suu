@@ -29,9 +29,8 @@
 
 <header class="bar">
   <h1>SUU</h1>
-  <div class="seg" role="group" aria-label="Source">
-    <button data-src="2" aria-pressed="true">SUPERSAW</button><button data-src="1" aria-pressed="false">SAW</button><button data-src="3" aria-pressed="false">SQUARE</button><button data-src="file" aria-pressed="false">FILE</button><button data-src="mic" aria-pressed="false">MIC</button>
-  </div>
+  <span class="tgroup"><span class="tlabel">OSC</span><span class="seg" role="group" aria-label="Oscillator"><button data-osc="2">SUPERSAW</button><button data-osc="1">SAW</button><button data-osc="3">SQUARE</button><button data-osc="0">OFF</button></span></span>
+  <span class="tgroup"><span class="tlabel">IN</span><span class="seg" role="group" aria-label="Input"><button data-in="file" aria-pressed="false">FILE</button><button data-in="mic" aria-pressed="false">MIC</button></span></span>
   <span id="status" role="status" aria-live="polite"></span>
   <span class="keys"><button id="hold" aria-pressed="false">HOLD</button><button id="octdown" class="square">−</button><output id="notename" class="field">A2</output><button id="octup" class="square">+</button></span>
   <span class="seg" role="group" aria-label="Settings"><button id="slotA">A</button><button id="slotB">B</button><button id="copyab">A→B</button><button id="init">INIT</button></span>
@@ -89,8 +88,8 @@
 
 <div class="panel stages">
   <section class="stage"><h2>BODY</h2><div id="k-mouth" class="knobs"></div></section>
-  <section class="stage"><h2>BREATH</h2><div id="k-breath" class="knobs"></div></section>
-  <section class="stage"><h2>SOURCE</h2><div id="k-drive" class="knobs"></div></section>
+  <section class="stage"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
+  <section class="stage"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
   <section class="stage"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
   <section class="stage"><h2>OUT <output id="peak">−∞</output></h2><div id="k-out" class="knobs"></div></section>
 </div>
