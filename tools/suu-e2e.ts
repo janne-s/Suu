@@ -134,6 +134,13 @@ ok("no focus ring after a click", (await outline()) === "none", await outline())
 await page.keyboard.press("Tab");
 ok("a focus ring after Tab", (await outline()) !== "none", await outline());
 await page.mouse.click(700, 5);
+// glide direction under its ♪, and sync values down to 1/128
+await page.click("#glidedir");
+ok("glide direction cycles", (await page.textContent("#glidedir")) === "↑");
+await page.click("#glidedir"); await page.click("#glidedir");
+ok("and back to both ways", (await page.textContent("#glidedir")) === "↕");
+ok("sync down to 1/128", (await page.locator(".motion-row select.field[hidden], .motion-row .rate select").first().locator('option', { hasText: "1/128" }).count()) === 1);
+ok("the sequencer runs at 1/128 too", (await page.locator('#rate option[value="32"]').count()) === 1);
 // glide knob
 ok("glide knob", (await page.locator("#glide").count()) === 1, await page.textContent('output[for="glide"]') ?? "");
 // A/B

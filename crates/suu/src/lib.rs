@@ -163,6 +163,8 @@ pub struct Params {
     /// it to that many beats instead
     pub glide_s: f64,
     pub glide_sync: f64,
+    /// which way the pitch glides: both, only up or only down (the other way it jumps)
+    pub glide_dir: GlideDir,
     /// Typed text (see `set_text`): what moves it on to the next syllable or word, which of the
     /// two, and how each is said
     pub text_step: TextStep,
@@ -216,6 +218,7 @@ impl Default for Params {
             bpm: 100.0,
             glide_s: 0.03,
             glide_sync: 0.0,
+            glide_dir: GlideDir::Both,
             text_step: TextStep::Note,
             text_unit: TextUnit::Syllable,
             text_say: TextSay::Hold,
@@ -251,6 +254,14 @@ pub struct Step {
 
 /// An accented step's level, × the source.
 pub const ACCENT: f64 = 1.6;
+
+/// Which pitch changes glide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GlideDir {
+    Both,
+    Up,
+    Down,
+}
 
 /// What moves typed text on to its next unit.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -946,7 +957,7 @@ impl Suu {
     pub fn set_seq(&mut self, len: usize, div: f64, gate_scale: f64) {
         let s = &mut self.seq;
         s.len = len.clamp(1, STEPS);
-        s.div = clamp(div, 0.25, 8.0);
+        s.div = clamp(div, 0.25, 32.0);
         s.gate_scale = clamp(gate_scale, 0.0, 2.0);
     }
 
@@ -1397,7 +1408,14 @@ impl Suu {
             // a new pitch: glide there in the glide time, linear in semitones, from where it is
             self.glide_to = self.note_now;
             let n = js_max(1.0, secs * self.fs);
-            self.glide_rate = (self.glide_to - self.pitch).abs() / n;
+            let up = self.glide_to > self.pitch;
+            // the other way, it jumps (at once: the whole interval in one sample)
+            let glides = match p.glide_dir {
+                GlideDir::Both => true,
+                GlideDir::Up => up,
+                GlideDir::Down => !up,
+            };
+            self.glide_rate = (self.glide_to - self.pitch).abs() / if glides { n } else { 1.0 };
         }
         let envn = clamp(self.env_peak * 4.0, 0.0, 1.0);
         self.env_peak = 0.0;
@@ -2055,6 +2073,15 @@ mod tests {
             n += 32;
         }
         (n, jump)
+    }
+
+    #[test]
+    fn glide_can_go_one_way_only() {
+        let base = Params { note: 45.0, glide_s: 0.25, ..Params::default() };
+        let up = |dir: GlideDir, to: f64| glide_samples(Params { glide_dir: dir, ..base }, to);
+        // up only: rising glides (12000 samples), falling jumps; down only the other way round
+        assert!((up(GlideDir::Up, 57.0) as i64 - 12000).abs() <= 64 && up(GlideDir::Up, 33.0) <= 64);
+        assert!((up(GlideDir::Down, 33.0) as i64 - 12000).abs() <= 64 && up(GlideDir::Down, 57.0) <= 64);
     }
 
     #[test]

@@ -20,7 +20,7 @@ function send(id, v) {
 const bpm = () => clamp(+$("bpm").value || 100, 30, 300);
 
 // note values for tempo sync, in beats
-const DIVS = [["1/32", 0.125], ["1/16T", 1 / 6], ["1/16", 0.25], ["1/16.", 0.375], ["1/8T", 1 / 3], ["1/8", 0.5], ["1/8.", 0.75], ["1/4T", 2 / 3], ["1/4", 1], ["1/4.", 1.5], ["1/2", 2], ["1/2.", 3], ["1/1", 4], ["2/1", 8], ["4/1", 16]];
+const DIVS = [["1/128", 1 / 32], ["1/64T", 1 / 24], ["1/64", 1 / 16], ["1/32T", 1 / 12], ["1/32", 0.125], ["1/16T", 1 / 6], ["1/16", 0.25], ["1/16.", 0.375], ["1/8T", 1 / 3], ["1/8", 0.5], ["1/8.", 0.75], ["1/4T", 2 / 3], ["1/4", 1], ["1/4.", 1.5], ["1/2", 2], ["1/2.", 3], ["1/1", 4], ["2/1", 8], ["4/1", 16]];
 const divBeats = (n) => DIVS.find((d) => d[0] === n)[1];
 
 // ---------------------------------------------------------------- knobs
@@ -144,9 +144,17 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
     box.className = "field syncbox";
     box.hidden = true;
     box.setAttribute("aria-label", `${label} as a note value`);
-    box.innerHTML = DIVS.slice(0, 13).map(([n]) => `<option>${n}</option>`).join("");
+    box.innerHTML = DIVS.filter((d) => d[1] <= 4).map(([n]) => `<option>${n}</option>`).join("");
     input.after(box);
     cell.append(btn);
+    if (key === "glide") {
+      // which way the pitch glides: both, only up, only down (the other way it jumps)
+      const dir = document.createElement("button");
+      dir.id = "glidedir";
+      dir.className = "sync dir";
+      dir.addEventListener("click", () => setGlideDir((glideDir + 1) % 3));
+      cell.append(dir);
+    }
     c.setSync = (div) => {
       c.sync = div;
       if (div) box.value = div;
@@ -171,7 +179,18 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
   }
   update(key, def);
 }
+let glideDir = 0; // 0 both ways, 1 up only, 2 down only
+function setGlideDir(d) {
+  glideDir = d;
+  send(35, d);
+  const b = $("glidedir");
+  b.textContent = ["↕", "↑", "↓"][d];
+  b.title = ["Glide both ways", "Glide up only (down jumps)", "Glide down only (up jumps)"][d];
+  b.setAttribute("aria-label", b.title);
+  b.setAttribute("aria-pressed", String(d !== 0));
+}
 for (const [parent, list] of Object.entries(KNOBS)) for (const k of list) knob(parent, k);
+setGlideDir(0);
 
 // ---------------------------------------------------------------- Motion
 // target index (engine), label, engine param id of its base, range, default base, format, log
@@ -812,6 +831,7 @@ function pushAll() {
   }
   send(19, bpm());
   send(1, lastNote);
+  send(35, glideDir);
   sendHorn();
   gate();
   sendText(false);
@@ -1320,6 +1340,7 @@ function getState() {
     note: lastNote,
     octave,
     bpm: bpm(),
+    glideDir,
     space: spaceOn,
     knobs,
     motion,
@@ -1353,6 +1374,7 @@ function readState(raw) {
     octave: Math.round(num(r.octave, d.octave, -3, 3)),
     bpm: num(r.bpm, d.bpm, 30, 300),
     space: bool(r.space, d.space),
+    glideDir: [0, 1, 2].includes(r.glideDir) ? r.glideDir : d.glideDir,
     knobs: {},
     motion: {},
   };
@@ -1373,7 +1395,7 @@ function readState(raw) {
   const seq = obj(r.seq, "seq");
   if (seq.steps !== undefined && !Array.isArray(seq.steps)) throw new Error("steps is not a list");
   out.seq = {
-    rate: [1, 2, 4, 8].includes(seq.rate) ? seq.rate : d.seq.rate,
+    rate: [1, 2, 4, 8, 16, 32].includes(seq.rate) ? seq.rate : d.seq.rate,
     length: Math.round(num(seq.length, d.seq.length, 1, 16)),
     gate: num(seq.gate, d.seq.gate, 0, 2),
     steps: d.seq.steps.map((ds, i) => {
@@ -1424,6 +1446,7 @@ function applyState(st) {
   send(19, bpm());
   octave = st.octave;
   note(st.note);
+  setGlideDir(st.glideDir);
   for (const [key, c] of controls) {
     const k = st.knobs[key];
     c.setSync?.(typeof k === "object" ? k.sync : null);

@@ -175,6 +175,7 @@ button.icon svg { display: block; margin: auto; }
 .knob output { font-size: 10px; cursor: pointer; white-space: nowrap; }
 .knob.beyond output { color: var(--sound); }
 .knob .sync { position: absolute; top: 14px; right: calc(50% - 38px); width: 16px; height: 16px; padding: 0; font-size: 10px; font-family: inherit; letter-spacing: 0; }
+.knob .dir { top: 34px; }
 .knob .syncbox { width: 48px; height: 42px; margin-top: 4px; font-size: 12px; }
 
 /* help */

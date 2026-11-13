@@ -52,7 +52,8 @@ to change it. **Gate** scales every step's length alike.
   source.
 - **Reson** — A resonator tuned to the played note, so a file or mic plays in
   pitch. Off by default.
-- **Glide**, **Drive**, **Tilt**, **Sub** — Pitch and vowel glide (♪ syncs it), level
+- **Glide**, **Drive**, **Tilt**, **Sub** — Pitch and vowel glide (♪ syncs it; ↕ ↑ ↓
+  glides both ways, only up or only down), level
   into the mouth, source brightness, and the dry low end.
 - **Space** — Delay and reverb, web only. Off is what the plug-in does.
 
