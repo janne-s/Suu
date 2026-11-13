@@ -30,7 +30,7 @@
 <header class="bar">
   <h1>SUU</h1>
   <span class="tgroup"><span class="tlabel">OSC</span><span class="seg" role="group" aria-label="Oscillator"><button data-osc="2">SUPERSAW</button><button data-osc="1">SAW</button><button data-osc="3">SQUARE</button><button data-osc="0">OFF</button></span></span>
-  <span class="tgroup"><span class="tlabel">IN</span><span class="seg" role="group" aria-label="Input"><button data-in="file" aria-pressed="false">FILE</button><button data-in="mic" aria-pressed="false">MIC</button></span></span>
+  <span class="tgroup"><span class="tlabel">IN</span><span class="seg" role="group" aria-label="Input"><button data-in="file" aria-pressed="false">FILE</button><button id="pickfile" class="square icon" aria-label="Choose an audio file"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M1.5 4.5v8h13v-6.5h-6.5l-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button data-in="mic" aria-pressed="false">MIC</button></span></span>
   <span id="status" role="status" aria-live="polite"></span>
   <span class="keys"><button id="hold" aria-pressed="false">HOLD</button><button id="octdown" class="square">−</button><output id="notename" class="field">A2</output><button id="octup" class="square">+</button></span>
   <span class="seg" role="group" aria-label="Settings"><button id="slotA">A</button><button id="slotB">B</button><button id="copyab">A→B</button><button id="init">INIT</button></span>

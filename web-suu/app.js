@@ -1014,13 +1014,22 @@ async function loadFile(f) {
   try {
     fileBuf = await ctx.decodeAudioData(await f.arrayBuffer());
     fileName = f.name;
+    const fb = document.querySelector('[data-in="file"]');
+    fb.dataset.tip = TIPS['[data-in="file"]'] + "\nLoaded: " + f.name;
     await setInput("file");
     status(f.name);
   } catch {
     status(`could not decode ${f.name}`);
   }
 }
-$("file").onchange = (e) => e.target.files[0] && loadFile(e.target.files[0]);
+$("file").onchange = (e) => {
+  const f = e.target.files[0];
+  // cleared, so choosing the same file again loads it again
+  e.target.value = "";
+  if (f) loadFile(f);
+};
+// the folder next to FILE always asks for a file (FILE itself turns a loaded one on and off)
+$("pickfile").onclick = () => $("file").click();
 addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => {
   e.preventDefault();
@@ -1686,7 +1695,8 @@ const TIPS = {
   '[data-osc="1"]': "Saw\nOne saw: bright, every harmonic.",
   '[data-osc="3"]': "Square\nOdd harmonics only: hollow.",
   '[data-osc="0"]': "Off\nNo oscillator: only the input and the folds.",
-  '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. Drop one anywhere to load another.",
+  '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. The folder beside it, or a drop anywhere, loads another.",
+  "#pickfile": "Choose file\nLoad an audio file (or drop one anywhere).",
   '[data-in="mic"]': "Mic\nThe microphone, mixed with the oscillator. Use headphones.",
   "#hold": "Hold\nKeeps the note on: a drone, or a file or mic passing through. Keys then say the text's next part.",
   "#octdown": "Octave down (Z)",

@@ -85,6 +85,16 @@ await page.keyboard.up("s");
   db = await peakDb(); ok("oscillator and file mix", db > -40, `${db.toFixed(1)} dB`);
   await page.click('[data-in="file"]');
   await page.click("#hold");
+  // a loaded file can be replaced: the folder beside FILE opens the picker, also for the same file
+  for (const name of ["other.wav", "other.wav"]) {
+    const [chooser] = await Promise.all([page.waitForEvent("filechooser", { timeout: 2000 }), page.click("#pickfile")]);
+    await chooser.setFiles({ name, mimeType: "audio/wav", buffer: buf });
+    await page.waitForTimeout(500);
+  }
+  ok("the folder loads another file", (await page.getAttribute('[data-in="file"]', "aria-pressed")) === "true" && (await page.getAttribute('[data-in="file"]', "data-tip"))!.includes("Loaded: other.wav"));
+  await page.click('[data-in="file"]');
+  ok("FILE still turns the file off", (await page.getAttribute('[data-in="file"]', "aria-pressed")) === "false");
+  await page.click("#hold");
 }
 // text: one button
 await page.click("#text-toggle");

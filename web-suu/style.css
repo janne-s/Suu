@@ -84,7 +84,7 @@ select.field { cursor: pointer; color: var(--beam); }
 h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500; letter-spacing: 6px; text-shadow: 0 0 8px rgba(var(--beam-rgb), 0.6); }
 /* only the status line gives way; at narrow widths the bar's group names go */
 .bar > :not(#status) { flex-shrink: 0; }
-@media (max-width: 1180px) { .bar .tlabel { display: none; } }
+@media (max-width: 1180px) { .bar { gap: 6px; } .bar .tlabel { display: none; } }
 #status { flex: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; transition: opacity 0.6s; }
 #status.fade { opacity: 0; }
 .keys { display: inline-flex; align-items: center; gap: 2px; }
