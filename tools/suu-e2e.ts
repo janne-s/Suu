@@ -193,6 +193,18 @@ let before = (await saved()).horn as number[];
 let after = (await saved()).horn as number[];
 ok("a drag that began elsewhere draws nothing on the horn", after.every((a, i) => Math.abs(a - before[i]) < 1e-6), JSON.stringify(after.map((a, i) => +(a - before[i]).toFixed(2)).filter((d) => d)));
 await page.click("#horn-reset");
+// drawing at the lips' end of a wave horn changes points there, not at the glottis' end
+await page.selectOption("#horn-shape", "0");
+before = (await saved()).horn as number[];
+{
+  const m = await page.locator("#mouth").boundingBox();
+  await page.mouse.move(m!.x + m!.width * 0.92, m!.y + m!.height * 0.15); await page.mouse.down();
+  await page.mouse.move(m!.x + m!.width * 0.93, m!.y + m!.height * 0.12, { steps: 3 }); await page.mouse.up();
+}
+after = (await saved()).horn as number[];
+const moved = after.map((a, i) => (Math.abs(a - before[i]) > 1e-6 ? i : -1)).filter((i) => i >= 0);
+ok("drawing at the lips' end stays there", moved.length > 0 && moved.every((i) => i > 24), JSON.stringify(moved));
+await page.click("#horn-reset");
 // Depth and Cycles work on a drawn horn too, and keep it drawn ("—")
 await page.click("#view-horn");
 for (const [id, dy] of [["#horn-depth", -50], ["#horn-cycles", -60]] as const) {

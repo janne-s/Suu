@@ -479,6 +479,8 @@ function drawHorn(c, w, h, dpr) {
       const x = f.x(hornU(i)), y = f.cy + side * f.r(a);
       i ? c.lineTo(x, y) : c.moveTo(x, y);
     });
+    // a wave is one period: it closes on its first value at the lips' end
+    if (hornWrap) c.lineTo(f.x(1), f.cy + side * f.r(horn[0]));
     c.stroke();
   }
   c.setLineDash([]);
@@ -491,7 +493,9 @@ function hornAt(e) {
   const f = hornFrame(mouthEl.width, mouthEl.height);
   const x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
   const u = clamp((x - f.x0) / (f.x1 - f.x0), 0, 1);
-  const i = hornWrap ? Math.round(u * HORN_POINTS) % HORN_POINTS : Math.round(u * (HORN_POINTS - 1));
+  // nearest point; at the lips' end a wave's last point (wrapping to the first sent the stroke
+  // to the glottis' end)
+  const i = hornWrap ? Math.min(HORN_POINTS - 1, Math.round(u * HORN_POINTS)) : Math.round(u * (HORN_POINTS - 1));
   const cm = Math.abs(y - f.cy) / f.perCm;
   const a = clamp(Math.PI * cm * cm, 0, HORN_MAX);
   // fill every point between the last one and this, so a fast stroke leaves no gaps
