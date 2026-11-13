@@ -130,7 +130,8 @@ pub struct Params {
     pub inject: f64,
     /// × on the airway's viscous loss (resonance damping), 0.1..20
     pub damping: f64,
-    /// 0..2 the model's own folds vibrating with the source (at the sounding note)
+    /// 0..2 the model's own folds vibrating with the source (at the sounding note, while a note
+    /// sounds: they open and close with the gate)
     pub folds: f64,
     /// sub layer corner (Hz) and level (0..1)
     pub sub_hz: f64,
@@ -478,6 +479,9 @@ pub struct Suu {
     folds_f0: f64,
     /// the sounding step is accented
     accent: bool,
+    /// the folds' gate (0..1, control rate): they sound with a note, as the source does; their
+    /// lung pressure alone kept them sounding with no note at all
+    fold_env: f64,
 }
 
 impl Suu {
@@ -545,6 +549,7 @@ impl Suu {
             gate_now: false,
             folds_f0: 0.0,
             accent: false,
+            fold_env: 0.0,
         };
         s.rest = s.voice.artic.target.to_array();
         let mix = BodyMix::new(0.0, 0.0);
@@ -686,7 +691,7 @@ impl Suu {
     /// The voice-wide settings that follow the parameters (cheap, no allocation).
     fn configure_voice(&mut self) {
         let p = self.p;
-        self.voice.glottal_area_scale = p.folds;
+        self.voice.glottal_area_scale = p.folds * self.fold_env;
         // the folds follow Suu's own (already glided) pitch: no glide of their own (their default
         // 60 ms kept a slide even with Glide at 0)
         self.voice.set_source(&SourcePatch { voiced: Some(true), tension: Some(0.55), drift: Some(0.0), glide: Some(0.002), ..Default::default() });
@@ -1141,8 +1146,16 @@ impl Suu {
         let quiet_period = self.period_peak < QUIET;
         self.period_peak = 0.0;
         self.quiet = if quiet_period { self.quiet + CTRL } else { 0 };
+        // the folds open and close with the gate (5 ms up, 60 ms down)
+        let tau = if self.gate_now { 0.005 } else { 0.06 };
+        let goal = if self.gate_now { 1.0 } else { 0.0 };
+        self.fold_env += (goal - self.fold_env) * (1.0 - exp(-(CTRL as f64) / (tau * self.fs)));
+        let area = p.folds * self.fold_env;
+        if area != self.voice.glottal_area_scale {
+            self.voice.glottal_area_scale = area;
+        }
         let looping = !self.text.is_empty() && self.text_mode == TextMode::Loop;
-        let may_sleep = !self.gate_now && p.folds == 0.0 && !looping && self.fade.is_none();
+        let may_sleep = !self.gate_now && !looping && self.fade.is_none();
         let asleep = may_sleep && self.quiet as f64 >= SLEEP_AFTER * self.fs;
         if asleep && !self.asleep {
             // the voice's clock stops while asleep: drop what the text still had scheduled (it
@@ -1600,6 +1613,22 @@ mod tests {
         s.set_mod(0, Mod { depth: 1.0, rate_hz: 2.0, sync: 0.0, shape: Shape::Random, smooth: 1.0 });
         run(&mut s, 32, 48000);
         assert!((s.mod_out[0] - s.mod_hold[0]).abs() <= (s.mod_hold[0] - s.mod_from[0]).abs() + 1e-9);
+    }
+
+    #[test]
+    fn the_folds_sound_only_with_a_note() {
+        // the owner's settings: folds 68 %, breath ×2.79, follow 0 (full lung pressure always)
+        let level = |gate: bool, block: usize| {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { folds: 0.68, breath: 2.79, follow: 0.0, gate, ..Params::default() });
+            let out = run(&mut s, block, 96000);
+            let rms = (out[48000..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 48000.0).sqrt();
+            (20.0 * rms.max(1e-12).log10(), out)
+        };
+        let ((off, _), (on, a)) = (level(false, 128), level(true, 128));
+        // no note: only the breath's own air is left (it was −11.5 dBFS with the folds sounding)
+        assert!(off < -50.0 && on > -30.0, "no note {off:.1} dB, a note {on:.1} dB");
+        assert_eq!(a, level(true, 37).1);
     }
 
     #[test]
