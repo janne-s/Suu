@@ -319,7 +319,7 @@ const defaultHorn = () => Float32Array.from({ length: HORN_POINTS }, (_, i) => {
 let horn = defaultHorn(), view = "pad";
 // a horn built from a wave is one period (points at i/n), and Shift wraps it around
 let hornWrap = false;
-const hornWave = { shape: -1, cycles: 2, depth: 0.6 }; // shape −1: drawn by hand
+const hornWave = { shape: -1, cycles: 1, depth: 0.6 }; // shape −1: drawn by hand
 function sendHorn() {
   dirty = true;
   post({ type: "profile", areas: horn.slice(), wrap: hornWrap });
@@ -330,8 +330,27 @@ const hornU = (i) => i / (hornWrap ? HORN_POINTS : HORN_POINTS - 1);
 let rndSteps = [];
 // SNAP: one period of the source's waveform (32 values, −1..1), taken by the camera button
 let snapVals = [];
+// DRAWN (shape −1): the hand-drawn horn as one period, its mean area and each point's swing in
+// units of mean × depth, so Depth scales what was drawn and Cycles repeats it, as for a wave
+let drawn = { mean: 3, w: new Array(HORN_POINTS).fill(0) };
+/** The horn as shown becomes the drawn shape (one cycle; at the present depth, so it looks the
+ *  same until Depth or Cycles move). */
+function captureDrawn() {
+  if (hornWave.depth === 0) hornWave.depth = 1; // a shape drawn at 0 could not be scaled back
+  const mean = horn.reduce((a, b) => a + b, 0) / horn.length;
+  drawn = { mean, w: Array.from(horn, (a) => (mean > 0 ? Math.round(((a - mean) / (mean * hornWave.depth)) * 1e4) / 1e4 : 0)) };
+  hornWave.cycles = 1;
+}
 function buildWave(newRandom = false) {
   const { shape, cycles, depth } = hornWave;
+  if (shape < 0) {
+    // the drawn shape, repeated and scaled (it keeps its own wrapping)
+    horn = Float32Array.from({ length: HORN_POINTS }, (_, i) => {
+      const f = ((cycles * i) / HORN_POINTS) % 1;
+      return clamp(drawn.mean * (1 + depth * drawn.w[Math.floor(f * HORN_POINTS)]), 0, HORN_MAX);
+    });
+    return sendHorn();
+  }
   if (newRandom || rndSteps.length !== cycles) rndSteps = Array.from({ length: cycles }, () => Math.random() * 2 - 1);
   const steps = rndSteps;
   horn = Float32Array.from({ length: HORN_POINTS }, (_, i) => {
@@ -352,6 +371,7 @@ function resetHorn() {
   horn = defaultHorn();
   hornWrap = false;
   hornWave.shape = -1;
+  captureDrawn();
   showHornWave();
   sendHorn();
 }
@@ -362,6 +382,8 @@ function bringHornIn() {
 $("horn-reset").onclick = resetHorn;
 $("horn-shape").onchange = () => {
   hornWave.shape = +$("horn-shape").value;
+  // back to "—": the horn as it is now becomes the drawn shape
+  if (hornWave.shape < 0) captureDrawn();
   // SNAP without a snapshot yet: take one now
   if (hornWave.shape === 5 && !snapVals.length) return post({ type: "snapshot" });
   if (hornWave.shape >= 0) buildWave(true);
@@ -386,18 +408,17 @@ dragValue($("horn-cycles"), () => hornWave.cycles, (v) => {
   const c = Math.round(clamp(v, 1, 8));
   if (c === hornWave.cycles) return;
   hornWave.cycles = c;
-  if (hornWave.shape < 0) hornWave.shape = 0;
   buildWave();
   showHornWave();
 }, 1 / 25);
 dragValue($("horn-depth"), () => hornWave.depth, (v) => {
-  const d = Math.round(clamp(v, 0, 1) * 100) / 100;
-  if (d === hornWave.depth && hornWave.shape >= 0) return;
+  const d = Math.round(clamp(v, 0, 2) * 100) / 100;
+  if (d === hornWave.depth) return;
   hornWave.depth = d;
-  if (hornWave.shape < 0) hornWave.shape = 0;
   buildWave();
   showHornWave();
 }, 1 / 150);
+captureDrawn();
 showHornWave();
 /** The horn's frame on the canvas: x for u (0 glottis … 1 lips), half-height in px for an area. */
 function hornFrame(w, h) {
@@ -661,7 +682,12 @@ function padAt(e) {
   setBase(rows[0], x);
   setBase(rows[1], y);
 }
+// a stroke is only one that began on the mouth: a button held down elsewhere (a menu, the Depth
+// field) and moved over it drew a spike where the pointer was
+let stroke = false;
 mouthEl.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  stroke = true;
   mouthEl.setPointerCapture(e.pointerId);
   if (view === "horn") {
     bringHornIn();
@@ -672,7 +698,20 @@ mouthEl.addEventListener("pointerdown", (e) => {
     hornAt(e);
   } else padAt(e);
 });
-mouthEl.addEventListener("pointermove", (e) => e.buttons && (view === "horn" ? hornAt(e) : padAt(e)));
+mouthEl.addEventListener("pointermove", (e) => {
+  if (stroke && e.buttons & 1) view === "horn" ? hornAt(e) : padAt(e);
+});
+// a stroke's end: what is drawn now is the shape Depth and Cycles work on
+function endStroke() {
+  if (!stroke) return;
+  stroke = false;
+  if (view === "horn" && hornLast >= 0) {
+    captureDrawn();
+    showHornWave();
+  }
+  hornLast = -1;
+}
+for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) mouthEl.addEventListener(ev, endStroke);
 mouthEl.addEventListener("dblclick", () => view === "horn" && resetHorn());
 new ResizeObserver(() => {
   dirty = true;
@@ -1276,7 +1315,7 @@ function getState() {
     text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync, seq: loop.seq, once: loop.once, speech: loop.speech },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
-    hornWave: { ...hornWave, snap: snapVals.slice() },
+    hornWave: { ...hornWave, snap: snapVals.slice(), drawn: { mean: Math.round(drawn.mean * 1e4) / 1e4, w: drawn.w.slice() } },
   };
 }
 
@@ -1338,7 +1377,17 @@ function readState(raw) {
   if (hw.snap !== undefined && !Array.isArray(hw.snap)) throw new Error("hornWave.snap is not a list");
   const snap = Array.isArray(hw.snap) && hw.snap.length === HORN_POINTS ? hw.snap.map((v) => num(v, 0, -1, 1)) : [];
   const shape = Math.round(num(hw.shape, d.hornWave.shape, -1, 5));
-  out.hornWave = { shape: shape === 5 && !snap.length ? -1 : shape, cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)), depth: num(hw.depth, d.hornWave.depth, 0, 1), snap };
+  const dr = obj(hw.drawn, "hornWave.drawn");
+  if (dr.w !== undefined && !Array.isArray(dr.w)) throw new Error("hornWave.drawn.w is not a list");
+  // missing (an older state): taken from the horn when applied
+  const drawnOk = Array.isArray(dr.w) && dr.w.length === HORN_POINTS;
+  out.hornWave = {
+    shape: shape === 5 && !snap.length ? -1 : shape,
+    cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)),
+    depth: num(hw.depth, d.hornWave.depth, 0, 2),
+    snap,
+    drawn: drawnOk ? { mean: num(dr.mean, 3, 0, HORN_MAX), w: dr.w.map((v) => num(v, 0, -50, 50)) } : null,
+  };
   out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync), seq: bool(text.seq, d.text.seq), once: bool(text.once, d.text.once), speech: num(text.speech, d.text.speech, 0.25, 4) };
   return out;
 }
@@ -1379,6 +1428,8 @@ function applyState(st) {
   hornWrap = st.hornWrap;
   snapVals = st.hornWave.snap.slice();
   Object.assign(hornWave, { shape: st.hornWave.shape, cycles: st.hornWave.cycles, depth: st.hornWave.depth });
+  if (st.hornWave.drawn) drawn = { mean: st.hornWave.drawn.mean, w: st.hornWave.drawn.w.slice() };
+  else if (hornWave.shape < 0) captureDrawn();
   showHornWave();
   sendHorn();
   $("text").value = st.text.words;

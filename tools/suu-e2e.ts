@@ -163,7 +163,7 @@ await page.click("#view-horn");
 await page.selectOption("#horn-shape", "0");
 let saved = async () => { await page.waitForTimeout(1200); return await page.evaluate(() => JSON.parse(localStorage.getItem("suu.session.v1")!).B); };
 let st = await saved();
-ok("SIN builds a wrapping wave horn", st.hornWrap === true && st.hornWave.shape === 0 && Math.abs(st.horn[4] - st.horn[12]) > 1, JSON.stringify(st.horn.slice(0, 6)));
+ok("SIN builds a wrapping wave horn", st.hornWrap === true && st.hornWave.shape === 0 && Math.abs(st.horn[8] - st.horn[24]) > 2, JSON.stringify(st.horn.slice(0, 6)));
 await page.screenshot({ path: `${out}/5-wave.png` });
 // snapshot: the synth's waveform (a supersaw) becomes the horn
 await page.keyboard.down("a");
@@ -175,6 +175,33 @@ ok("the camera snapshots the sound into the horn", st.hornWave.shape === 5 && st
 await page.click("#horn-reset");
 st = await saved();
 ok("reset icon restores the original horn", st.hornWrap === false && st.hornWave.shape === -1 && Math.abs(st.horn[0] - 0.6) < 0.05, JSON.stringify(st.horn.slice(0, 3)));
+// dragging Depth, then moving over the horn, draws nothing (the owner's spike)
+await page.selectOption("#horn-shape", "0");
+let before = (await saved()).horn as number[];
+{
+  const b = await page.locator("#horn-depth").boundingBox();
+  const m = await page.locator("#mouth").boundingBox();
+  await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down();
+  await page.mouse.move(m!.x + m!.width * 0.6, m!.y + 20, { steps: 8 }); // up over the horn
+  await page.mouse.move(b!.x + 20, b!.y + 10, { steps: 8 }); // and back: depth unchanged
+  await page.mouse.up();
+  // a press on the bar's edge (no control there) moved over the horn: 17 points drew before
+  const bar = await page.locator("#horn-bar").boundingBox();
+  await page.mouse.move(bar!.x + 3, bar!.y + 3); await page.mouse.down();
+  await page.mouse.move(m!.x + m!.width * 0.5, m!.y + 30, { steps: 8 }); await page.mouse.up();
+}
+let after = (await saved()).horn as number[];
+ok("a drag that began elsewhere draws nothing on the horn", after.every((a, i) => Math.abs(a - before[i]) < 1e-6), JSON.stringify(after.map((a, i) => +(a - before[i]).toFixed(2)).filter((d) => d)));
+await page.click("#horn-reset");
+// Depth and Cycles work on a drawn horn too, and keep it drawn ("—")
+await page.click("#view-horn");
+for (const [id, dy] of [["#horn-depth", -50], ["#horn-cycles", -60]] as const) {
+  const b = await page.locator(id).boundingBox();
+  await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down(); await page.mouse.move(b!.x + 20, b!.y + dy, { steps: 6 }); await page.mouse.up();
+}
+st = await saved();
+ok("depth and cycles keep the drawn horn", st.hornWave.shape === -1 && st.hornWave.cycles > 1 && st.hornWave.depth > 0.6 && Math.abs(st.horn[0] - 0.6) > 0.05, JSON.stringify({ c: st.hornWave.cycles, d: st.hornWave.depth, h0: st.horn[0] }));
+await page.click("#horn-reset");
 await page.click("#view-pad");
 // Motion SMOOTH: a field per row, saved with the state
 {
