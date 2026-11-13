@@ -204,6 +204,14 @@ pub struct Params {
     pub morph: f64,
     pub shift: f64,
     pub open: f64,
+    /// ENV gate: the input's own level opens the sound, as a held key does, while it is at or
+    /// above `env_thresh_db` (dBFS, measured before INPUT's gain); it closes when the input has
+    /// stayed below for the release (`env_release_s`, or `env_release_sync` beats if > 0). Each
+    /// opening is a new note, so the text says its next part on every onset.
+    pub env_gate: bool,
+    pub env_thresh_db: f64,
+    pub env_release_s: f64,
+    pub env_release_sync: f64,
 }
 
 impl Default for Params {
@@ -247,6 +255,10 @@ impl Default for Params {
             morph: 0.0,
             shift: 0.0,
             open: 1.0,
+            env_gate: false,
+            env_thresh_db: -40.0,
+            env_release_s: 0.15,
+            env_release_sync: 0.0,
         }
     }
 }
@@ -418,13 +430,11 @@ impl Osc {
 }
 
 /// The drawn horn's starting shape: narrow at the glottis, a throat, a wide bell at the lips.
-fn default_horn() -> Vec<f64> {
-    (0..HORN_POINTS)
-        .map(|i| {
-            let u = i as f64 / (HORN_POINTS - 1) as f64;
-            0.6 + 1.5 * exp(-((u - 0.3) / 0.12) * ((u - 0.3) / 0.12)) + 9.0 * u * u * u
-        })
-        .collect()
+pub fn default_horn() -> [f64; HORN_POINTS] {
+    core::array::from_fn(|i| {
+        let u = i as f64 / (HORN_POINTS - 1) as f64;
+        0.6 + 1.5 * exp(-((u - 0.3) / 0.12) * ((u - 0.3) / 0.12)) + 9.0 * u * u * u
+    })
 }
 
 /// A comb resonator tuned by its delay (Karplus-Strong style): a fractional delay line with a
@@ -813,6 +823,12 @@ pub struct Suu {
     /// the folds' gate (0..1, control rate): they sound with a note, as the source does; their
     /// lung pressure alone kept them sounding with no note at all
     fold_env: f64,
+    /// ENV gate: the input's envelope, its peak this control period, open, and how long it has
+    /// been below the threshold (s)
+    in_env: f64,
+    in_peak: f64,
+    env_open: bool,
+    env_below: f64,
 }
 
 impl Suu {
@@ -884,6 +900,10 @@ impl Suu {
             folds_f0: 0.0,
             accent: false,
             fold_env: 0.0,
+            in_env: 0.0,
+            in_peak: 0.0,
+            env_open: false,
+            env_below: 0.0,
         };
         s.rest = s.voice.artic.target.to_array();
         let mix = BodyMix::new(0.0, 0.0);
@@ -894,7 +914,7 @@ impl Suu {
         for (i, v) in CORNERS.iter().enumerate() {
             s.corners[i] = full(v, &s.rest);
         }
-        s.voice.airway.profile = default_horn();
+        s.voice.airway.profile = default_horn().to_vec();
         s.configure_voice();
         s.refresh_mouth();
         s.warm_up(&mut |v: &mut HumanVoice, inp, out| v.render_driven(inp, 100.0, out));
@@ -955,6 +975,9 @@ impl Suu {
         q.morph = clamp(q.morph, 0.0, 1.0);
         q.shift = clamp(q.shift, -0.5, 0.5);
         q.open = clamp(q.open, 0.25, 4.0);
+        q.env_thresh_db = clamp(q.env_thresh_db, -80.0, 0.0);
+        q.env_release_s = clamp(q.env_release_s, 0.005, 4.0);
+        q.env_release_sync = clamp(q.env_release_sync, 0.0, 16.0);
         self.p = q;
         self.configure_voice();
         self.refresh_mouth();
@@ -1614,7 +1637,8 @@ impl Suu {
             self.gate_now = self.seq.gate_open;
         } else {
             self.note_now = self.p.note;
-            self.gate_now = self.p.gate;
+            self.run_env_gate();
+            self.gate_now = self.p.gate || self.env_open;
         }
         self.run_text();
         self.retrig = false;
@@ -1682,6 +1706,31 @@ impl Suu {
         }
     }
 
+    /// ENV gate, per control period: open at the threshold, closed after the release below it.
+    fn run_env_gate(&mut self) {
+        let p = self.p;
+        let peak = self.in_peak;
+        self.in_peak = 0.0;
+        if !p.env_gate {
+            (self.env_open, self.env_below) = (false, 0.0);
+            return;
+        }
+        if peak >= pow(10.0, p.env_thresh_db / 20.0) {
+            (self.env_open, self.env_below) = (true, 0.0);
+        } else if self.env_open {
+            self.env_below += CTRL as f64 / self.fs;
+            let release = if p.env_release_sync > 0.0 { p.env_release_sync * 60.0 / p.bpm } else { p.env_release_s };
+            if self.env_below >= release {
+                self.env_open = false;
+            }
+        }
+    }
+
+    /// Whether the ENV gate is open (for tests and the UI).
+    pub fn env_open(&self) -> bool {
+        self.env_open
+    }
+
     fn process_block(&mut self, input: &[f32], off: usize, n: usize, out: &mut [f32]) {
         let p = self.p;
         let fs = self.fs;
@@ -1697,7 +1746,13 @@ impl Suu {
         let (osc_g, input_g) = (level_of(p.osc_db), level_of(p.input_db));
         let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
         let mut env_peak = self.env_peak;
+        // the ENV gate's follower: 1 ms up, 20 ms down, on the input as it comes
+        let (in_a, in_r) = (1.0 - exp(-1.0 / (0.001 * fs)), 1.0 - exp(-1.0 / (0.02 * fs)));
+        let mut in_peak = self.in_peak;
         for i in 0..n {
+            let a = (input[i] as f64).abs();
+            self.in_env += (a - self.in_env) * if a > self.in_env { in_a } else { in_r };
+            in_peak = js_max(in_peak, self.in_env);
             if self.pitch != self.glide_to {
                 let d = self.glide_to - self.pitch;
                 self.pitch = if d.abs() <= self.glide_rate { self.glide_to } else { self.pitch + self.glide_rate * d.signum() };
@@ -1731,6 +1786,7 @@ impl Suu {
             env_peak = js_max(env_peak, self.env);
         }
         self.env_peak = env_peak;
+        self.in_peak = in_peak;
         // 2) tilt
         let c = if p.tilt_hz > 0.0 { exp(-2.0 * PI * p.tilt_hz / fs) } else { 0.0 };
         for i in 0..n {
@@ -2599,6 +2655,57 @@ mod tests {
             assert!(s.text_stale());
             s.set_params(keep);
             assert!(!s.text_stale());
+        }
+    }
+
+    /// ENV gate: an input above the threshold opens the sound, each onset is a new note for the
+    /// text, and it closes after the release (free, or synced to the tempo).
+    #[test]
+    fn env_gate_opens_on_the_input() {
+        let fs = 48000.0;
+        let mut s = Suu::new(fs);
+        s.load_dict("WOW\tW AW1\nYEAH\tY AE1\n");
+        s.set_params(Params { source: Source::Off, env_gate: true, env_thresh_db: -30.0, env_release_s: 0.1, ..Params::default() });
+        s.set_text("wow yeah wow yeah");
+        // bursts: 0.2 s of a −12 dBFS tone, 0.3 s of silence, three times
+        let burst = |t: usize| if (t % 24000) < 9600 { 0.25 * (t as f32 * 0.05).sin() } else { 0.0 };
+        let mut open = Vec::new();
+        let mut out = [0f32; 128];
+        let mut inp = [0f32; 128];
+        for b in 0..(3 * 24000 / 128) {
+            for (i, x) in inp.iter_mut().enumerate() {
+                *x = burst(b * 128 + i);
+            }
+            s.process(&inp, &mut out);
+            open.push(s.env_open());
+        }
+        // block index → seconds: 128 / 48000
+        let at = |sec: f64| open[(sec * fs / 128.0) as usize];
+        assert!(!at(0.0) || at(0.01), "opens at once");
+        assert!(at(0.1) && at(0.25), "open through the burst and the release");
+        assert!(!at(0.4), "closed after the release");
+        assert!(at(0.6), "open on the next burst");
+        assert_eq!(s.said, 3, "a new unit on each of three onsets");
+        // synced: the release is a beat (0.6 s at 100 bpm): still open in the gap
+        s.set_params(Params { env_release_sync: 1.0, ..s.params() });
+        let mut open2 = Vec::new();
+        for b in 0..(24000 / 128) {
+            for (i, x) in inp.iter_mut().enumerate() {
+                *x = burst(b * 128 + i);
+            }
+            s.process(&inp, &mut out);
+            open2.push(s.env_open());
+        }
+        assert!(open2.iter().all(|&o| o), "a beat's release bridges the 0.3 s gap");
+        // below the threshold: never opens
+        let mut q = Suu::new(fs);
+        q.set_params(Params { source: Source::Off, env_gate: true, env_thresh_db: -10.0, ..Params::default() });
+        for b in 0..(24000 / 128) {
+            for (i, x) in inp.iter_mut().enumerate() {
+                *x = burst(b * 128 + i);
+            }
+            q.process(&inp, &mut out);
+            assert!(!q.env_open());
         }
     }
 }
