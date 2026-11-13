@@ -29,8 +29,8 @@ purpose.
   word per note, **Loop** syllables at its own rate or ♪, starting over with the
   sequence (**Seq**) or running free (**Free**).
 - **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
-  Open, each with Depth, Rate or ♪, and a shape (sine, triangle, saw, square,
-  random, envelope).
+  Open, each with Depth, Rate or ♪, a shape (sine, triangle, saw, square,
+  random, envelope) and Smooth, from sharp jumps to gliding ones.
 
 ## Sequencer
 

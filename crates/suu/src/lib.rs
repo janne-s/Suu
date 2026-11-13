@@ -20,7 +20,7 @@
 //! blocks (a size change takes well under a millisecond), the plug-in will move them to a worker.
 
 use chimera::anatomy::human::{ArticKey, ArticPatch, BODY_MALE, BodyMix, HumanBody, N_ARTIC};
-use chimera::math::{PI, clamp, exp, js_max, midi_to_hz, pow};
+use chimera::math::{PI, clamp, cos, exp, js_max, midi_to_hz, pow, sin};
 use chimera::phonetics::Syllable;
 use chimera::phonetics::english::EnglishG2P;
 use chimera::phonetics::planner::vowel_artic;
@@ -82,11 +82,15 @@ pub struct Mod {
     pub rate_hz: f64,
     pub sync: f64,
     pub shape: Shape,
+    /// 0 sharp … 1 smooth: how much of a cycle the shape's jumps take, eased (raised cosine).
+    /// Random glides from one value to the next (1 = a gliding sample and hold), a square's
+    /// edges round off (1 = a cosine), a saw's drop slows (1 = rise and fall alike).
+    pub smooth: f64,
 }
 
 impl Default for Mod {
     fn default() -> Self {
-        Mod { depth: 0.0, rate_hz: 1.0, sync: 0.0, shape: Shape::Sine }
+        Mod { depth: 0.0, rate_hz: 1.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 }
     }
 }
 
@@ -336,7 +340,7 @@ fn default_horn() -> Vec<f64> {
     (0..HORN_POINTS)
         .map(|i| {
             let u = i as f64 / (HORN_POINTS - 1) as f64;
-            0.6 + 1.5 * (-((u - 0.3) / 0.12).powi(2)).exp() + 9.0 * u.powi(3)
+            0.6 + 1.5 * exp(-((u - 0.3) / 0.12) * ((u - 0.3) / 0.12)) + 9.0 * u * u * u
         })
         .collect()
 }
@@ -429,6 +433,10 @@ pub struct Suu {
     mods: [Mod; N_MOD],
     mod_phase: [f64; N_MOD],
     mod_hold: [f64; N_MOD],
+    /// random: the value a glide to the held one starts from (the last output at the cycle's start)
+    mod_from: [f64; N_MOD],
+    /// each target's last LFO value (−1..1), before depth
+    mod_out: [f64; N_MOD],
     mod_rng: u32,
     /// the targets' values after modulation, and the last ones sent to the voice
     eff: [f64; N_MOD],
@@ -506,6 +514,8 @@ impl Suu {
             mods: [Mod::default(); N_MOD],
             mod_phase: [0.0; N_MOD],
             mod_hold: [0.0; N_MOD],
+            mod_from: [0.0; N_MOD],
+            mod_out: [0.0; N_MOD],
             mod_rng: 0x9e37_79b9,
             eff: [0.0; N_MOD],
             applied: [f64::NAN; N_MOD],
@@ -688,7 +698,7 @@ impl Suu {
 
     pub fn set_mod(&mut self, target: usize, m: Mod) {
         if target < N_MOD {
-            self.mods[target] = Mod { depth: clamp(m.depth, -1.0, 1.0), rate_hz: clamp(m.rate_hz, 0.01, 40.0), sync: clamp(m.sync, 0.0, 64.0), ..m };
+            self.mods[target] = Mod { depth: clamp(m.depth, -1.0, 1.0), rate_hz: clamp(m.rate_hz, 0.01, 40.0), sync: clamp(m.sync, 0.0, 64.0), smooth: clamp(m.smooth, 0.0, 1.0), ..m };
         }
     }
 
@@ -719,7 +729,8 @@ impl Suu {
             let old = self.mod_phase[i];
             let ph = if m.sync > 0.0 { (beats / m.sync).fract() } else { (old + m.rate_hz * CTRL as f64 / self.fs).fract() };
             if ph < old || self.mod_hold[i] == 0.0 {
-                // a new cycle: a new random value
+                // a new cycle: a new random value, glided to from where the last one got to
+                self.mod_from[i] = self.mod_out[i];
                 let r = &mut self.mod_rng;
                 *r ^= *r << 13;
                 *r ^= *r >> 17;
@@ -727,14 +738,30 @@ impl Suu {
                 self.mod_hold[i] = (*r as f64 / u32::MAX as f64) * 2.0 - 1.0 + 1e-9;
             }
             self.mod_phase[i] = ph;
+            // raised-cosine ease 0 → 1 over x in 0..1
+            let ease = |x: f64| 0.5 - 0.5 * cos(PI * clamp(x, 0.0, 1.0));
+            let sm = m.smooth;
             let v = match m.shape {
-                Shape::Sine => (2.0 * PI * ph).sin(),
+                Shape::Sine => sin(2.0 * PI * ph),
                 Shape::Triangle => 1.0 - 4.0 * (ph - 0.5).abs(),
-                Shape::Saw => 2.0 * ph - 1.0,
-                Shape::Square => if ph < 0.5 { 1.0 } else { -1.0 },
-                Shape::Random => self.mod_hold[i],
+                Shape::Saw => {
+                    // rise over 1 − r of the cycle, fall back over r (r up to half)
+                    let r = 0.5 * sm;
+                    if ph < 1.0 - r { -1.0 + 2.0 * ph / (1.0 - r) } else { 1.0 - 2.0 * ease((ph - (1.0 - r)) / r) }
+                }
+                Shape::Square => {
+                    // each edge takes e of the cycle (up to half: a cosine)
+                    let e = 0.5 * sm;
+                    let (half, sign) = if ph < 0.5 { (ph, 1.0) } else { (ph - 0.5, -1.0) };
+                    if e > 0.0 && half < e { sign * (2.0 * ease(half / e) - 1.0) } else { sign }
+                }
+                Shape::Random => {
+                    let (a, b) = (self.mod_from[i], self.mod_hold[i]);
+                    if sm > 0.0 { a + (b - a) * ease(ph / sm) } else { b }
+                }
                 Shape::Follow => envn,
             };
+            self.mod_out[i] = v;
             self.eff[i] = if MOD_LOG[i] {
                 clamp(bases[i] * pow(hi / lo, 0.5 * m.depth * v), lo, hi)
             } else {
@@ -1232,7 +1259,7 @@ impl Suu {
             old.render_driven(&self.drive[..n], scale, &mut self.wet_old[..n]);
             for i in 0..n {
                 let k = left.saturating_sub(i as u32) as f64 / FADE as f64; // weight of the old mouth
-                let w = 0.5 - 0.5 * (PI * k).cos(); // raised cosine: 1 at the change → 0
+                let w = 0.5 - 0.5 * cos(PI * k); // raised cosine: 1 at the change → 0
                 self.wet[i] = (self.wet[i] as f64 * (1.0 - w) + self.wet_old[i] as f64 * w) as f32;
             }
             *left = left.saturating_sub(n as u32);
@@ -1304,7 +1331,7 @@ mod tests {
             s.set_profile(&wave, true);
             s.set_params(Params { gate: true, morph: 0.6, reson: 0.5, folds: 0.5, glide_s: 0.1, ..Params::default() });
             for t in 0..N_MOD {
-                s.set_mod(t, Mod { depth: 0.4, rate_hz: 1.0 + t as f64, sync: 0.0, shape: Shape::Random });
+                s.set_mod(t, Mod { depth: 0.4, rate_hz: 1.0 + t as f64, sync: 0.0, shape: Shape::Random, smooth: 0.5 });
             }
             let input = vec![0.1f32; 256];
             let mut out = vec![0f32; 256];
@@ -1488,7 +1515,7 @@ mod tests {
         let mk = || {
             let mut s = playing();
             s.set_params(Params { gate: true, morph: 0.7, ..Params::default() });
-            s.set_mod(7, Mod { depth: 0.8, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine });
+            s.set_mod(7, Mod { depth: 0.8, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
             s
         };
         assert_eq!(run(&mut mk(), 128, 24000), run(&mut mk(), 45, 24000));
@@ -1518,7 +1545,7 @@ mod tests {
             let mut s = playing();
             s.set_profile(&wave, true);
             s.set_params(Params { gate: true, morph: 1.0, ..Params::default() });
-            s.set_mod(7, Mod { depth, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw });
+            s.set_mod(7, Mod { depth, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw, smooth: 0.0 });
             run(&mut s, 128, 96000)[24000..].to_vec()
         };
         let jump = |x: &[f32]| x.windows(2).fold(0f32, |m, w| m.max((w[1] - w[0]).abs()));
@@ -1546,6 +1573,33 @@ mod tests {
         assert!(rms > 0.005, "a note wakes it: rms {rms}");
         // still the same at any block size
         assert_eq!(a, run_gated(37).0);
+    }
+
+    #[test]
+    fn smooth_takes_the_jumps_out_of_random_square_and_saw() {
+        // the largest step in a target between control periods, sharp vs smooth
+        let largest_step = |shape: Shape, smooth: f64| {
+            let mut s = playing();
+            s.set_mod(4, Mod { depth: 1.0, rate_hz: 4.0, sync: 0.0, shape, smooth });
+            let (mut last, mut most) = (f64::NAN, 0f64);
+            for _ in 0..3000 {
+                run(&mut s, 32, 32);
+                if last.is_finite() {
+                    most = most.max((s.eff[4] - last).abs());
+                }
+                last = s.eff[4];
+            }
+            most
+        };
+        for shape in [Shape::Random, Shape::Square, Shape::Saw] {
+            let (sharp, smooth) = (largest_step(shape, 0.0), largest_step(shape, 1.0));
+            assert!(smooth < 0.05 * sharp.max(0.2), "{shape:?}: sharp {sharp:.3}, smooth {smooth:.4}");
+        }
+        // random at full smooth still reaches each new value by the end of its cycle
+        let mut s = playing();
+        s.set_mod(0, Mod { depth: 1.0, rate_hz: 2.0, sync: 0.0, shape: Shape::Random, smooth: 1.0 });
+        run(&mut s, 32, 48000);
+        assert!((s.mod_out[0] - s.mod_hold[0]).abs() <= (s.mod_hold[0] - s.mod_from[0]).abs() + 1e-9);
     }
 
     #[test]
@@ -1755,8 +1809,8 @@ mod tests {
     fn motion_moves_the_vowel_and_stays_block_size_independent() {
         let mk = || {
             let mut s = playing();
-            s.set_mod(1, Mod { depth: 0.8, rate_hz: 1.0, sync: 1.0, shape: Shape::Sine });
-            s.set_mod(5, Mod { depth: 0.5, rate_hz: 3.0, sync: 0.0, shape: Shape::Random });
+            s.set_mod(1, Mod { depth: 0.8, rate_hz: 1.0, sync: 1.0, shape: Shape::Sine, smooth: 0.0 });
+            s.set_mod(5, Mod { depth: 0.5, rate_hz: 3.0, sync: 0.0, shape: Shape::Random, smooth: 0.0 });
             s
         };
         let mut a = mk();

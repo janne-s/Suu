@@ -157,11 +157,14 @@ pub extern "C" fn suu_retrigger(h: *mut Handle) {
     unsafe { (*h).suu.retrigger() };
 }
 
+/// Motion for target `t` (see `suu::MOD_TARGETS`); shape 0 sine, 1 triangle, 2 saw, 3 square,
+/// 4 random, 5 envelope; `sync` beats per cycle (0 = free at `rate_hz`); `smooth` 0 sharp … 1
+/// smooth (see `suu::Mod`).
 #[unsafe(no_mangle)]
-pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, sync: f64, shape: u32) {
+pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, sync: f64, shape: u32, smooth: f64) {
     let h = unsafe { &mut *h };
     let shape = match shape { 1 => Shape::Triangle, 2 => Shape::Saw, 3 => Shape::Square, 4 => Shape::Random, 5 => Shape::Follow, _ => Shape::Sine };
-    h.suu.set_mod(t as usize, Mod { depth, rate_hz, sync, shape });
+    h.suu.set_mod(t as usize, Mod { depth, rate_hz, sync, shape, smooth });
 }
 
 /// One period of the source's waveform (`suu::HORN_POINTS` values, −1..1) into a buffer at

@@ -25,13 +25,13 @@ fn main() {
         ("size 4 (os 1)", Box::new(move |s: &mut Suu| { s.set_size(4.0); s.set_params(gate) })),
         ("Motion on all 9", Box::new(move |s: &mut Suu| {
             s.set_params(Params { morph: 0.5, ..gate });
-            for t in 0..9 { s.set_mod(t, Mod { depth: 0.5, rate_hz: 0.7 + t as f64 * 0.3, sync: 0.0, shape: Shape::Sine }); }
+            for t in 0..9 { s.set_mod(t, Mod { depth: 0.5, rate_hz: 0.7 + t as f64 * 0.3, sync: 0.0, shape: Shape::Sine, smooth: 0.0 }); }
         })),
         ("horn wave travelling", Box::new(move |s: &mut Suu| {
             let wave: Vec<f64> = (0..HORN_POINTS).map(|i| 3.0 + 2.0 * (6.283 * 2.0 * i as f64 / HORN_POINTS as f64).sin()).collect();
             s.set_profile(&wave, true);
             s.set_params(Params { morph: 1.0, ..gate });
-            s.set_mod(7, Mod { depth: 1.0, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw });
+            s.set_mod(7, Mod { depth: 1.0, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw, smooth: 0.0 });
         })),
         ("input + reson 0.8", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Input, reson: 0.8, ..gate }))),
         ("folds 1", Box::new(move |s: &mut Suu| s.set_params(Params { folds: 1.0, ..gate }))),

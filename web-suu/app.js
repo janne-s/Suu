@@ -199,7 +199,10 @@ function setBase(r, v, sendIt = true) {
 }
 function sendMod(r) {
   const env = r.shape === 5;
-  post({ type: "mod", target: r.t, depth: r.depth, rate: r.rate, sync: r.sync ? divBeats(r.sync) : 0, shape: r.shape });
+  post({ type: "mod", target: r.t, depth: r.depth, rate: r.rate, sync: r.sync ? divBeats(r.sync) : 0, shape: r.shape, smooth: r.smooth });
+  r.smoothBox.textContent = Math.round(r.smooth * 100) + "%";
+  // only shapes with jumps (saw, square, random) have something to smooth
+  r.smoothBox.classList.toggle("idle", ![2, 3, 4].includes(r.shape));
   r.el.classList.toggle("active", r.depth !== 0);
   r.el.classList.toggle("env", env);
   r.depthBox.textContent = (r.depth > 0 ? "+" : "") + Math.round(r.depth * 100) + "%";
@@ -216,10 +219,12 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
     <span class="base"><input type="range" min="0" max="1" step="0.001" aria-label="${label} base"><i></i><output></output></span>
     <span class="field drag depth" tabindex="0" aria-label="${label} depth"></span>
     <span class="rate"><span class="field drag val" tabindex="0" aria-label="${label} rate"></span><select class="field" hidden aria-label="${label} rate as a note value">${DIVS.map(([n]) => `<option>${n}</option>`).join("")}</select><button title="Sync to tempo">♪</button></span>
-    <select class="field shape" aria-label="${label} shape">${SHAPES.map((s, i) => `<option value="${i}">${s}</option>`).join("")}</select>`;
+    <select class="field shape" aria-label="${label} shape">${SHAPES.map((s, i) => `<option value="${i}">${s}</option>`).join("")}</select>
+    <span class="field drag smooth" tabindex="0" aria-label="${label} smooth" title="Random, square and saw: 0 sharp … 100% smooth; double-click resets"></span>`;
   $("motion").append(el);
   const r = {
-    t, param, lo, hi, fmt, log, el, def, base: def, depth: 0, rate: 0.5, sync: null, shape: 0,
+    t, param, lo, hi, fmt, log, el, def, base: def, depth: 0, rate: 0.5, sync: null, shape: 0, smooth: 0,
+    smoothBox: el.querySelector(".smooth"),
     input: el.querySelector(".base input"), marker: el.querySelector(".base i"), out: el.querySelector(".base output"),
     depthBox: el.querySelector(".depth"),
     rateVal: el.querySelector(".rate .val"), rateSel: el.querySelector(".rate select"), syncBtn: el.querySelector(".rate button"), shapeSel: el.querySelector("select.shape"),
@@ -247,6 +252,14 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
   };
   r.rateSel.onchange = () => {
     r.sync = r.rateSel.value;
+    sendMod(r);
+  };
+  dragValue(r.smoothBox, () => r.smooth, (v) => {
+    r.smooth = Math.round(clamp(v, 0, 1) * 100) / 100;
+    sendMod(r);
+  }, 1 / 150);
+  r.smoothBox.ondblclick = () => {
+    r.smooth = 0;
     sendMod(r);
   };
   r.shapeSel.onchange = () => {
@@ -1224,7 +1237,7 @@ function getState() {
   const knobs = {};
   for (const [key, c] of controls) knobs[key] = c.sync ? { v: state[key], sync: c.sync } : state[key];
   const motion = {};
-  rows.forEach((r, i) => (motion[MOTION_NAMES[i]] = { base: r.base, depth: r.depth, rate: r.rate, sync: r.sync, shape: r.shape }));
+  rows.forEach((r, i) => (motion[MOTION_NAMES[i]] = { base: r.base, depth: r.depth, rate: r.rate, sync: r.sync, shape: r.shape, smooth: r.smooth }));
   return {
     suu: STATE_VERSION,
     source: INTERNAL.includes(current) ? +current : undefined,
@@ -1279,7 +1292,7 @@ function readState(raw) {
   const motion = obj(r.motion, "motion");
   rows.forEach((row, i) => {
     const name = MOTION_NAMES[i], m = obj(motion[name], `motion ${name}`), dm = d.motion[name];
-    out.motion[name] = { base: num(m.base, dm.base, row.lo, row.hi), depth: num(m.depth, dm.depth, -1, 1), rate: num(m.rate, dm.rate, 0.02, 20), sync: div(m.sync, dm.sync), shape: Math.round(num(m.shape, dm.shape, 0, SHAPES.length - 1)) };
+    out.motion[name] = { base: num(m.base, dm.base, row.lo, row.hi), depth: num(m.depth, dm.depth, -1, 1), rate: num(m.rate, dm.rate, 0.02, 20), sync: div(m.sync, dm.sync), shape: Math.round(num(m.shape, dm.shape, 0, SHAPES.length - 1)), smooth: num(m.smooth, dm.smooth, 0, 1) };
   });
   const seq = obj(r.seq, "seq");
   if (seq.steps !== undefined && !Array.isArray(seq.steps)) throw new Error("steps is not a list");
@@ -1318,7 +1331,7 @@ function applyState(st) {
   }
   rows.forEach((r, i) => {
     const m = st.motion[MOTION_NAMES[i]];
-    Object.assign(r, { depth: m.depth, rate: m.rate, sync: m.sync, shape: m.shape });
+    Object.assign(r, { depth: m.depth, rate: m.rate, sync: m.sync, shape: m.shape, smooth: m.smooth });
     r.shapeSel.value = String(m.shape);
     r.rateSel.value = m.sync ?? "1/4";
     setBase(r, m.base);

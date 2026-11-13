@@ -2,7 +2,7 @@
 // From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes, mode}
 //   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", len, div, gate}
 //   · {type:"play", on} · {type:"retrigger"} · {type:"profile", areas: Float32Array, wrap}
-//   · {type:"mod", target, depth, rate, sync, shape}
+//   · {type:"mod", target, depth, rate, sync, shape, smooth}
 // To the page: ready · dict · text {syllables} · applied {id} · ui {ui} (see Suu::ui_state)
 //   · snapshot {values: Float32Array(32) | null} (after {type:"snapshot"})
 
@@ -76,7 +76,7 @@ class SuuProcessor extends AudioWorkletProcessor {
         x.suu_play(h, m.on ? 1 : 0);
         break;
       case "mod":
-        x.suu_set_mod(h, m.target, m.depth, m.rate, m.sync, m.shape);
+        x.suu_set_mod(h, m.target, m.depth, m.rate, m.sync, m.shape, m.smooth ?? 0);
         break;
       case "retrigger":
         x.suu_retrigger(h);

@@ -158,6 +158,15 @@ await page.click("#horn-reset");
 st = await saved();
 ok("reset icon restores the original horn", st.hornWrap === false && st.hornWave.shape === -1 && Math.abs(st.horn[0] - 0.6) < 0.05, JSON.stringify(st.horn.slice(0, 3)));
 await page.click("#view-pad");
+// Motion SMOOTH: a field per row, saved with the state
+{
+  const box = page.locator(".motion-row").nth(1).locator(".smooth");
+  const b = await box.boundingBox();
+  await page.mouse.move(b!.x + 20, b!.y + 10); await page.mouse.down(); await page.mouse.move(b!.x + 20, b!.y - 60, { steps: 5 }); await page.mouse.up();
+  const st = await (async () => { await page.waitForTimeout(1200); return await page.evaluate(() => JSON.parse(localStorage.getItem("suu.session.v1")!).B); })();
+  ok("smooth drags and is saved", st.motion.vowelY.smooth > 0.2, String(st.motion.vowelY.smooth));
+  ok("Motion reset is an icon", (await page.locator("#motion-reset svg").count()) === 1);
+}
 // INIT: this side back to the initial settings
 await page.click("#init");
 ok("INIT restores the defaults", (await page.inputValue("#bpm")) === "100" && (await page.textContent("#seqgate")) === "100%");
