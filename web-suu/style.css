@@ -84,11 +84,12 @@ select.field { cursor: pointer; color: var(--beam); }
 h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500; letter-spacing: 6px; text-shadow: 0 0 8px rgba(var(--beam-rgb), 0.6); }
 /* only the status line gives way; at narrow widths the bar's group names go */
 .bar > :not(#status) { flex-shrink: 0; }
-@media (max-width: 1180px) { .bar { gap: 6px; } .bar .tlabel { display: none; } }
+@media (max-width: 1180px) { .bar { gap: 6px; } .bar .tlabel { display: none; } .bar button:not(.square) { padding: 0 6px; } }
 #status { flex: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; transition: opacity 0.6s; }
 #status.fade { opacity: 0; }
 .keys { display: inline-flex; align-items: center; gap: 2px; }
 #notename { width: 40px; color: var(--beam); }
+#rootoct { width: 22px; color: var(--beam); }
 
 .views { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 6px; min-height: 0; }
 .mouth-panel, .motion-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
@@ -157,7 +158,8 @@ button.icon svg { display: block; margin: auto; }
 .step.now .led { background: var(--sound); box-shadow: 0 0 4px var(--sound), 0 0 10px rgba(var(--sound-rgb), 0.55); }
 
 /* knobs */
-.stages { display: grid; grid-template-columns: 3fr 5fr 4fr 5fr 2fr; padding: 6px 4px 8px; }
+/* one column per stage, as wide as its knobs: BODY, SOURCE, GATE, TONE, SPACE, OUT */
+.stages { display: grid; grid-template-columns: 3fr 5fr 2fr 4fr 5fr 2fr; padding: 6px 4px 8px; }
 .stage { min-width: 0; padding: 0 6px; }
 .stage + .stage { box-shadow: -1px 0 0 rgba(0, 0, 0, 0.35), -2px 0 0 rgba(255, 255, 255, 0.02); }
 .stage h2 { padding: 2px 6px 0; display: flex; align-items: center; }
@@ -207,3 +209,15 @@ button.icon svg { display: block; margin: auto; }
 /* tooltips (the ? in the bar turns them on or off): a name, then what it does */
 .tip { position: fixed; z-index: 40; max-width: 280px; padding: 7px 9px; border-radius: 4px; pointer-events: none; background: var(--panel); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7), var(--raise); color: var(--ink); font-size: 11px; line-height: 1.45; }
 .tip b { display: block; margin-bottom: 2px; color: var(--beam); font-family: "Hershey", sans-serif; font-weight: 500; letter-spacing: 1px; }
+
+/* in the plug-in: what the host does instead (its input, its storage, its effects) is hidden */
+.in-plugin .web-only { display: none !important; }
+.in-plugin .stages { grid-template-columns: 3fr 5fr 2fr 4fr 2fr; }
+.in-plugin #bpm { color: var(--dim); }
+.plugin-grip {
+  position: fixed; right: 0; bottom: 0; width: 14px; height: 14px; z-index: 100; cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--dim) 50%, var(--dim) 58%, transparent 58%, transparent 72%, var(--dim) 72%, var(--dim) 80%, transparent 80%);
+}
+
+/* play and stop icons: one size, on the label's centre line */
+.glyph { width: 9px; height: 9px; margin-right: 6px; vertical-align: -1px; flex: none; }

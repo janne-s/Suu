@@ -30,6 +30,11 @@ fn rms(x: &[f32]) -> f32 {
 /// Render `total` samples in blocks of `block`, with `events` at absolute sample times, the
 /// input from `input`; returns the output.
 fn run<K: suu_plugin::Kind>(p: &mut suu_plugin::SuuPlugin<K>, total: usize, block: usize, events: &[NoteEvent<()>], input: impl Fn(usize) -> f32) -> Vec<f32> {
+    run_t(p, total, block, events, input, false)
+}
+
+/// `run` with the host's transport `playing` or not.
+fn run_t<K: suu_plugin::Kind>(p: &mut suu_plugin::SuuPlugin<K>, total: usize, block: usize, events: &[NoteEvent<()>], input: impl Fn(usize) -> f32, playing: bool) -> Vec<f32> {
     let mut out = Vec::with_capacity(total);
     let mut at = 0;
     while at < total {
@@ -40,7 +45,7 @@ fn run<K: suu_plugin::Kind>(p: &mut suu_plugin::SuuPlugin<K>, total: usize, bloc
         }
         let start = at;
         let mut evs = events.iter().filter(|e| (e.timing() as usize) >= start && (e.timing() as usize) < start + n).map(|e| self::at(*e, e.timing() - start as u32));
-        p.render(n, 120.0, false, || evs.next());
+        p.render(n, 120.0, playing, || evs.next());
         out.extend_from_slice(&p.io().1[..n]);
         at += n;
     }
@@ -131,4 +136,21 @@ fn size_change_comes_from_the_worker() {
     assert_eq!(p.core().unwrap().size(), 2.0);
     let jump = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
     assert!(jump < 0.2, "a jump of {jump}");
+}
+
+/// PLAY runs the sequencer whether or not the host's transport plays (the owner pressed PLAY in
+/// a stopped Live and heard nothing).
+#[test]
+fn sequencer_plays_without_the_transport() {
+    let mut params = SuuParams::new(true);
+    params.seq = BoolParam::new("Sequencer", true);
+    let mut p = SuuSynth::with_params(params);
+    assert!(p.setup(FS, 256));
+    let out = run(&mut p, 48000, 256, &[], |_| 0.0);
+    assert!(p.core().unwrap().playing());
+    assert!(rms(&out[12000..]) > 0.01, "silent: {}", rms(&out[12000..]));
+    // the transport starting starts the pattern over: step 0 again
+    run_t(&mut p, 6000, 256, &[], |_| 0.0, false);
+    run_t(&mut p, 256, 256, &[], |_| 0.0, true);
+    assert_eq!(p.core().unwrap().seq_state().0, 0);
 }

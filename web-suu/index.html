@@ -30,10 +30,10 @@
 <header class="bar">
   <h1>SUU</h1>
   <span class="tgroup"><span class="tlabel">OSC</span><span class="seg" role="group" aria-label="Oscillator"><button data-osc="2">SUPERSAW</button><button data-osc="1">SAW</button><button data-osc="3">SQUARE</button><button data-osc="0">OFF</button></span></span>
-  <span class="tgroup"><span class="tlabel">IN</span><span class="seg" role="group" aria-label="Input"><button data-in="file" aria-pressed="false">FILE</button><button id="pickfile" class="square icon" aria-label="Choose an audio file"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M1.5 4.5v8h13v-6.5h-6.5l-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button data-in="mic" aria-pressed="false">MIC</button></span></span>
+  <span class="tgroup web-only"><span class="tlabel">IN</span><span class="seg" role="group" aria-label="Input"><button data-in="file" aria-pressed="false">FILE</button><button id="pickfile" class="square icon" aria-label="Choose an audio file"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M1.5 4.5v8h13v-6.5h-6.5l-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button data-in="mic" aria-pressed="false">MIC</button></span></span>
   <span id="status" role="status" aria-live="polite"></span>
-  <span class="keys"><button id="hold" aria-pressed="false">HOLD</button><button id="octdown" class="square">−</button><output id="notename" class="field">A2</output><button id="octup" class="square">+</button></span>
-  <span class="seg" role="group" aria-label="Settings"><button id="slotA">A</button><button id="slotB">B</button><button id="copyab">A→B</button><button id="init">INIT</button></span>
+  <span class="keys"><span class="seg" role="group" aria-label="What opens the sound"><button id="envgate" aria-pressed="false">ENV</button><button id="hold" aria-pressed="false">HOLD</button></span><button id="octdown" class="square">−</button><select id="notename" class="field" aria-label="Root note"></select><output id="rootoct" class="field" aria-label="Root octave"></output><button id="octup" class="square">+</button></span>
+  <span class="seg" role="group" aria-label="Settings"><button id="slotA" class="web-only">A</button><button id="slotB" class="web-only">B</button><button id="copyab" class="web-only">A→B</button><button id="init">INIT</button></span>
   <span class="seg"><button id="savefile">SAVE</button><button id="openfile">OPEN</button></span>
   <label class="labeled">BPM<input id="bpm" class="field" type="number" min="30" max="300" value="100"></label>
   <button id="help-toggle" class="square" aria-pressed="true" aria-label="Tooltips on or off">?</button>
@@ -53,7 +53,7 @@
         <label class="labeled">DEPTH<span id="horn-depth" class="field drag" tabindex="0" aria-label="Wave depth"></span></label>
       </div>
       <div id="text-panel" class="overlay" hidden>
-        <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false">▶ SING</button></form>
+        <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false"></button></form>
         <div class="text-row">
           <span class="tgroup"><span class="tlabel">STEP</span><span class="seg" role="group" aria-label="What moves the text on"><button data-tstep="0">NOTE</button><button data-tstep="1">CLOCK</button></span>
             <span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
@@ -79,7 +79,7 @@
 
 <section class="panel sequencer" aria-label="Sequencer">
   <div class="seq-controls">
-    <button id="play" class="primary">▶ PLAY</button>
+    <button id="play" class="primary"></button>
     <label class="labeled">RATE<select id="rate" class="field"><option value="1">1/4</option><option value="2">1/8</option><option value="4" selected>1/16</option><option value="8">1/32</option><option value="16">1/64</option><option value="32">1/128</option></select></label>
     <label class="labeled">STEPS<input id="seqlen" class="field" type="number" min="1" max="16" value="16"></label>
     <label class="labeled">GATE<span id="seqgate" class="field drag" tabindex="0" aria-label="Gate, × every step's length"></span></label>
@@ -90,9 +90,10 @@
 <div class="panel stages">
   <section class="stage"><h2>BODY</h2><div id="k-mouth" class="knobs"></div></section>
   <section class="stage"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
+  <section class="stage"><h2>GATE</h2><div id="k-gate" class="knobs"></div></section>
   <section class="stage"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
-  <section class="stage"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
-  <section class="stage"><h2>OUT <output id="peak">−∞</output></h2><div id="k-out" class="knobs"></div></section>
+  <section class="stage web-only"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
+  <section class="stage"><h2>OUT <output id="peak" class="web-only">−∞</output></h2><div id="k-out" class="knobs"></div></section>
 </div>
 
 <div id="info" class="popover" hidden role="dialog" aria-label="Keys and credits">

@@ -11,12 +11,14 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use nih_plug::prelude::*;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use suu::{Mod, Mouth, MouthSeed, N_MOD, STEPS, Step, Suu, TextPlan};
 
+mod editor;
 pub mod params;
-use params::{MAX_WORDS, Notes, SuuParams};
+use params::{GateMode, MAX_WORDS, SuuParams};
 
 use chimera::phonetics::english::EnglishG2P;
 
@@ -25,7 +27,7 @@ use chimera::phonetics::english::EnglishG2P;
 static CMUDICT_GZ: &[u8] = include_bytes!("../../public/data/cmudict.txt.gz");
 static G2P: OnceLock<EnglishG2P> = OnceLock::new();
 
-fn g2p() -> &'static EnglishG2P {
+pub(crate) fn g2p() -> &'static EnglishG2P {
     G2P.get_or_init(|| {
         use std::io::Read;
         let mut text = String::new();
@@ -35,6 +37,50 @@ fn g2p() -> &'static EnglishG2P {
         }
         g
     })
+}
+
+/// The length of `Suu::ui_state`'s frame.
+const UI_LEN: usize = 23 + suu::UI_AREAS;
+/// How often the audio thread leaves the window a frame of the mouth (s).
+const UI_EVERY: f64 = 1.0 / 30.0;
+
+/// What the audio thread and the window share, without locks: the mouth's last frame and the
+/// tempo (atomics), keys and the drawn horn (bounded queues), a source snapshot on request.
+pub struct Shared {
+    ui: [AtomicU32; UI_LEN],
+    ui_len: AtomicUsize,
+    /// counts frames written, so the window sends each once
+    ui_seq: AtomicU64,
+    bpm: AtomicU64,
+    /// counts cores made (`setup`): a new one means a reloaded state
+    generation: AtomicU64,
+    keys: (Sender<(u8, bool)>, Receiver<(u8, bool)>),
+    horn: (Sender<([f64; suu::HORN_POINTS], bool)>, Receiver<([f64; suu::HORN_POINTS], bool)>),
+    /// the words changed: plan the text again
+    words_changed: AtomicBool,
+    /// back to the built-in horn
+    horn_reset: AtomicBool,
+    /// 0 idle, 1 asked for, 2 ready, 3 ready but silent
+    snap_state: AtomicU8,
+    snap: [AtomicU32; suu::HORN_POINTS],
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Shared {
+            ui: core::array::from_fn(|_| AtomicU32::new(0)),
+            ui_len: AtomicUsize::new(0),
+            ui_seq: AtomicU64::new(0),
+            bpm: AtomicU64::new(DEFAULT_BPM.to_bits()),
+            generation: AtomicU64::new(0),
+            keys: bounded(256),
+            horn: bounded(4),
+            words_changed: AtomicBool::new(false),
+            horn_reset: AtomicBool::new(false),
+            snap_state: AtomicU8::new(0),
+            snap: core::array::from_fn(|_| AtomicU32::new(0)),
+        }
+    }
 }
 
 const QUEUE: usize = 8;
@@ -175,6 +221,11 @@ impl Keys {
 
 pub struct SuuPlugin<K: Kind> {
     params: Arc<SuuParams>,
+    shared: Arc<Shared>,
+    /// the mouth's frame for the window (capacity reserved: no allocation), and samples to the next
+    frame: Vec<f32>,
+    frame_in: f64,
+    fs: f64,
     suu: Option<Box<Suu>>,
     generation: u64,
     jobs: Option<Sender<Job>>,
@@ -196,6 +247,8 @@ pub struct SuuPlugin<K: Kind> {
     mods: [Mod; N_MOD],
     steps: [Step; STEPS],
     seq: (usize, f64, f64),
+    /// the host's transport was playing (last block)
+    transport_was: bool,
     _kind: PhantomData<K>,
 }
 
@@ -203,6 +256,10 @@ impl<K: Kind> Default for SuuPlugin<K> {
     fn default() -> Self {
         SuuPlugin {
             params: Arc::new(SuuParams::new(K::SYNTH)),
+            shared: Arc::new(Shared::default()),
+            frame: Vec::new(),
+            frame_in: 0.0,
+            fs: 48000.0,
             suu: None,
             generation: 0,
             jobs: None,
@@ -220,6 +277,7 @@ impl<K: Kind> Default for SuuPlugin<K> {
             mods: [Mod::default(); N_MOD],
             steps: suu::default_pattern(),
             seq: (0, 0.0, 0.0),
+            transport_was: false,
             _kind: PhantomData,
         }
     }
@@ -229,13 +287,14 @@ impl<K: Kind> SuuPlugin<K> {
     /// The sounding note (with bend) and whether the sound is open.
     fn note_and_gate(&self) -> (f64, bool) {
         let p = &self.params;
-        let open = p.notes.value() == Notes::Open;
-        let key = self.keys.top().or(if open { None } else { self.last_key });
+        let mode = p.gate.value();
+        // with no key, MIDI keeps the last key's pitch (its release); the others sound the root
+        let key = self.keys.top().or(if mode == GateMode::Midi { self.last_key } else { None });
         let (note, bend) = match key {
             Some((n, ch)) => (n as f64, self.bend[ch as usize & 15]),
             None => (p.root.value() as f64, self.bend[0]),
         };
-        (note + bend as f64 * p.bend_range.value() as f64, open || self.keys.len > 0)
+        (note + bend as f64 * p.bend_range.value() as f64, mode == GateMode::Hold || self.keys.len > 0)
     }
 
     /// Hand something to the worker to free; kept (and retried) if its queue is full.
@@ -314,7 +373,14 @@ impl<K: Kind> SuuPlugin<K> {
             self.seq = seq;
             suu.set_seq(seq.0, seq.1, seq.2);
         }
-        let run = p.seq.value() && playing;
+        // PLAY runs the sequencer at the host's tempo, transport or not; the transport starting
+        // starts the pattern over, so it lines up with the song's start
+        let run = p.seq.value();
+        let started = playing && !self.transport_was;
+        self.transport_was = playing;
+        if run && started && suu.playing() {
+            suu.set_playing(false);
+        }
         if run != suu.playing() {
             suu.set_playing(run);
         }
@@ -404,6 +470,8 @@ impl<K: Kind> SuuPlugin<K> {
         let n = max_block.max(1);
         self.input = vec![0.0; n];
         self.output = vec![0.0; n];
+        self.frame = Vec::with_capacity(2 * UI_LEN);
+        self.fs = fs;
         if self.jobs.is_none() {
             let (jobs_tx, jobs_rx) = bounded(QUEUE);
             let (done_tx, done_rx) = bounded(QUEUE);
@@ -433,13 +501,54 @@ impl<K: Kind> SuuPlugin<K> {
         (self.size_job, self.text_job, self.planned_text) = (false, false, None);
         self.keys = Keys::new();
         self.bend = [0.0; 16];
+        self.shared.generation.fetch_add(1, Ordering::AcqRel);
         true
+    }
+
+    /// What the window left for the audio thread (keys, the horn, a snapshot asked for, new
+    /// words), and the mouth's frame for it every `UI_EVERY`. No allocation, no lock.
+    fn window_exchange(&mut self, n: usize, bpm: f64) {
+        let shared = self.shared.clone();
+        while let Ok((note, on)) = shared.keys.1.try_recv() {
+            let e = if on { NoteEvent::NoteOn { timing: 0, voice_id: None, channel: 0, note, velocity: 0.8 } } else { NoteEvent::NoteOff { timing: 0, voice_id: None, channel: 0, note, velocity: 0.0 } };
+            self.note_event(e);
+        }
+        if shared.words_changed.swap(false, Ordering::AcqRel) {
+            self.planned_text = None;
+        }
+        let Some(suu) = self.suu.as_mut() else { return };
+        if shared.horn_reset.swap(false, Ordering::AcqRel) {
+            suu.set_profile(&suu::default_horn(), false);
+        }
+        while let Ok((areas, wrap)) = shared.horn.1.try_recv() {
+            suu.set_profile(&areas, wrap);
+        }
+        if shared.snap_state.load(Ordering::Acquire) == 1 {
+            let mut v = [0.0; suu::HORN_POINTS];
+            let ok = suu.snapshot(&mut v);
+            for (d, s) in shared.snap.iter().zip(v) {
+                d.store((s as f32).to_bits(), Ordering::Relaxed);
+            }
+            shared.snap_state.store(if ok { 2 } else { 3 }, Ordering::Release);
+        }
+        self.frame_in -= n as f64;
+        if self.frame_in <= 0.0 {
+            self.frame_in += UI_EVERY * self.fs;
+            suu.ui_state(&mut self.frame);
+            let len = self.frame.len().min(UI_LEN);
+            for (d, s) in shared.ui.iter().zip(&self.frame[..len]) {
+                d.store(s.to_bits(), Ordering::Relaxed);
+            }
+            shared.ui_len.store(len, Ordering::Relaxed);
+            shared.bpm.store(bpm.to_bits(), Ordering::Relaxed);
+            shared.ui_seq.fetch_add(1, Ordering::Release);
+        }
     }
 
     fn note_event(&mut self, event: NoteEvent<()>) {
         match event {
             NoteEvent::NoteOn { note, channel, velocity, .. } if velocity > 0.0 => {
-                let sounding = self.params.notes.value() == Notes::Open || self.keys.len > 0;
+                let sounding = self.params.gate.value() == GateMode::Hold || self.keys.len > 0 || self.suu.as_ref().is_some_and(|s| s.env_open());
                 self.keys.press(note, channel);
                 self.last_key = Some((note, channel));
                 if sounding && let Some(suu) = self.suu.as_mut() {
@@ -481,6 +590,10 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
         self.setup(config.sample_rate as f64, config.max_buffer_size as usize)
     }
 
+    fn editor(&mut self, _executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        editor::create(self.params.clone(), self.shared.clone(), K::SYNTH)
+    }
+
     fn reset(&mut self) {
         self.keys = Keys::new();
         self.bend = [0.0; 16];
@@ -509,6 +622,7 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
             }
         }
 
+        self.window_exchange(n, bpm);
         self.render(n, bpm, playing, || context.next_event());
         for ch in buffer.as_slice() {
             ch.copy_from_slice(&self.output[..n]);

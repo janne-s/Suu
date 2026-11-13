@@ -1,4 +1,6 @@
 // Suu web app: the page around the worklet. Engine parameter ids match crates/suu-wasm.
+// The same page is the plug-in's window (App/plugin): there it has no audio of its own, and its
+// state is tied to the host's parameters (see "plug-in" at the end).
 
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
@@ -8,10 +10,15 @@ const color = (n) => colors.get(n) ?? (colors.set(n, css.getPropertyValue(n).tri
 // redraw only when something changed: new engine state, a resize, or an edit
 let dirty = true;
 
+// in the plug-in's window: the bridge the webview provides
+const inPlugin = typeof window.sendToPlugin === "function";
+// the plug-in bridge's state (see "plug-in" at the end): the host's last values, and so on
+const plugin = { ready: false, quiet: false, host: {}, words: null, horn: "", ui: "", frame: 0, keys: new Set() };
 let ctx, node, srcNode, fileBuf, micStream, analyser, fx = {};
 // the engine, compiled once: for the audio worklet, and for drawing the mouth before audio starts
-const wasmModule = WebAssembly.compileStreaming(fetch("suu.wasm"));
+const wasmModule = inPlugin ? null : WebAssembly.compileStreaming(fetch("suu.wasm"));
 function post(m, transfer) {
+  if (inPlugin) return pluginPost(m);
   node?.port.postMessage(m, transfer ?? []);
 }
 function send(id, v) {
@@ -40,6 +47,11 @@ const KNOBS = {
     ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
+  ],
+  // ENV: the input's level opens the sound at THRESH and closes RELEASE after it falls below
+  "k-gate": [
+    ["envThresh", "THRESH", -80, 0, -40, (v) => v.toFixed(0) + " dB", null, 40],
+    ["envRelease", "RELEASE", 0.005, 4, 0.15, (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "log", 41],
   ],
   "k-drive": [
     ["drive", "DRIVE", -40, 40, 0, (v) => v.toFixed(1) + " dB", null, 3],
@@ -79,11 +91,13 @@ const KNOB_TIPS = {
   revMix: "Reverb\nReverb level.",
   revSize: "Length\nReverb length.",
   mix: "Mix\nThe dry source … the mouth.",
+  envThresh: "Threshold\nWith ENV on: the input's level that opens the sound.",
+  envRelease: "Release\nWith ENV on: how long the sound stays open after the input falls below the threshold.",
   out: "Output\nOutput level.",
 };
 // time knobs that can lock to the tempo: the division they start from, and the engine id that
 // takes the synced length in beats (none: the page converts it to seconds itself)
-const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 } };
+const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 } };
 
 const state = {};
 const controls = new Map();
@@ -787,6 +801,7 @@ new ResizeObserver(() => {
 let peakHold = 0, scope = null;
 function frameLoop() {
   requestAnimationFrame(frameLoop);
+  if (inPlugin) pluginSync();
   if (!dirty) return;
   dirty = false;
   drawMouth();
@@ -816,7 +831,7 @@ requestAnimationFrame(frameLoop);
 
 // ---------------------------------------------------------------- audio graph
 async function start() {
-  if (ctx) return;
+  if (ctx || inPlugin) return;
   status("loading…", true);
   ctx = new AudioContext({ latencyHint: "interactive" });
   const [mod] = await Promise.all([wasmModule, ctx.audioWorklet.addModule("worklet.js")]);
@@ -854,7 +869,7 @@ function onWorklet(m) {
   else if (m.type === "text") {
     textOn = m.syllables > 0;
     $("text-toggle").textContent = textOn ? `TEXT · ${m.syllables}` : "TEXT";
-    $("singtext").textContent = textOn ? "■ STOP" : "▶ SING";
+    playLabel($("singtext"), textOn, "SING");
     $("singtext").setAttribute("aria-pressed", String(textOn));
   } else if (m.type === "ui") {
     ui = m.ui;
@@ -876,6 +891,7 @@ function pushAll() {
   send(19, bpm());
   send(1, lastNote);
   send(35, glideDir);
+  send(39, envOn ? 1 : 0);
   sendHorn();
   gate();
   sendText(false);
@@ -1034,7 +1050,7 @@ addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => {
   e.preventDefault();
   const f = e.dataTransfer.files[0];
-  if (f) /\.json$/i.test(f.name) ? openPreset(f) : loadFile(f);
+  if (f) /\.json$/i.test(f.name) ? openPreset(f) : !inPlugin && loadFile(f);
 });
 
 // ---------------------------------------------------------------- keyboard
@@ -1046,9 +1062,19 @@ const noteName = (m) => NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 function note(midi) {
   lastNote = clamp(midi, 12, 108);
   send(1, lastNote);
-  $("notename").textContent = noteName(lastNote);
+  showRoot();
 }
+// the root: a note of the octave from the list, the octave by − and + (or Z and X); in a host
+// it is set here rather than by MIDI
+function showRoot() {
+  $("notename").value = String(((lastNote % 12) + 12) % 12);
+  $("rootoct").textContent = String(Math.floor(lastNote / 12) - 1);
+}
+NAMES.forEach((n, i) => $("notename").add(new Option(n, String(i))));
+showRoot();
+$("notename").onchange = () => note(12 * Math.floor(lastNote / 12) + +$("notename").value);
 function gate() {
+  if (inPlugin) return pluginKeys();
   send(2, down.size || held ? 1 : 0);
 }
 function shiftOctave(d) {
@@ -1089,7 +1115,8 @@ addEventListener("keydown", async (e) => {
   down.set(i, midi);
   await start();
   if (!down.has(i)) return; // released while starting
-  note(midi);
+  // (in the plug-in a key plays its note; the root stays, so playing writes no automation)
+  if (!inPlugin) note(midi);
   // a key while the gate is already open (another key, or hold) is still a new note for the text
   if (legato || held) post({ type: "retrigger" });
   gate();
@@ -1099,7 +1126,7 @@ addEventListener("keyup", (e) => {
   const i = KEYS.indexOf(e.key.toLowerCase());
   if (i < 0 || !down.has(i)) return;
   down.delete(i);
-  if (down.size) note([...down.values()].pop()); // back to the key still held
+  if (down.size && !inPlugin) note([...down.values()].pop()); // back to the key still held
   gate();
 });
 addEventListener("blur", allKeysUp);
@@ -1108,8 +1135,21 @@ function setHold(on) {
   held = on;
   autoHold = false;
   $("hold").setAttribute("aria-pressed", String(held));
+  if (on && envOn) setEnv(false);
   gate();
 }
+// ENV: the input's own level opens the sound (HOLD and ENV exclude each other; keys always open)
+let envOn = false;
+function setEnv(on) {
+  envOn = on;
+  $("envgate").setAttribute("aria-pressed", String(on));
+  send(39, on ? 1 : 0);
+  if (on && held) setHold(false);
+}
+$("envgate").onclick = async () => {
+  await start();
+  setEnv(!envOn);
+};
 $("hold").onclick = async () => {
   await start();
   setHold(!held);
@@ -1237,10 +1277,19 @@ for (let i = 0; i < 16; i++) {
 }
 sendSeq();
 
+// play and stop as drawn icons of one size (the ▶ and ■ characters came from different fallback
+// fonts: unequal, and they changed the label's size)
+const ICON_PLAY = '<svg class="glyph" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg>';
+const ICON_STOP = '<svg class="glyph" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.75" y="1.75" width="6.5" height="6.5" rx="0.5" fill="currentColor"/></svg>';
+function playLabel(el, on, word) {
+  el.innerHTML = (on ? ICON_STOP : ICON_PLAY) + `<span>${on ? "STOP" : word}</span>`;
+}
+playLabel($("singtext"), false, "SING");
+playLabel($("play"), false, "PLAY");
 function setPlaying(on) {
   playing = on;
   post({ type: "play", on });
-  $("play").textContent = on ? "■ STOP" : "▶ PLAY";
+  playLabel($("play"), on, "PLAY");
   $("play").setAttribute("aria-pressed", String(on));
   if (!on) showSeq(false, 0);
 }
@@ -1264,7 +1313,7 @@ for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 // or with the sequence), how often (over and over or once a pass) and how fast it is spoken.
 const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1 };
 function sing(text) {
-  if (!node) return;
+  if (!node && !inPlugin) return;
   const bytes = new TextEncoder().encode(text);
   post({ type: "text", bytes }, [bytes.buffer]);
 }
@@ -1288,7 +1337,7 @@ $("singtext").onclick = async () => {
 let typingTimer = 0;
 $("text").addEventListener("input", () => {
   clearTimeout(typingTimer);
-  typingTimer = setTimeout(() => node && textOn && sing($("text").value), 300);
+  typingTimer = setTimeout(() => (node || inPlugin) && textOn && sing($("text").value), 300);
 });
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("text").blur();
@@ -1416,6 +1465,7 @@ function getState() {
     octave,
     bpm: bpm(),
     glideDir,
+    envGate: envOn,
     space: spaceOn,
     knobs,
     motion,
@@ -1449,6 +1499,7 @@ function readState(raw) {
     octave: Math.round(num(r.octave, d.octave, -3, 3)),
     bpm: num(r.bpm, d.bpm, 30, 300),
     space: bool(r.space, d.space),
+    envGate: bool(r.envGate, d.envGate),
     glideDir: [0, 1, 2].includes(r.glideDir) ? r.glideDir : d.glideDir,
     knobs: {},
     motion: {},
@@ -1523,6 +1574,7 @@ function applyState(st) {
   octave = st.octave;
   note(st.note);
   setGlideDir(st.glideDir);
+  setEnv(st.envGate);
   for (const [key, c] of controls) {
     const k = st.knobs[key];
     c.setSync?.(typeof k === "object" ? k.sync : null);
@@ -1568,6 +1620,7 @@ function applyState(st) {
 const store = {
   key: "suu.session.v1",
   load() {
+    if (inPlugin) return null;
     try {
       return JSON.parse(localStorage.getItem(this.key) ?? "null");
     } catch {
@@ -1575,6 +1628,7 @@ const store = {
     }
   },
   save(text) {
+    if (inPlugin) return;
     try {
       localStorage.setItem(this.key, text);
     } catch {}
@@ -1615,6 +1669,8 @@ for (const k of ["A", "B"]) {
   };
 }
 $("init").onclick = () => {
+  // in the plug-in: the host's own defaults (the effect's and the instrument's differ)
+  if (inPlugin) return sendToPlugin({ type: "reset" });
   applyState(DEFAULTS);
   save();
   status(`${slots.active}: initial settings`);
@@ -1626,12 +1682,13 @@ $("copyab").onclick = () => {
   status(`${slots.active} copied to ${other}`);
 };
 $("savefile").onclick = () => {
+  if (inPlugin) return sendToPlugin({ type: "save", name: "suu-preset.json", text: JSON.stringify(getState(), null, 1) });
   const blob = new Blob([JSON.stringify(getState(), null, 1)], { type: "application/json" });
   const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "suu-preset.json" });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
-$("openfile").onclick = () => $("presetfile").click();
+$("openfile").onclick = () => (inPlugin ? sendToPlugin({ type: "open" }) : $("presetfile").click());
 async function openPreset(f) {
   let raw;
   try {
@@ -1667,6 +1724,7 @@ $("presetfile").onchange = (e) => {
 // silent engine on this thread (the same wasm) takes the saved mouth, lets the articulators
 // settle, and hands over one frame to draw.
 (async () => {
+  if (inPlugin) return; // the plug-in sends the mouth as it is
   try {
     const { exports: x } = await WebAssembly.instantiate(await wasmModule, {});
     if (ui) return; // audio already started
@@ -1698,10 +1756,12 @@ const TIPS = {
   '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. The folder beside it, or a drop anywhere, loads another.",
   "#pickfile": "Choose file\nLoad an audio file (or drop one anywhere).",
   '[data-in="mic"]': "Mic\nThe microphone, mixed with the oscillator. Use headphones.",
+  "#envgate": "Env\nThe input's own level opens the sound (see GATE: threshold and release). Each onset says the text's next part.",
   "#hold": "Hold\nKeeps the note on: a drone, or a file or mic passing through. Keys then say the text's next part.",
   "#octdown": "Octave down (Z)",
   "#octup": "Octave up (X)",
-  "#notename": "Note\nThe root: the synth's pitch and the sequence's key. Keys A … K play.",
+  "#notename": "Note\nThe root: the synth's pitch, the resonator's and the sequence's key. Pick it here, its octave with − and +; keys A … K play.",
+  "#rootoct": "Octave\nThe root's octave: − and + (Z and X) change it.",
   "#slotA": "A\nOne of two full settings to compare; switching keeps the other.",
   "#slotB": "B\nOne of two full settings to compare; switching keeps the other.",
   "#init": "Init\nThis side back to the initial settings.",
@@ -1807,3 +1867,203 @@ function setTips(on) {
 }
 $("help-toggle").onclick = () => setTips(!tipsOn);
 setTips(tipsOn);
+
+// ---------------------------------------------------------------- plug-in
+// In the plug-in's window every setting is a host parameter (App/plugin/src/params.rs; the IDs
+// never change). PMAP ties each to its place in this page's state: each frame the state is
+// compared with the host's last values and a changed one is sent (`set`, plain units); the host's
+// changes (automation, MIDI mapping) come back as `params` and are put on the controls without
+// being sent back. The words, the drawn horn and the page's own extras (the horn's wave, the
+// octave) are kept in the host's saved state; keys go to the plug-in as notes.
+const PDIVS = [null, ...DIVS.map((d) => d[0])]; // a sync parameter's values: off, then DIVS
+const divIndex = (name) => Math.max(0, PDIVS.indexOf(name ?? null));
+const knobVal = (k) => (typeof k === "object" ? k.v : k);
+const PMAP = [];
+{
+  const add = (id, get, set) => PMAP.push({ id, get, set });
+  const knob = (id, key) => add(id, (st) => knobVal(st.knobs[key]), (st, v) => {
+    const k = st.knobs[key];
+    if (typeof k === "object") k.v = v;
+    else st.knobs[key] = v;
+  });
+  add("wave", (st) => st.source, (st, v) => (st.source = Math.round(v)));
+  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"]]) knob(id, key);
+  add("glide_sync", (st) => (typeof st.knobs.glide === "object" ? divIndex(st.knobs.glide.sync) : 0), (st, v) => {
+    const val = knobVal(st.knobs.glide);
+    st.knobs.glide = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
+  });
+  add("env_release_sync", (st) => (typeof st.knobs.envRelease === "object" ? divIndex(st.knobs.envRelease.sync) : 0), (st, v) => {
+    const val = knobVal(st.knobs.envRelease);
+    st.knobs.envRelease = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
+  });
+  add("glide_dir", (st) => st.glideDir, (st, v) => (st.glideDir = Math.round(v)));
+  add("root", (st) => st.note, (st, v) => (st.note = Math.round(v)));
+  const PREFIX = ["vowel_x", "vowel_y", "round", "nasal", "inject", "damping", "morph", "shift", "open"];
+  MOTION_NAMES.forEach((name, i) => {
+    const p = PREFIX[i], m = (st) => st.motion[name];
+    add(p + "_base", (st) => m(st).base, (st, v) => (m(st).base = v));
+    add(p + "_depth", (st) => m(st).depth, (st, v) => (m(st).depth = v));
+    add(p + "_rate", (st) => m(st).rate, (st, v) => (m(st).rate = v));
+    add(p + "_sync", (st) => divIndex(m(st).sync), (st, v) => (m(st).sync = PDIVS[Math.round(v)]));
+    add(p + "_shape", (st) => m(st).shape, (st, v) => (m(st).shape = Math.round(v)));
+    add(p + "_smooth", (st) => m(st).smooth, (st, v) => (m(st).smooth = v));
+  });
+  const text = (id, key, kind) => add(id, (st) => (kind === "bool" ? +st.text[key] : kind === "sync" ? divIndex(st.text[key]) : st.text[key]),
+    (st, v) => (st.text[key] = kind === "bool" ? v > 0.5 : kind === "sync" ? PDIVS[Math.round(v)] : kind === "int" ? Math.round(v) : v));
+  text("text_step", "step", "int");
+  text("text_unit", "unit", "int");
+  text("text_say", "say", "int");
+  text("text_rate", "rate");
+  text("text_sync", "sync", "sync");
+  text("text_len", "len");
+  text("text_gate", "gate");
+  text("text_seq", "seq", "bool");
+  text("text_once", "once", "bool");
+  text("speech", "speech");
+  add("seq_rate", (st) => Math.round(Math.log2(st.seq.rate)), (st, v) => (st.seq.rate = 2 ** Math.round(v)));
+  add("seq_length", (st) => st.seq.length, (st, v) => (st.seq.length = Math.round(v)));
+  add("seq_gate", (st) => st.seq.gate, (st, v) => (st.seq.gate = v));
+  for (let i = 0; i < 16; i++) {
+    const s = (st) => st.seq.steps[i], n = i + 1;
+    add(`step_on_${n}`, (st) => +s(st).on, (st, v) => (s(st).on = v > 0.5));
+    add(`step_note_${n}`, (st) => s(st).note, (st, v) => (s(st).note = Math.round(v)));
+    add(`step_tie_${n}`, (st) => +s(st).tie, (st, v) => (s(st).tie = v > 0.5));
+    add(`step_vowel_${n}`, (st) => s(st).vowel + 1, (st, v) => (s(st).vowel = Math.round(v) - 1));
+    add(`step_accent_${n}`, (st) => +s(st).accent, (st, v) => (s(st).accent = v > 0.5));
+    add(`step_len_${n}`, (st) => s(st).len, (st, v) => (s(st).len = v));
+  }
+  // GATE: ENV 0, HOLD 1, MIDI 2 (ENV is in the page's state, HOLD is not)
+  add("gate", (st) => (st.envGate ? 0 : held ? 1 : 2), (st, v) => (st.envGate = Math.round(v) === 0));
+  // not in the page's state: the sequencer playing
+  add("seq", () => +playing, null);
+}
+
+function hornKey(st) {
+  return JSON.stringify([st.horn, st.hornWrap]);
+}
+
+/** Put the host's `values` on `st` and every control, sending nothing back. */
+function applyHost(st, values) {
+  for (const m of PMAP) if (m.set && m.id in values) m.set(st, values[m.id]);
+  plugin.quiet = true;
+  try {
+    applyState(readState(st));
+    if ("gate" in values) setHold(Math.round(values.gate) === 1);
+    if ("seq" in values && (values.seq > 0.5) !== playing) setPlaying(values.seq > 0.5);
+  } finally {
+    plugin.quiet = false;
+  }
+  // what the page now shows counts as the host's: nothing echoes back
+  const now = getState();
+  for (const m of PMAP) plugin.host[m.id] = m.get(now);
+  plugin.horn = hornKey(now);
+}
+
+/** Each frame: a setting changed on the page goes to the host. */
+function pluginSync() {
+  if (!plugin.ready || plugin.quiet) return;
+  const st = getState();
+  for (const m of PMAP) {
+    const v = m.get(st);
+    if (!(Math.abs(v - plugin.host[m.id]) <= 1e-6)) {
+      plugin.host[m.id] = v;
+      sendToPlugin({ type: "set", id: m.id, value: v });
+    }
+  }
+  if (st.text.words !== plugin.words) {
+    plugin.words = st.text.words;
+    sendToPlugin({ type: "words", text: plugin.words });
+  }
+  const hk = hornKey(st);
+  if (hk !== plugin.horn) {
+    plugin.horn = hk;
+    sendToPlugin({ type: "horn", areas: st.horn, wrap: st.hornWrap });
+  }
+  // the page's own extras, about once a second
+  if (++plugin.frame % 60 === 0) {
+    const json = JSON.stringify(st);
+    if (json !== plugin.ui) sendToPlugin({ type: "ui", json: (plugin.ui = json) });
+  }
+}
+
+/** What the page would have told the worklet. Settings go by `pluginSync`; text and snapshots here. */
+function pluginPost(m) {
+  if (plugin.quiet) return;
+  if (m.type === "text") {
+    const text = new TextDecoder().decode(m.bytes);
+    if (text.trim()) plugin.words = text;
+    sendToPlugin({ type: "text", text });
+  } else if (m.type === "snapshot") sendToPlugin({ type: "snapshot" });
+}
+
+/** The keys held go to the plug-in as notes. */
+function pluginKeys() {
+  const want = new Set(down.values());
+  for (const n of plugin.keys) if (!want.has(n)) sendToPlugin({ type: "key", note: n, on: false });
+  for (const n of want) if (!plugin.keys.has(n)) sendToPlugin({ type: "key", note: n, on: true });
+  plugin.keys = want;
+}
+
+if (inPlugin) {
+  window.__suuPlugin = { ids: PMAP.map((m) => m.id) }; // for automated checks
+  document.body.classList.add("in-plugin");
+  $("bpm").readOnly = true;
+  TIPS["#bpm"] = "Tempo\nThe host's.";
+  $("bpm").dataset.tip = TIPS["#bpm"];
+  addEventListener("error", (e) => sendToPlugin({ type: "log", text: `${e.message} ${e.filename}:${e.lineno}` }));
+  addEventListener("unhandledrejection", (e) => sendToPlugin({ type: "log", text: String(e.reason?.stack ?? e.reason) }));
+  window.onPluginMessage = (m) => {
+    if (m.type === "init") {
+      let base = DEFAULTS;
+      if (m.ui) {
+        try {
+          base = readState(JSON.parse(m.ui));
+        } catch {}
+      }
+      const st = structuredClone(base);
+      if (typeof m.words === "string") st.text.words = m.words;
+      if (m.horn) {
+        st.horn = m.horn;
+        st.hornWrap = m.hornWrap;
+      }
+      plugin.words = st.text.words;
+      applyHost(st, m.values);
+      plugin.ui = JSON.stringify(getState());
+      plugin.ready = true;
+      status(m.synth ? "Suu Synth" : "Suu");
+    } else if (m.type === "params") {
+      applyHost(getState(), m.values);
+    } else if (m.type === "ui") {
+      if (Math.abs(+$("bpm").value - m.bpm) > 0.005) $("bpm").value = Math.round(m.bpm * 100) / 100;
+      // as the worklet sends it (the drawing takes subarrays)
+      onWorklet({ type: "ui", ui: Float32Array.from(m.ui) });
+    } else if (m.type === "text") {
+      plugin.words = m.words;
+      if (document.activeElement !== $("text")) $("text").value = m.words;
+      onWorklet({ type: "text", syllables: m.syllables });
+    } else if (m.type === "snapshot") {
+      onSnapshot(m.values);
+    } else if (m.type === "opened") {
+      let raw;
+      try {
+        raw = JSON.parse(m.text);
+      } catch {
+        return status(`${m.name ?? "the file"}: not a preset`);
+      }
+      if (load(raw, m.name ?? "the preset")) status(`${m.name ?? "preset"} opened`);
+    }
+  };
+  // a grip in the corner resizes the window
+  const grip = document.createElement("div");
+  grip.className = "plugin-grip";
+  document.body.append(grip);
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const from = [e.screenX, e.screenY, innerWidth, innerHeight];
+    const move = (m) => sendToPlugin({ type: "resize", width: Math.round(from[2] + m.screenX - from[0]), height: Math.round(from[3] + m.screenY - from[1]) });
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", () => grip.removeEventListener("pointermove", move), { once: true });
+  });
+  sendToPlugin({ type: "ready" });
+}

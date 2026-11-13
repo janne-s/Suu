@@ -3,7 +3,10 @@ osc
 input
 folds
 reson
-notes
+gate
+env_threshold
+env_release
+env_release_sync
 root
 bend_range
 glide

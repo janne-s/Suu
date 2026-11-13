@@ -28,12 +28,16 @@ pub enum Wave {
     Square,
 }
 
-/// What opens the sound: always (the input passes and the oscillator sounds without notes), or
-/// MIDI notes.
+/// What opens the sound (MIDI notes always do too): the input's own level (ENV), always (HOLD),
+/// or MIDI notes only.
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
-pub enum Notes {
-    #[id = "open"]
-    Open,
+pub enum GateMode {
+    #[id = "env"]
+    #[name = "ENV"]
+    Env,
+    #[id = "hold"]
+    #[name = "HOLD"]
+    Hold,
     #[id = "midi"]
     #[name = "MIDI"]
     Midi,
@@ -400,6 +404,9 @@ pub struct SuuParams {
     pub words: Arc<RwLock<String>>,
     #[persist = "horn"]
     pub horn: Arc<RwLock<HornState>>,
+    /// the window's own extras (the web app's state as JSON: the horn's wave, the octave …)
+    #[persist = "ui"]
+    pub ui: Arc<RwLock<String>>,
 
     // ------------------------------------------------ source
     #[id = "wave"]
@@ -412,8 +419,14 @@ pub struct SuuParams {
     pub folds: FloatParam,
     #[id = "reson"]
     pub reson: FloatParam,
-    #[id = "notes"]
-    pub notes: EnumParam<Notes>,
+    #[id = "gate"]
+    pub gate: EnumParam<GateMode>,
+    #[id = "env_threshold"]
+    pub env_threshold: FloatParam,
+    #[id = "env_release"]
+    pub env_release: FloatParam,
+    #[id = "env_release_sync"]
+    pub env_release_sync: EnumParam<Sync>,
     /// the pitch when no key is held, and the sequence's root
     #[id = "root"]
     pub root: IntParam,
@@ -513,13 +526,19 @@ impl SuuParams {
         SuuParams {
             words: Arc::new(RwLock::new(DEFAULT_WORDS.to_string())),
             horn: Arc::new(RwLock::new(HornState::default())),
+            ui: Arc::new(RwLock::new(String::new())),
 
             wave: EnumParam::new("Wave", if synth { Wave::Supersaw } else { Wave::Off }),
             osc: db(FloatParam::new("Osc", 0.0, FloatRange::Linear { min: -60.0, max: 12.0 }).with_step_size(0.1), -59.95),
             input: db(FloatParam::new("Input", if synth { -60.0 } else { 0.0 }, FloatRange::Linear { min: -60.0, max: 12.0 }).with_step_size(0.1), -59.95),
             folds: percent(FloatParam::new("Folds", 0.0, FloatRange::Linear { min: 0.0, max: 2.0 })),
             reson: percent(FloatParam::new("Reson", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
-            notes: EnumParam::new("Notes", if synth { Notes::Midi } else { Notes::Open }),
+            gate: EnumParam::new("Gate", if synth { GateMode::Midi } else { GateMode::Env }),
+            env_threshold: db(FloatParam::new("Env Threshold", -40.0, FloatRange::Linear { min: -80.0, max: 0.0 }).with_step_size(0.1), -999.0),
+            env_release: FloatParam::new("Env Release", 0.15, log_range(0.005, 4.0, 0.141))
+                .with_unit(" s")
+                .with_value_to_string(Arc::new(|v| if v < 1.0 { format!("{:.0} m", v * 1000.0) } else { format!("{v:.2}") })),
+            env_release_sync: EnumParam::new("Env Release Sync", Sync::Off),
             root: IntParam::new("Root", 45, IntRange::Linear { min: 12, max: 108 }).with_value_to_string(formatters::v2s_i32_note_formatter()).with_string_to_value(formatters::s2v_i32_note_formatter()),
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
             glide: FloatParam::new("Glide", 0.03, FloatRange::Skewed { min: 0.0, max: 2.0, factor: 0.5 })
@@ -633,6 +652,10 @@ impl SuuParams {
             morph: m[6].base.value() as f64,
             shift: m[7].base.value() as f64,
             open: m[8].base.value() as f64,
+            env_gate: self.gate.value() == GateMode::Env,
+            env_thresh_db: self.env_threshold.value() as f64,
+            env_release_s: self.env_release.value() as f64,
+            env_release_sync: self.env_release_sync.value().beats(),
         }
     }
 }

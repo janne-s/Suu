@@ -1,0 +1,127 @@
+/**
+ * The Suu page as the plug-in's window, in headless Chrome: the webview's bridge is stood in for
+ * (`sendToPlugin` records, `onPluginMessage` is called as the plug-in would), and the check is that
+ * every host parameter is reached by the page, the host's changes land on the controls without
+ * being sent back, keys go as notes, and the web-only parts are hidden.
+ * Usage: bun run suu (in another shell), then bun tools/suu-plugin-e2e.ts [url]
+ */
+import { chromium } from "playwright-core";
+import { readFileSync } from "node:fs";
+const url = process.argv[2] ?? "http://127.0.0.1:5318/";
+const ids = readFileSync(new URL("../plugin/tests/param_ids.txt", import.meta.url), "utf8").trim().split("\n");
+let failed = 0;
+const ok = (name: string, cond: boolean, extra = "") => {
+  if (!cond) failed++;
+  console.log(`${cond ? "PASS" : "FAIL"} ${name} ${extra}`);
+};
+const browser = await chromium.launch({ headless: true, channel: "chrome" });
+const page = await browser.newPage({ viewport: { width: 1280, height: 640 } }); // the window's first size
+const errors: string[] = [];
+page.on("pageerror", (e) => errors.push(e.message));
+page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+await page.addInitScript(() => {
+  (window as any).__sent = [];
+  (window as any).sendToPlugin = (m: any) => (window as any).__sent.push(JSON.parse(JSON.stringify(m)));
+});
+await page.goto(url, { waitUntil: "networkidle" });
+const sent = (): Promise<any[]> => page.evaluate(() => (window as any).__sent.splice(0));
+const tell = (m: any) => page.evaluate((m) => (window as any).onPluginMessage(m), m);
+const frames = () => page.waitForTimeout(150);
+
+let s = await sent();
+ok("the page says it is ready", s.some((m) => m.type === "ready"));
+ok("no audio of its own", await page.evaluate(() => !(window as any).__suu));
+await tell({ type: "init", synth: true, values: {}, words: "wow wow", horn: null, hornWrap: false, ui: null });
+await frames();
+await sent();
+// every host parameter has its place on the page (the text's on/off and the bend range are the
+// plug-in's: SING and MIDI)
+const mapped: string[] = await page.evaluate(() => (window as any).__suuPlugin.ids);
+const unreached = ids.filter((id) => !mapped.includes(id) && id !== "text" && id !== "bend_range");
+ok("every parameter has a place on the page", unreached.length === 0, unreached.join(" "));
+const unknown = mapped.filter((id) => !ids.includes(id));
+ok("no unknown parameter IDs", unknown.length === 0, unknown.join(" "));
+// a change to every mapped parameter is sent once, and only that
+await tell({ type: "params", values: Object.fromEntries(mapped.map((id) => [id, 0])) });
+await frames();
+ok("nothing echoed after a full update", !(await sent()).some((m) => m.type === "set"));
+// the host's values: on the controls, nothing sent back
+await tell({ type: "params", values: { wave: 0, gate: 1, vowel_x_base: 1.2, seq_rate: 3, step_vowel_3: 0, glide_sync: 7, glide: 0.5, size: 2, root: 57, text_sync: 0, text_rate: 4 } });
+await frames();
+s = await sent();
+ok("host changes are not echoed", !s.some((m) => m.type === "set"), JSON.stringify(s.filter((m) => m.type === "set")));
+ok("WAVE off shown", (await page.getAttribute('[data-osc="0"]', "aria-pressed")) === "true");
+ok("GATE HOLD shown", (await page.getAttribute("#hold", "aria-pressed")) === "true");
+ok("sequencer rate shown", (await page.inputValue("#rate")) === "8");
+ok("root note shown", (await page.inputValue("#notename")) === "9" && (await page.textContent("#rootoct")) === "3");
+ok("size shown", (await page.textContent('output[for="size"]'))?.includes("2.00") ?? false, (await page.textContent('output[for="size"]')) ?? "");
+// the page's changes go to the host
+await page.click('[data-osc="1"]');
+await page.click("#hold");
+await frames();
+s = await sent();
+ok("WAVE saw sent", s.some((m) => m.type === "set" && m.id === "wave" && m.value === 1));
+ok("HOLD off sent as GATE MIDI", s.some((m) => m.type === "set" && m.id === "gate" && m.value === 2));
+await page.click("#envgate");
+await frames();
+s = await sent();
+ok("ENV sent as GATE ENV", s.some((m) => m.type === "set" && m.id === "gate" && m.value === 0));
+await tell({ type: "params", values: { gate: 1 } });
+ok("host GATE HOLD: HOLD on, ENV off", (await page.getAttribute("#hold", "aria-pressed")) === "true" && (await page.getAttribute("#envgate", "aria-pressed")) === "false");
+await page.selectOption("#notename", "2");
+await frames();
+s = await sent();
+ok("the note list sets the root in its octave (A3 → D3)", s.some((m) => m.type === "set" && m.id === "root" && m.value === 50));
+await page.click("#octup");
+await frames();
+s = await sent();
+ok("+ moves the root an octave (D4)", s.some((m) => m.type === "set" && m.id === "root" && m.value === 62) && (await page.textContent("#rootoct")) === "4");
+// keys play notes; the root stays
+await page.keyboard.down("d");
+await page.keyboard.up("d");
+await frames();
+s = await sent();
+ok("a key is a note on and off", s.some((m) => m.type === "key" && m.on && m.note === 64) && s.some((m) => m.type === "key" && !m.on && m.note === 64));
+ok("a key does not move the root", !s.some((m) => m.type === "set" && m.id === "root"));
+// text and INIT
+await page.click("#text-toggle");
+await page.click("#singtext");
+s = await sent();
+ok("SING sends the words", s.some((m) => m.type === "text" && m.text === "wow wow"));
+await tell({ type: "text", syllables: 2, words: "wow wow" });
+ok("the plug-in's reply shows the text on", (await page.textContent("#singtext"))!.includes("STOP"));
+await page.click("#init");
+s = await sent();
+ok("INIT asks the plug-in for its defaults", s.some((m) => m.type === "reset"));
+// the mouth from the plug-in
+await tell({ type: "ui", ui: Array.from({ length: 71 }, (_, i) => (i > 22 ? 3 : 0.5)), bpm: 128 });
+await frames();
+ok("the host's tempo shown", (await page.inputValue("#bpm")) === "128");
+// both views draw from the plug-in's frames (they come as plain arrays)
+await page.click("#view-horn");
+await frames();
+await tell({ type: "ui", ui: Array.from({ length: 71 }, (_, i) => (i > 22 ? 4 : 0.5)), bpm: 128 });
+await frames();
+ok("the HORN view draws from the plug-in's frame", errors.length === 0, errors.join(" | "));
+await page.click("#view-pad");
+// PLAY and STOP: the same icon size and label size, and PLAY reaches the host
+const box = () => page.evaluate(() => {
+  const b = document.getElementById("play")!, g = b.querySelector("svg")!.getBoundingClientRect(), t = b.querySelector("span")!;
+  return [Math.round(g.width), Math.round(g.height), getComputedStyle(t).fontSize, Math.round(b.getBoundingClientRect().height)].join(",");
+});
+const before = await box();
+await page.click("#play");
+await frames();
+ok("PLAY and STOP look the same size", (await box()) === before, `${before} vs ${await box()}`);
+ok("PLAY reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq" && m.value === 1));
+await page.screenshot({ path: (process.argv[3] ?? "out/suu-plugin.png").replace(".png", "-seq.png"), clip: { x: 0, y: 410, width: 260, height: 70 } });
+await page.click("#play");
+// hidden in the plug-in
+for (const sel of ['[data-in="file"]', "#slotA", "#spaceon", "#peak"]) ok(`${sel} hidden`, !(await page.isVisible(sel)));
+const scroll = await page.evaluate(() => [document.documentElement.scrollWidth > innerWidth, document.documentElement.scrollHeight > innerHeight]);
+ok("the window's first size, 1280x640, is one window", !scroll[0] && !scroll[1], JSON.stringify(scroll));
+await page.screenshot({ path: process.argv[3] ?? "out/suu-plugin.png" });
+ok("no page errors", errors.length === 0, errors.join(" | "));
+await browser.close();
+console.log(failed ? `${failed} failed` : "all passed");
+process.exit(failed ? 1 : 0);
