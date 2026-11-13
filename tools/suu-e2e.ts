@@ -130,6 +130,16 @@ await page.waitForTimeout(1200);
 await page.reload({ waitUntil: "networkidle" });
 const hornSaved = await page.evaluate(() => JSON.parse(localStorage.getItem("suu.session.v1")!).B.horn as number[]);
 ok("the drawn horn is saved", hornSaved.length === 32 && Math.abs(hornSaved[10] - hornSaved[25]) > 0.1, JSON.stringify(hornSaved.slice(8, 12)));
+// a wave horn: built from SIN, the bar's reset icon brings the original back
+await page.click("#view-horn");
+await page.selectOption("#horn-shape", "0");
+let saved = async () => { await page.waitForTimeout(1200); return await page.evaluate(() => JSON.parse(localStorage.getItem("suu.session.v1")!).B); };
+let st = await saved();
+ok("SIN builds a wrapping wave horn", st.hornWrap === true && st.hornWave.shape === 0 && Math.abs(st.horn[4] - st.horn[12]) > 1, JSON.stringify(st.horn.slice(0, 6)));
+await page.screenshot({ path: `${out}/5-wave.png` });
+await page.click("#horn-reset");
+st = await saved();
+ok("reset icon restores the original horn", st.hornWrap === false && st.hornWave.shape === -1 && Math.abs(st.horn[0] - 0.6) < 0.05, JSON.stringify(st.horn.slice(0, 3)));
 await page.click("#view-pad");
 // INIT: this side back to the initial settings
 await page.click("#init");

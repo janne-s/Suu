@@ -118,9 +118,10 @@ pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize, mode:
     h.suu.set_text(text(ptr, len), m) as u32
 }
 
-/// The drawn horn: `n` little-endian f32 areas (cm²) at `ptr`, glottis → lips (see `suu::HORN_POINTS`).
+/// The drawn horn: `n` little-endian f32 areas (cm²) at `ptr`, glottis → lips (see
+/// `suu::HORN_POINTS`); `wrap` 1 = one period of a wave, Shift wraps around.
 #[unsafe(no_mangle)]
-pub extern "C" fn suu_set_profile(h: *mut Handle, ptr: *const u8, n: usize) {
+pub extern "C" fn suu_set_profile(h: *mut Handle, ptr: *const u8, n: usize, wrap: u32) {
     let h = unsafe { &mut *h };
     // little-endian f32s from a byte buffer (suu_alloc does not align for f32)
     let src = unsafe { std::slice::from_raw_parts(ptr, 4 * n) };
@@ -128,7 +129,7 @@ pub extern "C" fn suu_set_profile(h: *mut Handle, ptr: *const u8, n: usize) {
     for (d, b) in a.iter_mut().zip(src.chunks_exact(4)) {
         *d = f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64;
     }
-    h.suu.set_profile(&a[..n.min(suu::HORN_POINTS)]);
+    h.suu.set_profile(&a[..n.min(suu::HORN_POINTS)], wrap != 0);
 }
 
 #[unsafe(no_mangle)]

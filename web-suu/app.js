@@ -298,9 +298,68 @@ const defaultHorn = () => Float32Array.from({ length: HORN_POINTS }, (_, i) => {
   return 0.6 + 1.5 * Math.exp(-(((u - 0.3) / 0.12) ** 2)) + 9 * u ** 3;
 });
 let horn = defaultHorn(), view = "pad";
+// a horn built from a wave is one period (points at i/n), and Shift wraps it around
+let hornWrap = false;
+const hornWave = { shape: -1, cycles: 2, depth: 0.6 }; // shape −1: drawn by hand
 function sendHorn() {
-  post({ type: "profile", areas: horn.slice() });
+  post({ type: "profile", areas: horn.slice(), wrap: hornWrap });
 }
+const hornU = (i) => i / (hornWrap ? HORN_POINTS : HORN_POINTS - 1);
+/** The horn from a wave: a 3 cm² tube rippled `depth` (1 = closing at the troughs). */
+// RND: one value per cycle, drawn anew only when RND is chosen or the cycles change
+let rndSteps = [];
+function buildWave(newRandom = false) {
+  const { shape, cycles, depth } = hornWave;
+  if (newRandom || rndSteps.length !== cycles) rndSteps = Array.from({ length: cycles }, () => Math.random() * 2 - 1);
+  const steps = rndSteps;
+  horn = Float32Array.from({ length: HORN_POINTS }, (_, i) => {
+    const ph = (cycles * i) / HORN_POINTS, f = ph % 1;
+    const w = [Math.sin(2 * Math.PI * ph), 1 - 4 * Math.abs(f - 0.5), 2 * f - 1, f < 0.5 ? 1 : -1, steps[Math.floor(ph)]][shape];
+    return clamp(3 * (1 + depth * w), 0, HORN_MAX);
+  });
+  hornWrap = true;
+  bringHornIn();
+  sendHorn();
+}
+function showHornWave() {
+  $("horn-shape").value = String(hornWave.shape);
+  $("horn-cycles").textContent = String(hornWave.cycles);
+  $("horn-depth").textContent = Math.round(hornWave.depth * 100) + "%";
+}
+function resetHorn() {
+  horn = defaultHorn();
+  hornWrap = false;
+  hornWave.shape = -1;
+  showHornWave();
+  sendHorn();
+}
+/** Drawing or building a horn with MORPH at 0 would be silent: bring the horn in fully. */
+function bringHornIn() {
+  if (rows[6] && rows[6].base === 0) setBase(rows[6], 1);
+}
+$("horn-reset").onclick = resetHorn;
+$("horn-shape").onchange = () => {
+  hornWave.shape = +$("horn-shape").value;
+  if (hornWave.shape >= 0) buildWave(true);
+  showHornWave();
+};
+dragValue($("horn-cycles"), () => hornWave.cycles, (v) => {
+  const c = Math.round(clamp(v, 1, 8));
+  if (c === hornWave.cycles) return;
+  hornWave.cycles = c;
+  if (hornWave.shape < 0) hornWave.shape = 0;
+  buildWave();
+  showHornWave();
+}, 1 / 25);
+dragValue($("horn-depth"), () => hornWave.depth, (v) => {
+  const d = Math.round(clamp(v, 0, 1) * 100) / 100;
+  if (d === hornWave.depth && hornWave.shape >= 0) return;
+  hornWave.depth = d;
+  if (hornWave.shape < 0) hornWave.shape = 0;
+  buildWave();
+  showHornWave();
+}, 1 / 150);
+showHornWave();
 /** The horn's frame on the canvas: x for u (0 glottis … 1 lips), half-height in px for an area. */
 function hornFrame(w, h) {
   const x0 = w * 0.07, x1 = w * 0.93, cy = h * 0.5;
@@ -322,9 +381,9 @@ function drawHorn(c, w, h, dpr) {
   c.font = FONT(11, dpr);
   c.textBaseline = "middle";
   c.textAlign = "left";
-  c.fillText("GLOTTIS", f.x0, h - 14 * dpr);
+  c.fillText("GLOTTIS", f.x0, 14 * dpr);
   c.textAlign = "right";
-  c.fillText("LIPS", f.x1, h - 14 * dpr);
+  c.fillText("LIPS", f.x1, 14 * dpr);
   // the live tract: a horn in the lips' rose, glowing with the sound
   if (ui && ui.length >= 23 + UI_AREAS) {
     const areas = ui.subarray(23, 23 + UI_AREAS);
@@ -357,7 +416,7 @@ function drawHorn(c, w, h, dpr) {
   for (const side of [-1, 1]) {
     c.beginPath();
     horn.forEach((a, i) => {
-      const x = f.x(i / (HORN_POINTS - 1)), y = f.cy + side * f.r(a);
+      const x = f.x(hornU(i)), y = f.cy + side * f.r(a);
       i ? c.lineTo(x, y) : c.moveTo(x, y);
     });
     c.stroke();
@@ -371,7 +430,8 @@ function hornAt(e) {
   const dpr = mouthEl.width / r.width;
   const f = hornFrame(mouthEl.width, mouthEl.height);
   const x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
-  const i = Math.round(clamp((x - f.x0) / (f.x1 - f.x0), 0, 1) * (HORN_POINTS - 1));
+  const u = clamp((x - f.x0) / (f.x1 - f.x0), 0, 1);
+  const i = hornWrap ? Math.round(u * HORN_POINTS) % HORN_POINTS : Math.round(u * (HORN_POINTS - 1));
   const cm = Math.abs(y - f.cy) / f.perCm;
   const a = clamp(Math.PI * cm * cm, 0, HORN_MAX);
   // fill every point between the last one and this, so a fast stroke leaves no gaps
@@ -390,6 +450,7 @@ function setView(v) {
   $("view-pad").setAttribute("aria-pressed", String(v === "pad"));
   $("view-horn").setAttribute("aria-pressed", String(v === "horn"));
   mouthEl.style.cursor = v === "horn" ? "cell" : "";
+  $("horn-bar").hidden = v !== "horn";
 }
 $("view-pad").onclick = () => setView("pad");
 $("view-horn").onclick = () => setView("horn");
@@ -559,19 +620,16 @@ function padAt(e) {
 mouthEl.addEventListener("pointerdown", (e) => {
   mouthEl.setPointerCapture(e.pointerId);
   if (view === "horn") {
-    // drawing a horn with MORPH at 0 would be silent: bring the horn in fully
-    const morph = rows[6];
-    if (morph.base === 0) setBase(morph, 1);
+    bringHornIn();
+    // a hand-drawn change: no longer the wave as built (it still wraps if it was one)
+    hornWave.shape = -1;
+    showHornWave();
     hornLast = -1;
     hornAt(e);
   } else padAt(e);
 });
 mouthEl.addEventListener("pointermove", (e) => e.buttons && (view === "horn" ? hornAt(e) : padAt(e)));
-mouthEl.addEventListener("dblclick", () => {
-  if (view !== "horn") return;
-  horn = defaultHorn();
-  sendHorn();
-});
+mouthEl.addEventListener("dblclick", () => view === "horn" && resetHorn());
 new ResizeObserver(drawMouth).observe(mouthEl);
 
 let peakHold = 0;
@@ -1139,6 +1197,8 @@ function getState() {
     seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
     text: { words: $("text").value, mode: textMode, rate: loop.rate, sync: loop.sync },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
+    hornWrap,
+    hornWave: { ...hornWave },
   };
 }
 
@@ -1195,6 +1255,9 @@ function readState(raw) {
   const text = obj(r.text, "text");
   if (r.horn !== undefined && !Array.isArray(r.horn)) throw new Error("horn is not a list");
   out.horn = d.horn.map((da, i) => num(r.horn?.[i], da, 0, HORN_MAX));
+  out.hornWrap = bool(r.hornWrap, d.hornWrap);
+  const hw = obj(r.hornWave, "hornWave");
+  out.hornWave = { shape: Math.round(num(hw.shape, d.hornWave.shape, -1, 4)), cycles: Math.round(num(hw.cycles, d.hornWave.cycles, 1, 8)), depth: num(hw.depth, d.hornWave.depth, 0, 1) };
   out.text = { words: typeof text.words === "string" ? text.words.slice(0, 400) : d.text.words, mode: [0, 1, 2].includes(text.mode) ? text.mode : d.text.mode, rate: num(text.rate, d.text.rate, 0.25, 16), sync: div(text.sync, d.text.sync) };
   return out;
 }
@@ -1232,6 +1295,9 @@ function applyState(st) {
   setSpace();
   if (st.source !== undefined && current !== "file" && current !== "mic") setSource(String(st.source));
   horn = Float32Array.from(st.horn);
+  hornWrap = st.hornWrap;
+  Object.assign(hornWave, st.hornWave);
+  showHornWave();
   sendHorn();
   $("text").value = st.text.words;
   setTextMode(st.text.mode);

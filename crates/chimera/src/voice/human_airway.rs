@@ -65,7 +65,10 @@ pub struct HumanAirway {
     /// `profile_mix` 0..1 before the slew limits, so moving it is as smooth as articulating.
     /// `profile_shift` slides it along the tract (a fraction of the length, + toward the lips);
     /// `profile_open` scales its areas. Empty or a mix of 0 leaves the airway untouched.
+    /// `profile_wrap`: the profile is one period (points at i/n), and a shift wraps around
+    /// instead of holding the end values, so a periodic shape can travel through the tract.
     pub profile: Vec<f64>,
+    pub profile_wrap: bool,
     pub profile_mix: f64,
     pub profile_shift: f64,
     pub profile_open: f64,
@@ -177,6 +180,7 @@ impl HumanAirway {
             seal_hi: 0.4,
             seal_ease: 0.03,
             profile: Vec::new(),
+            profile_wrap: false,
             profile_mix: 0.0,
             profile_shift: 0.0,
             profile_open: 1.0,
@@ -302,9 +306,16 @@ impl HumanAirway {
     /// The drawn area at `u` (0 glottis … 1 lips), shifted and opened, scaled to the body.
     fn profile_at(&self, u: f64) -> f64 {
         let p = &self.profile;
-        let x = (u - self.profile_shift).clamp(0.0, 1.0) * (p.len() - 1) as f64;
-        let i = (x as usize).min(p.len() - 2);
-        let a = p[i] + (x - i as f64) * (p[i + 1] - p[i]);
+        let a = if self.profile_wrap {
+            let n = p.len();
+            let x = (u - self.profile_shift).rem_euclid(1.0) * n as f64;
+            let i = (x as usize).min(n - 1);
+            p[i] + (x - i as f64) * (p[(i + 1) % n] - p[i])
+        } else {
+            let x = (u - self.profile_shift).clamp(0.0, 1.0) * (p.len() - 1) as f64;
+            let i = (x as usize).min(p.len() - 2);
+            p[i] + (x - i as f64) * (p[i + 1] - p[i])
+        };
         js_max(0.0, a * self.profile_open) * self.body.scale * self.body.scale
     }
 

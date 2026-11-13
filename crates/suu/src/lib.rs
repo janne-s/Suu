@@ -558,6 +558,7 @@ impl Suu {
         let mut nv = HumanVoice::new(self.fs, body, oversample_for(self.fs, s));
         nv.artic = self.voice.artic.clone();
         nv.airway.profile = self.voice.airway.profile.clone();
+        nv.airway.profile_wrap = self.voice.airway.profile_wrap;
         nv.score = self.voice.score.clone();
         nv.clock = self.voice.clock;
         let x = nv.artic.x;
@@ -573,8 +574,11 @@ impl Suu {
     }
 
     /// The drawn horn: `HORN_POINTS` areas (cm², adult scale) from the glottis to the lips,
-    /// clamped to 0..20. Copies into a buffer sized at construction (no allocation).
-    pub fn set_profile(&mut self, areas: &[f64]) {
+    /// clamped to 0..20. `wrap`: the areas are one period of a wave (points at i/n) and Shift
+    /// wraps around, so the wave travels. Copies into a buffer sized at construction (no
+    /// allocation).
+    pub fn set_profile(&mut self, areas: &[f64], wrap: bool) {
+        self.voice.airway.profile_wrap = wrap;
         let n = HORN_POINTS.min(areas.len());
         for (d, &a) in self.voice.airway.profile.iter_mut().zip(&areas[..n]) {
             *d = clamp(a, 0.0, 20.0);
@@ -1234,7 +1238,7 @@ mod tests {
         run(&mut s, 128, 9600);
         let vowel = areas(&s);
         // a flat 5 cm² tube, fully morphed: every section reaches it (the slew limits take time)
-        s.set_profile(&[5.0; HORN_POINTS]);
+        s.set_profile(&[5.0; HORN_POINTS], false);
         s.set_params(Params { gate: true, morph: 1.0, ..Params::default() });
         let out = run(&mut s, 128, 24000);
         let horn = areas(&s);
@@ -1254,6 +1258,38 @@ mod tests {
             s
         };
         assert_eq!(run(&mut mk(), 128, 24000), run(&mut mk(), 45, 24000));
+    }
+
+    #[test]
+    fn a_wave_horn_wraps_so_it_can_travel() {
+        // one sine period of area along the tract; a shift of half a period inverts it, and a
+        // shift of −0.5 lands where +0.5 does (no seam where the wave wraps)
+        let wave: Vec<f64> = (0..HORN_POINTS).map(|i| 3.0 + 2.0 * (2.0 * std::f64::consts::PI * i as f64 / HORN_POINTS as f64).sin()).collect();
+        let areas = |shift: f64| {
+            let mut s = playing();
+            s.set_profile(&wave, true);
+            s.set_params(Params { gate: true, morph: 1.0, shift, ..Params::default() });
+            run(&mut s, 128, 24000);
+            let mut ui = Vec::new();
+            s.ui_state(&mut ui);
+            ui[23..].to_vec()
+        };
+        let (a, b, c) = (areas(0.0), areas(0.5), areas(-0.5));
+        for k in 0..UI_AREAS {
+            assert!((a[k] - 3.0 + (b[k] - 3.0)).abs() < 0.15, "half a period inverts: {k} {} {}", a[k], b[k]);
+            assert!((b[k] - c[k]).abs() < 1e-4, "no seam: {k}");
+        }
+        // travelling (a saw on Shift, one pass a second): no click where the saw jumps back
+        let mk = |depth: f64| {
+            let mut s = playing();
+            s.set_profile(&wave, true);
+            s.set_params(Params { gate: true, morph: 1.0, ..Params::default() });
+            s.set_mod(7, Mod { depth, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw });
+            run(&mut s, 128, 96000)[24000..].to_vec()
+        };
+        let jump = |x: &[f32]| x.windows(2).fold(0f32, |m, w| m.max((w[1] - w[0]).abs()));
+        let (still, moving) = (mk(0.0), mk(1.0));
+        assert!(jump(&moving) < 1.5 * jump(&still), "jump moving {} still {}", jump(&moving), jump(&still));
     }
 
     /// Normalised autocorrelation of `x` at `lag`.

@@ -22,8 +22,9 @@ purpose.
 - **Vowel pad** — Drag the mouth: left to right front to back, top to bottom
   close to open. The edge beyond the corner vowels extrapolates.
 - **Horn** — The tract from the side, glottis to lips, as it sounds now.
-  Drag to draw your own; double-click restores the default. **Morph** blends
-  the drawn horn in, **Shift** slides it along the tract, **Open** widens it.
+  Drag to draw your own, or build it from a **Wave** (cycles and depth); ↺
+  restores the original. **Morph** blends the horn in, **Shift** slides it
+  along the tract (a wave wraps, so it can travel through), **Open** widens it.
 - **Text** — Type words. **Gate** sings a syllable per note, **One-shot** a
   word per note, **Loop** syllables at its own rate or ♪.
 - **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
