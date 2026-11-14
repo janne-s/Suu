@@ -1995,7 +1995,7 @@ const TIPS = {
   "#textreset": "Reset note\nThe MIDI note (its number) that starts the text over from its beginning; it does not sound. Set it with LEARN; put it in a clip where the text should start.",
   "#textresetoff": "No reset note",
   "#textlearn": "Learn\nPress, then play the reset note (or let the clip play it): that note becomes the reset note, whatever the host calls it.",
-  "#textplay": "Restart on play\nThe text starts over when the host's transport starts.",
+  "#textplay": "On play\nThe text starts over when the host's transport starts.",
   "#textgrid": "Grid (text)\nThe speech on this note value's lines: what it asks of the mouth held line to line (a stepped, robotic voice), and with STEP NOTE each part starting on a line. GRID: the modulation's. FREE: as it comes.",
   "#gridbreath": "Breath\nHow far the text's breath and voicing (where it breathes, where the folds open and close) follow its grid. 0%: as they come.",
   "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",

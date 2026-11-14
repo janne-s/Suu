@@ -52,21 +52,28 @@
         <label class="labeled">CYCLES<span id="horn-cycles" class="field drag" tabindex="0" aria-label="Wave cycles along the tract"></span></label>
         <label class="labeled">DEPTH<span id="horn-depth" class="field drag" tabindex="0" aria-label="Wave depth"></span></label>
       </div>
-      <div id="text-panel" class="overlay" hidden>
+      <div id="text-panel" class="overlay text-panel" hidden>
         <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false"></button></form>
-        <div class="text-row">
-          <span class="tgroup"><span class="tlabel">STEP</span><span class="seg" role="group" aria-label="What moves the text on"><button data-tstep="0">NOTE</button><button data-tstep="1">CLOCK</button></span>
-            <label class="labeled">GRID<select id="textgrid" class="field" aria-label="The text's grid"></select></label><label id="tbreathbox" class="labeled">BREATH<span id="gridbreath" class="field drag" tabindex="0" aria-label="How far the text's breath and voicing follow its grid"></span></label><span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
+        <!-- one row per question: how the text moves on, how it flows, its grid, its reset -->
+        <div class="text-row"><span class="trow-title">READ</span><div class="trow-body">
+          <span class="tgroup"><span class="tlabel">STEP</span><span class="seg" role="group" aria-label="What moves the text on"><button data-tstep="0">NOTE</button><button data-tstep="1">CLOCK</button></span><span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
           <span class="tgroup"><span class="tlabel">UNIT</span><span class="seg" role="group" aria-label="What is said at a time"><button data-tunit="0">SYL</button><button data-tunit="1">WORD</button></span></span>
-          <span class="tgroup"><span class="tlabel">SAY</span><span class="seg" role="group" aria-label="How each is said"><button data-tsay="0">HOLD</button><button data-tsay="1">SHOT</button></span>
-            <label id="lenbox" class="labeled">LEN<span id="textlen" class="field drag" tabindex="0" aria-label="Held length on the clock"></span></label></span>
-        </div>
-        <div class="text-row">
+          <span class="tgroup"><span class="tlabel">SAY</span><span class="seg" role="group" aria-label="How each is said"><button data-tsay="0">HOLD</button><button data-tsay="1">SHOT</button></span><span id="lenbox" class="tgroup"><span class="tlabel">LEN</span><span id="textlen" class="field drag" tabindex="0" aria-label="Held length on the clock"></span></span></span>
+        </div></div>
+        <div class="text-row"><span class="trow-title">FLOW</span><div class="trow-body">
           <span class="tgroup"><span class="tlabel">START</span><span class="seg" role="group" aria-label="Where the text starts"><button data-tseq="0">FREE</button><button data-tseq="1">SEQ</button></span></span>
           <span class="tgroup"><span class="tlabel">REPEAT</span><span class="seg" role="group" aria-label="How often"><button data-tonce="0">LOOP</button><button data-tonce="1">1×</button></span></span>
-          <label class="labeled">SPEED<span id="speech" class="field drag" tabindex="0" aria-label="Speaking speed"></span></label>
-          <label class="labeled plugin-only">RESET<output id="textreset" class="field" aria-label="The MIDI note that starts the text over"></output></label><button id="textlearn" class="plugin-only" aria-pressed="false">LEARN</button><button id="textresetoff" class="square plugin-only" aria-label="No reset note">✕</button><button id="textplay" class="plugin-only" aria-pressed="false">↺ PLAY</button><label class="labeled">GATE<span id="textgate" class="field drag" tabindex="0" aria-label="How much of each part is heard"></span></label>
-        </div>
+          <span class="tgroup"><span class="tlabel">SPEED</span><span id="speech" class="field drag" tabindex="0" aria-label="Speaking speed"></span></span>
+          <span class="tgroup"><span class="tlabel">GATE</span><span id="textgate" class="field drag" tabindex="0" aria-label="How much of each part is heard"></span></span>
+        </div></div>
+        <div class="text-row"><span class="trow-title">GRID</span><div class="trow-body">
+          <span class="tgroup"><span class="tlabel">LINES</span><select id="textgrid" class="field" aria-label="The text's grid"></select></span>
+          <span id="tbreathbox" class="tgroup"><span class="tlabel">BREATH</span><span id="gridbreath" class="field drag" tabindex="0" aria-label="How far the text's breath and voicing follow its grid"></span></span>
+        </div></div>
+        <div class="text-row plugin-only"><span class="trow-title">RESET</span><div class="trow-body">
+          <span class="tgroup"><span class="tlabel">NOTE</span><output id="textreset" class="field" aria-label="The MIDI note that starts the text over"></output><button id="textlearn" aria-pressed="false">LEARN</button><button id="textresetoff" class="square" aria-label="No reset note">✕</button></span>
+          <span class="tgroup"><span class="tlabel">ON PLAY</span><button id="textplay" aria-pressed="false">↺</button></span>
+        </div></div>
       </div>
     </div>
   </section>
