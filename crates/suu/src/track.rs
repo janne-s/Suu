@@ -36,6 +36,8 @@ pub struct PitchTracker {
     cmnd: Vec<f64>,
     /// the last voiced pitch (MIDI), held through unvoiced frames
     note: Option<f64>,
+    /// the last frame analysed was voiced
+    voiced: bool,
 }
 
 impl PitchTracker {
@@ -50,7 +52,7 @@ impl PitchTracker {
         let cw = cos(w0);
         let c = [(1.0 - cw) / 2.0 / a0, (1.0 - cw) / a0, (1.0 - cw) / 2.0 / a0, -2.0 * cw / a0, (1.0 - alpha) / a0];
         let n = 2 * max_lag;
-        PitchTracker { down, phase: 0, fsd, c, z: [0.0; 2], max_lag, min_lag, ring: vec![0.0; n], w: 0, frame: vec![0.0; n], cmnd: vec![0.0; max_lag + 1], note: None }
+        PitchTracker { down, phase: 0, fsd, c, z: [0.0; 2], max_lag, min_lag, ring: vec![0.0; n], w: 0, frame: vec![0.0; n], cmnd: vec![0.0; max_lag + 1], note: None, voiced: false }
     }
 
     /// One input sample (as it comes, before INPUT's gain).
@@ -78,6 +80,7 @@ impl PitchTracker {
             self.frame[i] = v;
             energy += v * v;
         }
+        self.voiced = false;
         if energy < FLOOR_RMS * FLOOR_RMS * n as f64 {
             return self.note;
         }
@@ -116,6 +119,7 @@ impl PitchTracker {
                 tau_f += 0.5 * (a - c) / den;
             }
         }
+        self.voiced = true;
         let f0 = self.fsd / tau_f;
         self.note = Some(69.0 + 12.0 * log2(f0 / 440.0));
         self.note
@@ -123,6 +127,10 @@ impl PitchTracker {
 
     pub fn note(&self) -> Option<f64> {
         self.note
+    }
+
+    pub fn voiced(&self) -> bool {
+        self.voiced
     }
 }
 

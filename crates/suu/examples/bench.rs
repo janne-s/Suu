@@ -35,6 +35,7 @@ fn main() {
         })),
         ("input + reson 0.8", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, ..gate }))),
         ("input + reson, pitch IN", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, pitch_from: PitchFrom::Input, ..gate }))),
+        ("input + reson, VOWEL IN", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, vowel_in: true, ..gate }))),
         ("folds 1", Box::new(move |s: &mut Suu| s.set_params(Params { folds: 1.0, ..gate }))),
         ("sequencer + text gate", Box::new(move |s: &mut Suu| {
             s.load_dict(dict);

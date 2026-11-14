@@ -164,6 +164,10 @@ pub enum ModShape {
     /// the source's envelope
     #[id = "envelope"]
     Envelope,
+    /// the ADSR
+    #[id = "adsr"]
+    #[name = "ADSR"]
+    Adsr,
 }
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
@@ -286,6 +290,13 @@ fn hz(p: FloatParam, off_below: f32) -> FloatParam {
     p.with_unit(" Hz").with_value_to_string(Arc::new(move |v| if v < off_below { "off".into() } else if v < 10.0 { format!("{v:.2}") } else { format!("{v:.0}") }))
 }
 
+/// A time in seconds on a log-like scale, shown in ms below a second.
+fn seconds(name: &str, default: f32, min: f32, max: f32, centre: f32) -> FloatParam {
+    FloatParam::new(name, default, log_range(min, max, centre))
+        .with_unit(" s")
+        .with_value_to_string(Arc::new(|v| if v < 1.0 { format!("{:.1} m", v * 1000.0) } else { format!("{v:.2}") }))
+}
+
 fn log_range(min: f32, max: f32, centre: f32) -> FloatRange {
     FloatRange::Skewed { min, max, factor: FloatRange::skew_factor_from_centre(min, max, centre) }
 }
@@ -355,6 +366,7 @@ impl MotionParams {
             ModShape::Square => Shape::Square,
             ModShape::Random => Shape::Random,
             ModShape::Envelope => Shape::Follow,
+            ModShape::Adsr => Shape::Adsr,
         };
         Mod { depth: self.depth.value() as f64, rate_hz: self.rate.value() as f64, sync: self.sync.value().beats(), shape, smooth: self.smooth.value() as f64 }
     }
@@ -441,6 +453,27 @@ pub struct SuuParams {
     pub env_release: FloatParam,
     #[id = "env_release_sync"]
     pub env_release_sync: EnumParam<Sync>,
+    /// the ADSR of what the gate opens
+    #[id = "attack"]
+    pub attack: FloatParam,
+    #[id = "attack_sync"]
+    pub attack_sync: EnumParam<Sync>,
+    #[id = "decay"]
+    pub decay: FloatParam,
+    #[id = "decay_sync"]
+    pub decay_sync: EnumParam<Sync>,
+    #[id = "sustain"]
+    pub sustain: FloatParam,
+    #[id = "release"]
+    pub release: FloatParam,
+    #[id = "release_sync"]
+    pub release_sync: EnumParam<Sync>,
+    /// a note while the sound is open goes on with the envelope (else it starts it again)
+    #[id = "legato"]
+    pub legato: BoolParam,
+    /// the input's vowel places the pad
+    #[id = "vowel_in"]
+    pub vowel_in: BoolParam,
     /// the pitch when no key is held, and the sequence's root
     #[id = "root"]
     pub root: IntParam,
@@ -556,6 +589,15 @@ impl SuuParams {
                 .with_unit(" s")
                 .with_value_to_string(Arc::new(|v| if v < 1.0 { format!("{:.0} m", v * 1000.0) } else { format!("{v:.2}") })),
             env_release_sync: EnumParam::new("Env Release Sync", Sync::Off),
+            attack: seconds("Attack", 0.005, 0.001, 10.0, 0.1),
+            attack_sync: EnumParam::new("Attack Sync", Sync::Off),
+            decay: seconds("Decay", 0.2, 0.001, 10.0, 0.3),
+            decay_sync: EnumParam::new("Decay Sync", Sync::Off),
+            sustain: percent(FloatParam::new("Sustain", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            release: seconds("Release", 0.08, 0.001, 10.0, 0.3),
+            release_sync: EnumParam::new("Release Sync", Sync::Off),
+            legato: BoolParam::new("Legato", false),
+            vowel_in: BoolParam::new("Vowel From Input", false),
             root: IntParam::new("Root", 45, IntRange::Linear { min: 12, max: 108 }).with_value_to_string(formatters::v2s_i32_note_formatter()).with_string_to_value(formatters::s2v_i32_note_formatter()),
             pitch: EnumParam::new("Pitch", PitchMode::Note),
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
@@ -674,6 +716,15 @@ impl SuuParams {
             env_thresh_db: self.env_threshold.value() as f64,
             env_release_s: self.env_release.value() as f64,
             env_release_sync: self.env_release_sync.value().beats(),
+            vowel_in: self.vowel_in.value(),
+            attack_s: self.attack.value() as f64,
+            attack_sync: self.attack_sync.value().beats(),
+            decay_s: self.decay.value() as f64,
+            decay_sync: self.decay_sync.value().beats(),
+            sustain: self.sustain.value() as f64,
+            release_s: self.release.value() as f64,
+            release_sync: self.release_sync.value().beats(),
+            legato: self.legato.value(),
             pitch_from: match self.pitch.value() {
                 PitchMode::Note => suu::PitchFrom::Note,
                 PitchMode::Input => suu::PitchFrom::Input,

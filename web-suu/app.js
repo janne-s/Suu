@@ -35,6 +35,11 @@ const divBeats = (n) => DIVS.find((d) => d[0] === n)[1];
 const pct = (v) => Math.round(v * 100) + "%";
 const times = (v) => "×" + v.toFixed(2);
 const dbOff = (v) => (v <= -59.95 ? "off" : (v > 0 ? "+" : "") + v.toFixed(1) + " dB");
+const secsFmt = (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s");
+// the ADSR's: shorter, for its smaller knobs
+const shortSecs = (v) => (v < 0.01 ? (v * 1000).toFixed(1) + "ms" : v < 1 ? (v * 1000).toFixed(0) + "ms" : v.toFixed(v < 10 ? 2 : 1) + "s");
+// the ADSR's knobs are smaller
+const MINI = new Set(["attack", "decay", "sustain", "release"]);
 const KNOBS = {
   "k-mouth": [
     ["size", "SIZE", 0.4, 4, 1, times, "log", 18, [0.7, 1.25]],
@@ -48,10 +53,15 @@ const KNOBS = {
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
   ],
-  // ENV: the input's level opens the sound at THRESH and closes RELEASE after it falls below
+  // ENV: the input's level opens the sound at THRESH and closes HANG after it falls below;
+  // then the ADSR of what the gate opens (smaller knobs)
   "k-gate": [
     ["envThresh", "THRESH", -80, 0, -40, (v) => v.toFixed(0) + " dB", null, 40],
-    ["envRelease", "RELEASE", 0.005, 4, 0.15, (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "log", 41],
+    ["envRelease", "HANG", 0.005, 4, 0.15, secsFmt, "log", 41],
+    ["attack", "A", 0.001, 10, 0.005, shortSecs, "log", 45],
+    ["decay", "D", 0.001, 10, 0.2, shortSecs, "log", 47],
+    ["sustain", "S", 0, 1, 1, pct, null, 49],
+    ["release", "R", 0.001, 10, 0.08, shortSecs, "log", 50],
   ],
   "k-drive": [
     ["drive", "DRIVE", -40, 40, 0, (v) => v.toFixed(1) + " dB", null, 3],
@@ -92,12 +102,16 @@ const KNOB_TIPS = {
   revSize: "Length\nReverb length.",
   mix: "Mix\nThe dry source … the mouth.",
   envThresh: "Threshold\nWith ENV on: the input's level that opens the sound.",
-  envRelease: "Release\nWith ENV on: how long the sound stays open after the input falls below the threshold.",
+  envRelease: "Hang\nWith ENV on: how long the sound stays open after the input falls below the threshold.",
+  attack: "Attack\nHow long the sound takes to open, from where it is. ♪: a note value.",
+  decay: "Decay\nHow long it takes from the top down to Sustain. ♪: a note value.",
+  sustain: "Sustain\nThe level it holds while the note is on.",
+  release: "Release\nHow long it takes to fall silent after the note ends. ♪: a note value.",
   out: "Output\nOutput level.",
 };
 // time knobs that can lock to the tempo: the division they start from, and the engine id that
 // takes the synced length in beats (none: the page converts it to seconds itself)
-const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 } };
+const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 } };
 
 const state = {};
 const controls = new Map();
@@ -157,7 +171,7 @@ function dragValue(el, get, set, perPx = 1 / 180) {
 
 function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
   const cell = document.createElement("div");
-  cell.className = "knob";
+  cell.className = MINI.has(key) ? "knob mini" : "knob";
   cell.innerHTML = `<label for="${key}">${label}</label><input id="${key}" type="range" min="0" max="1" step="0.001" aria-label="${label}"><output for="${key}"></output>`;
   $(parent).append(cell);
   const input = cell.querySelector("input");
@@ -246,7 +260,7 @@ const MOTION = [
   [7, "SHIFT", 26, -0.5, 0.5, 0, (v) => (Math.abs(v) < 0.005 ? "0" : (v > 0 ? "lips " : "throat ") + pct(Math.abs(v)))],
   [8, "OPEN", 27, 0.25, 4, 1, times, true],
 ];
-const SHAPES = ["SIN", "TRI", "SAW", "SQR", "RND", "ENV"];
+const SHAPES = ["SIN", "TRI", "SAW", "SQR", "RND", "ENV", "ADSR"];
 const MOTION_TIPS = [
   "Vowel X\nThe vowel from front to back (i … u).",
   "Vowel Y\nThe vowel from close to open (i … a).",
@@ -299,7 +313,7 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
   el.querySelector(".depth").dataset.tip = "Depth\nHow far it swings, either way. Drag; double-click: 0.";
   el.querySelector(".rate .val").dataset.tip = "Rate\nCycles per second. Drag.";
   el.querySelector(".rate select").dataset.tip = "Rate\nOne cycle per this note value.";
-  el.querySelector("select.shape").dataset.tip = "Shape\nSine, triangle, saw, square, random, or the sound's envelope.";
+  el.querySelector("select.shape").dataset.tip = "Shape\nSine, triangle, saw, square, random, the sound's envelope (ENV), or the ADSR: each note moves it.";
   const r = {
     t, param, lo, hi, fmt, log, el, def, base: def, depth: 0, rate: 0.5, sync: null, shape: 0, smooth: 0,
     smoothBox: el.querySelector(".smooth"),
@@ -894,6 +908,8 @@ function pushAll() {
   send(35, glideDir);
   send(39, envOn ? 1 : 0);
   send(43, pitchFrom);
+  send(44, vowelIn ? 1 : 0);
+  send(52, legato ? 1 : 0);
   sendHorn();
   gate();
   sendText(false);
@@ -1085,6 +1101,26 @@ function setPitchFrom(v) {
   showRoot();
 }
 $("pitchfrom").onchange = () => setPitchFrom(+$("pitchfrom").value);
+// RETRIG / LEGATO: whether a note while the sound is open starts the ADSR again
+let legato = false;
+function setLegato(on) {
+  legato = on;
+  $("legato").textContent = on ? "LEGATO" : "RETRIG";
+  $("legato").setAttribute("aria-pressed", String(on));
+  send(52, on ? 1 : 0);
+}
+$("legato").onclick = () => setLegato(!legato);
+// VOWEL IN: the input's vowel places the pad
+let vowelIn = false;
+function setVowelIn(on) {
+  vowelIn = on;
+  $("vowelin").setAttribute("aria-pressed", String(on));
+  send(44, on ? 1 : 0);
+}
+$("vowelin").onclick = async () => {
+  await start();
+  setVowelIn(!vowelIn);
+};
 NAMES.forEach((n, i) => $("notename").add(new Option(n, String(i))));
 showRoot();
 $("notename").onchange = () => note(12 * Math.floor(lastNote / 12) + +$("notename").value);
@@ -1482,6 +1518,8 @@ function getState() {
     glideDir,
     envGate: envOn,
     pitchFrom,
+    legato,
+    vowelIn,
     space: spaceOn,
     knobs,
     motion,
@@ -1517,6 +1555,8 @@ function readState(raw) {
     space: bool(r.space, d.space),
     envGate: bool(r.envGate, d.envGate),
     pitchFrom: [0, 1, 2].includes(r.pitchFrom) ? r.pitchFrom : d.pitchFrom,
+    legato: bool(r.legato, d.legato),
+    vowelIn: bool(r.vowelIn, d.vowelIn),
     glideDir: [0, 1, 2].includes(r.glideDir) ? r.glideDir : d.glideDir,
     knobs: {},
     motion: {},
@@ -1593,6 +1633,8 @@ function applyState(st) {
   setGlideDir(st.glideDir);
   setEnv(st.envGate);
   setPitchFrom(st.pitchFrom);
+  setLegato(st.legato);
+  setVowelIn(st.vowelIn);
   for (const [key, c] of controls) {
     const k = st.knobs[key];
     c.setSync?.(typeof k === "object" ? k.sync : null);
@@ -1780,6 +1822,8 @@ const TIPS = {
   "#octup": "Octave up (X)",
   "#notename": "Note\nThe root: the synth's pitch, the resonator's and the sequence's key. Pick it here, its octave with − and +; keys A … K play.",
   "#rootoct": "Octave\nThe root's octave: − and + (Z and X) change it.",
+  "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
+  "#vowelin": "In\nThe input's vowel places the pad, as a talk box does: sing or speak into it. Motion moves around it; held through consonants and quiet.",
   "#pitchfrom": "Pitch\nNOTE: the root and the keys. IN: the input's own pitch, as it moves; IN ♮ snaps it to semitones. The resonator, the folds, the oscillator and the sequence follow it; the note fields show it.",
   "#slotA": "A\nOne of two full settings to compare; switching keeps the other.",
   "#slotB": "B\nOne of two full settings to compare; switching keeps the other.",
@@ -1906,15 +1950,18 @@ const PMAP = [];
     else st.knobs[key] = v;
   });
   add("wave", (st) => st.source, (st, v) => (st.source = Math.round(v)));
-  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"]]) knob(id, key);
+  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"]]) knob(id, key);
   add("glide_sync", (st) => (typeof st.knobs.glide === "object" ? divIndex(st.knobs.glide.sync) : 0), (st, v) => {
     const val = knobVal(st.knobs.glide);
     st.knobs.glide = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
   });
-  add("env_release_sync", (st) => (typeof st.knobs.envRelease === "object" ? divIndex(st.knobs.envRelease.sync) : 0), (st, v) => {
-    const val = knobVal(st.knobs.envRelease);
-    st.knobs.envRelease = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
-  });
+  for (const [id, key] of [["env_release_sync", "envRelease"], ["attack_sync", "attack"], ["decay_sync", "decay"], ["release_sync", "release"]])
+    add(id, (st) => (typeof st.knobs[key] === "object" ? divIndex(st.knobs[key].sync) : 0), (st, v) => {
+      const val = knobVal(st.knobs[key]);
+      st.knobs[key] = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
+    });
+  add("legato", (st) => +st.legato, (st, v) => (st.legato = v > 0.5));
+  add("vowel_in", (st) => +st.vowelIn, (st, v) => (st.vowelIn = v > 0.5));
   add("glide_dir", (st) => st.glideDir, (st, v) => (st.glideDir = Math.round(v)));
   add("pitch", (st) => st.pitchFrom, (st, v) => (st.pitchFrom = Math.round(v)));
   add("root", (st) => st.note, (st, v) => (st.note = Math.round(v)));

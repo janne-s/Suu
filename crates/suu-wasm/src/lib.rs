@@ -21,7 +21,9 @@ pub struct Handle {
 /// 30 text_once (0/1), 31 text_step (0 note, 1 clock), 32 text_unit (0 syllable, 1 word),
 /// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down), 36 osc_db, 37 input_db, 38 text_gate,
 /// 39 env_gate (0/1), 40 env_thresh_db, 41 env_release_s, 42 env_release_sync (beats, 0 = free),
-/// 43 pitch_from (0 note, 1 input, 2 input snapped to semitones)
+/// 43 pitch_from (0 note, 1 input, 2 input snapped to semitones), 44 vowel_in (0/1),
+/// 45 attack_s, 46 attack_sync, 47 decay_s, 48 decay_sync, 49 sustain, 50 release_s,
+/// 51 release_sync (beats, 0 = free), 52 legato (0/1)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -65,6 +67,15 @@ fn set(p: &mut Params, id: u32, v: f64) {
         40 => p.env_thresh_db = v,
         41 => p.env_release_s = v,
         42 => p.env_release_sync = v,
+        44 => p.vowel_in = v > 0.5,
+        45 => p.attack_s = v,
+        46 => p.attack_sync = v,
+        47 => p.decay_s = v,
+        48 => p.decay_sync = v,
+        49 => p.sustain = v,
+        50 => p.release_s = v,
+        51 => p.release_sync = v,
+        52 => p.legato = v > 0.5,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}
@@ -180,7 +191,7 @@ pub extern "C" fn suu_retrigger(h: *mut Handle) {
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, sync: f64, shape: u32, smooth: f64) {
     let h = unsafe { &mut *h };
-    let shape = match shape { 1 => Shape::Triangle, 2 => Shape::Saw, 3 => Shape::Square, 4 => Shape::Random, 5 => Shape::Follow, _ => Shape::Sine };
+    let shape = match shape { 1 => Shape::Triangle, 2 => Shape::Saw, 3 => Shape::Square, 4 => Shape::Random, 5 => Shape::Follow, 6 => Shape::Adsr, _ => Shape::Sine };
     h.suu.set_mod(t as usize, Mod { depth, rate_hz, sync, shape, smooth });
 }
 

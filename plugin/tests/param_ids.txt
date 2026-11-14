@@ -7,6 +7,15 @@ gate
 env_threshold
 env_release
 env_release_sync
+attack
+attack_sync
+decay
+decay_sync
+sustain
+release
+release_sync
+legato
+vowel_in
 root
 pitch
 bend_range

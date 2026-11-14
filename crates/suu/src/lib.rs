@@ -31,7 +31,10 @@ use chimera::phonetics::syllables::lyrics_to_syllables;
 use chimera::voice::human_voice::{HumanVoice, SourcePatch};
 
 mod track;
+mod vowel;
 use track::PitchTracker;
+use vowel::VowelTracker;
+pub use vowel::pad_of;
 
 /// The largest block `process` handles in one piece (longer calls are split).
 pub const MAX_BLOCK: usize = 256;
@@ -97,6 +100,8 @@ pub enum Shape {
     Random,
     /// the source's envelope (unipolar; rate ignored)
     Follow,
+    /// the ADSR, 0 … 1 (unipolar; rate ignored)
+    Adsr,
 }
 
 /// One target's modulation. `depth` 0..1 swings the target by up to half its range each way
@@ -218,6 +223,22 @@ pub struct Params {
     /// PITCH: the note, or the input's pitch (tracked; held through unvoiced and quiet parts,
     /// the note until a first pitch is found)
     pub pitch_from: PitchFrom,
+    /// VOWEL = IN: the input's vowel (its first two formants) places the pad, as a talk box
+    /// does; held through unvoiced and quiet parts. Motion moves around it.
+    pub vowel_in: bool,
+    /// The ADSR of what the gate opens (the oscillator, the input, the folds): attack (linear
+    /// to the top), decay to sustain and release (each the time to within 1 %), each in s or,
+    /// if its sync is > 0, in beats. Sustain is a share of the top.
+    pub attack_s: f64,
+    pub attack_sync: f64,
+    pub decay_s: f64,
+    pub decay_sync: f64,
+    pub sustain: f64,
+    pub release_s: f64,
+    pub release_sync: f64,
+    /// LEGATO: a note while the sound is open (another key, an untied step) goes on with the
+    /// envelope; else (RETRIG) it starts the attack again, from where the level is
+    pub legato: bool,
 }
 
 impl Default for Params {
@@ -266,6 +287,15 @@ impl Default for Params {
             env_release_s: 0.15,
             env_release_sync: 0.0,
             pitch_from: PitchFrom::Note,
+            vowel_in: false,
+            attack_s: 0.005,
+            attack_sync: 0.0,
+            decay_s: 0.2,
+            decay_sync: 0.0,
+            sustain: 1.0,
+            release_s: 0.08,
+            release_sync: 0.0,
+            legato: false,
         }
     }
 }
@@ -766,6 +796,7 @@ pub struct Suu {
     glide_to: f64,
     glide_rate: f64,
     osc_hz: f64,
+    /// the accent's level, gliding (1, or `ACCENT` on an accented step)
     osc_env: f64,
     reson: Reson,
     /// sleep: the loudest dry and wet sample this control period, quiet samples so far, asleep
@@ -849,6 +880,22 @@ pub struct Suu {
     /// PITCH = INPUT: the input's pitch, analysed every `TRACK_EVERY` control periods
     tracker: PitchTracker,
     track_count: u32,
+    /// VOWEL = IN: the input's vowel, and where the pad is gliding to it
+    vowels: VowelTracker,
+    in_pad: Option<(f64, f64)>,
+    /// the ADSR: its level (0 … the accent's top), stage, and per-sample steps for this
+    /// control period
+    adsr: f64,
+    stage: Stage,
+    adsr_step: [f64; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stage {
+    Idle,
+    Attack,
+    Decay,
+    Release,
 }
 
 /// The input's pitch is analysed this often (control periods: 5.3 ms at 48 kHz).
@@ -875,7 +922,7 @@ impl Suu {
             asleep: false,
             snap_ring: vec![0.0; SNAP_RING],
             snap_w: 0,
-            osc_env: 0.0,
+            osc_env: 1.0,
             tilt_y: 0.0,
             env: 0.0,
             sub1: 0.0,
@@ -929,6 +976,11 @@ impl Suu {
             env_below: 0.0,
             tracker: PitchTracker::new(fs),
             track_count: 0,
+            vowels: VowelTracker::new(fs),
+            in_pad: None,
+            adsr: 0.0,
+            stage: Stage::Idle,
+            adsr_step: [0.0, 1.0, 1.0],
         };
         s.rest = s.voice.artic.target.to_array();
         let mix = BodyMix::new(0.0, 0.0);
@@ -1003,6 +1055,13 @@ impl Suu {
         q.env_thresh_db = clamp(q.env_thresh_db, -80.0, 0.0);
         q.env_release_s = clamp(q.env_release_s, 0.005, 4.0);
         q.env_release_sync = clamp(q.env_release_sync, 0.0, 16.0);
+        q.attack_s = clamp(q.attack_s, 0.0005, 10.0);
+        q.decay_s = clamp(q.decay_s, 0.001, 10.0);
+        q.release_s = clamp(q.release_s, 0.001, 10.0);
+        q.sustain = clamp(q.sustain, 0.0, 1.0);
+        for x in [&mut q.attack_sync, &mut q.decay_sync, &mut q.release_sync] {
+            *x = clamp(*x, 0.0, 16.0);
+        }
         self.p = q;
         self.configure_voice();
         self.refresh_mouth();
@@ -1146,7 +1205,8 @@ impl Suu {
     /// and damping.
     fn bases(&self) -> [f64; N_MOD] {
         let p = self.p;
-        let (x, y) = self.seq_pad.unwrap_or((p.vowel_x, p.vowel_y));
+        let pad = if p.vowel_in { self.in_pad } else { None };
+        let (x, y) = pad.or(self.seq_pad).unwrap_or((p.vowel_x, p.vowel_y));
         [x, y, p.round, p.nasal, p.inject, p.damping, p.morph, p.shift, p.open]
     }
 
@@ -1196,6 +1256,7 @@ impl Suu {
                     if sm > 0.0 { a + (b - a) * ease(ph / sm) } else { b }
                 }
                 Shape::Follow => envn,
+                Shape::Adsr => self.adsr,
             };
             self.mod_out[i] = v;
             self.eff[i] = if MOD_LOG[i] {
@@ -1659,11 +1720,21 @@ impl Suu {
     /// At each control-grid point: sequencer, breath from the last period's envelope, the folds'
     /// pitch, and the text loop.
     fn control(&mut self) {
-        if self.p.pitch_from != PitchFrom::Note {
+        if self.p.pitch_from != PitchFrom::Note || self.p.vowel_in {
             self.track_count += 1;
             if self.track_count >= TRACK_EVERY {
                 self.track_count = 0;
                 self.tracker.analyse();
+                // the vowel, from voiced frames only (a consonant or noise would throw it)
+                if self.p.vowel_in && self.tracker.voiced() {
+                    self.vowels.analyse();
+                }
+            }
+            // the pad glides to the vowel found (20 ms); the articulators' slew does the rest
+            if let Some((x, y)) = self.vowels.pad() {
+                let k = 1.0 - exp(-(CTRL as f64) / (0.02 * self.fs));
+                let (px, py) = self.in_pad.unwrap_or((x, y));
+                self.in_pad = Some((px + (x - px) * k, py + (y - py) * k));
             }
         }
         if self.seq.playing {
@@ -1676,19 +1747,22 @@ impl Suu {
             self.gate_now = self.p.gate || self.env_open;
         }
         self.run_text();
+        let retrig = self.retrig;
         self.retrig = false;
         self.prev_gate = self.gate_now;
         let p = self.p;
+        let was_open = self.gate_eff;
         self.gate_eff = self.gate_now && self.text_window_open();
+        self.run_adsr(was_open, retrig);
         // sleep: nothing sounds and nothing can start a sound on its own (no note, no folds, no
         // text loop, no crossfade), and the last SLEEP_AFTER s were quiet; decided per control
         // period, so it does not depend on the host's block size
         let quiet_period = self.period_peak < QUIET;
         self.period_peak = 0.0;
         self.quiet = if quiet_period { self.quiet + CTRL } else { 0 };
-        // the folds open and close with the gate (5 ms up, 60 ms down)
-        let tau = if self.gate_eff { 0.005 } else { 0.06 };
-        let goal = if self.gate_eff { 1.0 } else { 0.0 };
+        // the folds follow the ADSR (5 ms up, at least 60 ms down)
+        let goal = self.adsr;
+        let tau = if goal > self.fold_env { 0.005 } else { 0.06 };
         self.fold_env += (goal - self.fold_env) * (1.0 - exp(-(CTRL as f64) / (tau * self.fs)));
         let area = p.folds * self.fold_env;
         if area != self.voice.glottal_area_scale {
@@ -1755,6 +1829,38 @@ impl Suu {
         self.tracker.note()
     }
 
+    /// The ADSR at a control point: a new note starts the attack (from the level it is at), a
+    /// closed gate the release; then this period's per-sample steps.
+    fn run_adsr(&mut self, was_open: bool, retrig: bool) {
+        let p = self.p;
+        if self.gate_eff && (!was_open || (retrig && !p.legato)) {
+            self.stage = Stage::Attack;
+        } else if !self.gate_eff && matches!(self.stage, Stage::Attack | Stage::Decay) {
+            self.stage = Stage::Release;
+        }
+        let secs = |s: f64, sync: f64| if sync > 0.0 { sync * 60.0 / p.bpm } else { s };
+        let fs = self.fs;
+        // the time to within 1 % is 4.6 time constants
+        let coef = |t: f64| exp(-4.6 / (js_max(t, 0.0005) * fs));
+        self.adsr_step = [1.0 / (js_max(secs(p.attack_s, p.attack_sync), 0.0005) * fs), coef(secs(p.decay_s, p.decay_sync)), coef(secs(p.release_s, p.release_sync))];
+    }
+
+    /// VOWEL = IN: the last vowel found in the input (pad x, y), and whether the last frame
+    /// analysed was voiced (for the UI and measurements).
+    pub fn input_vowel(&self) -> (Option<(f64, f64)>, bool) {
+        (self.vowels.pad(), self.tracker.voiced())
+    }
+
+    /// VOWEL = IN: the last vowel's F1 and F2 (Hz; 0 before one is found).
+    pub fn input_formants(&self) -> (f64, f64) {
+        self.vowels.formants()
+    }
+
+    /// The ADSR's level (0 … 1, the accent left out), for the UI.
+    pub fn adsr_level(&self) -> f64 {
+        self.adsr
+    }
+
     /// ENV gate, per control period: open at the threshold, closed after the release below it.
     fn run_env_gate(&mut self) {
         let p = self.p;
@@ -1784,13 +1890,9 @@ impl Suu {
         let p = self.p;
         let fs = self.fs;
         // 1) source
-        let att = 1.0 - exp(-1.0 / (0.004 * fs));
-        let rel = 1.0 - exp(-1.0 / (0.05 * fs));
-        // a gated external sound closes fast, so a rhythm reads at sixteenths
-        let rel_in = 1.0 - exp(-1.0 / (0.008 * fs));
         let env_a = 1.0 - exp(-1.0 / (0.005 * fs));
         let env_r = 1.0 - exp(-1.0 / (0.08 * fs));
-        let gate = self.gate_eff;
+        let acc_k = 1.0 - exp(-1.0 / (0.004 * fs));
         let level_of = |db: f64| if db <= -60.0 { 0.0 } else { pow(10.0, db / 20.0) };
         let (osc_g, input_g) = (level_of(p.osc_db), level_of(p.input_db));
         let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
@@ -1798,10 +1900,14 @@ impl Suu {
         // the ENV gate's follower: 1 ms up, 20 ms down, on the input as it comes
         let (in_a, in_r) = (1.0 - exp(-1.0 / (0.001 * fs)), 1.0 - exp(-1.0 / (0.02 * fs)));
         let mut in_peak = self.in_peak;
-        let track = p.pitch_from != PitchFrom::Note;
+        let track = p.pitch_from != PitchFrom::Note || p.vowel_in;
+        let vowel = p.vowel_in;
         for i in 0..n {
             if track {
                 self.tracker.push(input[i] as f64);
+            }
+            if vowel {
+                self.vowels.push(input[i] as f64);
             }
             let a = (input[i] as f64).abs();
             self.in_env += (a - self.in_env) * if a > self.in_env { in_a } else { in_r };
@@ -1819,9 +1925,29 @@ impl Suu {
             // the ungated source, for a snapshot of its waveform
             self.snap_ring[self.snap_w] = raw as f32;
             self.snap_w = (self.snap_w + 1) & (SNAP_RING - 1);
-            let g = if gate { level } else { 0.0 };
-            self.osc_env += (g - self.osc_env) * if gate { att } else if input_src { rel_in } else { rel };
-            let x = raw * self.osc_env;
+            // the ADSR (0 … 1), then the accent
+            let [a_step, d_coef, r_coef] = self.adsr_step;
+            match self.stage {
+                Stage::Attack => {
+                    self.adsr += a_step;
+                    if self.adsr >= 1.0 {
+                        self.adsr = 1.0;
+                        self.stage = Stage::Decay;
+                    }
+                }
+                Stage::Decay => self.adsr = p.sustain + (self.adsr - p.sustain) * d_coef,
+                Stage::Release => {
+                    self.adsr *= r_coef;
+                    if self.adsr < 1e-5 {
+                        self.adsr = 0.0;
+                        self.stage = Stage::Idle;
+                    }
+                }
+                Stage::Idle => {}
+            }
+            // the accent's level glides (4 ms), so an accented step does not click
+            self.osc_env += (level - self.osc_env) * acc_k;
+            let x = raw * self.adsr * self.osc_env;
             // the resonator: the dry source crossfades into the comb, whose loop gain rises with
             // the amount
             let x = if p.reson > 0.0 {
@@ -1938,7 +2064,7 @@ mod tests {
             s.set_params(Params { text_step: step, text_unit: unit, text_say: say, text_len: len, ..Params::default() });
             s.set_text("wow yeah now wow");
             s.set_profile(&wave, true);
-            s.set_params(Params { gate: true, morph: 0.6, reson: 0.5, folds: 0.5, glide_s: 0.1, pitch_from: PitchFrom::Input, ..s.params() });
+            s.set_params(Params { gate: true, morph: 0.6, reson: 0.5, folds: 0.5, glide_s: 0.1, pitch_from: PitchFrom::Input, vowel_in: true, sustain: 0.6, ..s.params() });
             for t in 0..N_MOD {
                 s.set_mod(t, Mod { depth: 0.4, rate_hz: 1.0 + t as f64, sync: 0.0, shape: Shape::Random, smooth: 0.5 });
             }
@@ -2800,5 +2926,75 @@ mod tests {
         s.set_params(Params { pitch_from: PitchFrom::Note, ..s.params() });
         run(&mut s, 0.1, &mut ph);
         assert_eq!(s.pitch, 40.0, "NOTE: the note");
+    }
+
+    #[test]
+    fn the_adsr_shapes_the_sound_and_legato_goes_on() {
+        let fs = 48000.0;
+        let run = |s: &mut Suu, secs: f64| {
+            let (inp, mut out) = ([0f32; 64], [0f32; 64]);
+            for _ in 0..(secs * fs / 64.0).round() as usize {
+                s.process(&inp, &mut out);
+            }
+            s.adsr_level()
+        };
+        let base = Params { source: Source::Saw, gate: true, attack_s: 0.1, decay_s: 0.1, sustain: 0.5, release_s: 0.2, ..Params::default() };
+        let mut s = Suu::new(fs);
+        s.set_params(base);
+        let half = run(&mut s, 0.05);
+        assert!((half - 0.5).abs() < 0.03, "linear attack, halfway: {half}");
+        let sus = run(&mut s, 0.3);
+        assert!((sus - 0.5).abs() < 0.01, "sustain: {sus}");
+        // RETRIG: a new note while open climbs again, from where it is
+        s.retrigger();
+        let again = run(&mut s, 0.03);
+        assert!(again > 0.6, "retriggered: {again}");
+        // LEGATO: it goes on
+        let mut l = Suu::new(fs);
+        l.set_params(Params { legato: true, ..base });
+        run(&mut l, 0.4);
+        l.retrigger();
+        let on = run(&mut l, 0.03);
+        assert!((on - 0.5).abs() < 0.01, "legato: {on}");
+        // release: within 1 % in its time
+        s.set_params(Params { gate: false, ..s.params() });
+        let gone = run(&mut s, 0.21);
+        assert!(gone < 0.01, "released: {gone}");
+        // synced: a beat at 120 bpm is 0.5 s of attack
+        let mut y = Suu::new(fs);
+        y.set_params(Params { attack_sync: 1.0, bpm: 120.0, ..base });
+        let q = run(&mut y, 0.25);
+        assert!((q - 0.5).abs() < 0.03, "a synced attack, halfway: {q}");
+    }
+
+    #[test]
+    fn the_input_vowel_places_the_pad() {
+        let fs = 48000.0;
+        // a 120 Hz pulse through an i's formants (270, 2290 Hz)
+        let res = |f: f64, bw: f64| {
+            let r = exp(-PI * bw / fs);
+            (2.0 * r * cos(2.0 * PI * f / fs), -r * r)
+        };
+        let (r1, r2) = (res(270.0, 80.0), res(2290.0, 100.0));
+        let (mut y1, mut y2) = ([0.0f64; 2], [0.0f64; 2]);
+        let mut s = Suu::new(fs);
+        s.set_params(Params { source: Source::Off, gate: true, vowel_x: 1.0, vowel_y: 1.0, vowel_in: true, ..Params::default() });
+        let (mut inp, mut out) = ([0f32; 128], [0f32; 128]);
+        for b in 0..(0.4 * fs / 128.0) as usize {
+            for (i, x) in inp.iter_mut().enumerate() {
+                let p = if (b * 128 + i) % 400 == 0 { 1.0 } else { 0.0 };
+                let a = p + r1.0 * y1[0] + r1.1 * y1[1];
+                y1 = [a, y1[0]];
+                let v = a + r2.0 * y2[0] + r2.1 * y2[1];
+                y2 = [v, y2[0]];
+                *x = (v * 0.02) as f32;
+            }
+            s.process(&inp, &mut out);
+        }
+        let b = s.bases();
+        assert!(b[0] < 0.3 && b[1] < 0.3, "the pad near i, not the knob's ɑ: {:.2}, {:.2}", b[0], b[1]);
+        // off: the pad's own place
+        s.set_params(Params { vowel_in: false, ..s.params() });
+        assert_eq!(&s.bases()[..2], &[1.0, 1.0]);
     }
 }

@@ -42,7 +42,7 @@
 
 <div class="views">
   <section class="panel mouth-panel">
-    <div class="panel-title"><h2>MOUTH</h2><div><span class="seg" role="group" aria-label="View"><button id="view-pad" aria-pressed="true">PAD</button><button id="view-horn" aria-pressed="false">HORN</button></span><button id="text-toggle" aria-expanded="false">TEXT</button></div></div>
+    <div class="panel-title"><h2>MOUTH</h2><div><span class="seg" role="group" aria-label="View"><button id="view-pad" aria-pressed="true">PAD</button><button id="view-horn" aria-pressed="false">HORN</button></span><button id="text-toggle" aria-expanded="false">TEXT</button><button id="vowelin" aria-pressed="false">IN</button></div></div>
     <div class="well">
       <canvas id="mouth" aria-label="Vowel pad: left to right front to back, top to bottom close to open. In HORN view: the tract from glottis to lips; drag to draw its width"></canvas>
       <div id="horn-bar" class="horn-bar" hidden>
@@ -90,7 +90,7 @@
 <div class="panel stages">
   <section class="stage"><h2>BODY</h2><div id="k-mouth" class="knobs"></div></section>
   <section class="stage"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
-  <section class="stage"><h2>GATE</h2><div id="k-gate" class="knobs"></div></section>
+  <section class="stage gate-stage"><h2>GATE <button id="legato" class="tiny" aria-pressed="false">RETRIG</button></h2><div id="k-gate" class="knobs"></div></section>
   <section class="stage"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
   <section class="stage web-only"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
   <section class="stage"><h2>OUT <output id="peak" class="web-only">−∞</output></h2><div id="k-out" class="knobs"></div></section>
