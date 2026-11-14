@@ -76,6 +76,16 @@ ok("VOWEL IN shown", (await page.getAttribute("#vowelin", "aria-pressed")) === "
 ok("ATTACK shown", (await page.textContent('output[for="attack"]')) === "500ms", (await page.textContent('output[for="attack"]')) ?? "");
 ok("PITCH IN ♮ shown", (await page.inputValue("#pitchfrom")) === "2");
 ok("HQ off shown", (await page.getAttribute("#hq", "aria-pressed")) === "false");
+await tell({ type: "params", values: { scale_1: 1, scale_2: 0, jump: 7, jump_mode: 1 } });
+ok("SCALE: C♯ off shown", (await page.getAttribute('[data-pc="1"]', "aria-pressed")) === "false" && (await page.getAttribute('[data-pc="0"]', "aria-pressed")) === "true");
+ok("JUMP ±7 SKIP shown", (await page.textContent("#jump")) === "±7 st" && (await page.getAttribute('[data-jump="0"]', "aria-pressed")) === "true");
+await page.click("#pitch-more");
+await page.click('[data-pc="1"]');
+await page.click('[data-jump="1"]');
+await frames();
+s = await sent();
+ok("SCALE and JUMP go to the host", s.some((m) => m.type === "set" && m.id === "scale_2" && m.value === 1) && s.some((m) => m.type === "set" && m.id === "jump_mode" && m.value === 0));
+await page.click("#pitch-more");
 ok("GRID 1/16 shown", (await page.inputValue("#grid")) === "1/16");
 ok("TUNE −12 shown", (await page.textContent('output[for="coarse"]')) === "-12 st", (await page.textContent('output[for="coarse"]')) ?? "");
 ok("Motion shape ADSR shown", (await page.evaluate(() => (document.querySelectorAll("select.shape")[1] as HTMLSelectElement).value)) === "6");

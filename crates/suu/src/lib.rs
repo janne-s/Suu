@@ -257,6 +257,13 @@ pub struct Params {
     /// and every change of shape wait for the next line, however fast notes come. The
     /// articulators' own motion and GLIDE still shape each move.
     pub grid: f64,
+    /// SCALE (PITCH IN ♮): the pitch classes the input's pitch snaps to, bit 0 = C … bit 11 = B
+    /// (none set: all)
+    pub scale: u16,
+    /// JUMP (PITCH IN): the widest move from the pitch taken, in semitones (0: any). A reading
+    /// further away is folded by octaves toward the pitch taken (`jump_fold`), or skipped.
+    pub jump: f64,
+    pub jump_fold: bool,
 }
 
 impl Default for Params {
@@ -319,6 +326,9 @@ impl Default for Params {
             steady_sync: 0.0,
             hq: true,
             grid: 0.0,
+            scale: 0xfff,
+            jump: 0.0,
+            jump_fold: true,
         }
     }
 }
@@ -543,6 +553,26 @@ impl Reson {
         self.dc_y = out;
         out
     }
+}
+
+/// The semitone nearest `n` (MIDI) whose pitch class is in `scale` (bit 0 = C … bit 11 = B;
+/// none set: every semitone). Between two equally near, the lower.
+pub fn snap_to_scale(n: f64, scale: u16) -> f64 {
+    let r = n.round();
+    if scale & 0xfff == 0 || scale & 0xfff == 0xfff {
+        return r;
+    }
+    let ok = |m: f64| scale >> ((m as i64).rem_euclid(12)) & 1 == 1;
+    let mut best = r;
+    let mut dist = f64::INFINITY;
+    for k in -6..=6 {
+        let m = r + k as f64;
+        let d = (m - n).abs();
+        if ok(m) && d < dist {
+            (best, dist) = (m, d);
+        }
+    }
+    best
 }
 
 /// HQ off: the fewest sections per tract tube (CHIMERA's own is `MIN_CELLS`, 8).
@@ -1114,6 +1144,8 @@ impl Suu {
         q.steady_s = clamp(q.steady_s, 0.0, 4.0);
         q.steady_sync = clamp(q.steady_sync, 0.0, 16.0);
         q.grid = clamp(q.grid, 0.0, 16.0);
+        q.scale &= 0xfff;
+        q.jump = clamp(q.jump.round(), 0.0, 48.0);
         for x in [&mut q.attack_sync, &mut q.decay_sync, &mut q.release_sync] {
             *x = clamp(*x, 0.0, 16.0);
         }
@@ -1417,7 +1449,7 @@ impl Suu {
         let tracked = match self.p.pitch_from {
             PitchFrom::Note => None,
             PitchFrom::Input => self.steady,
-            PitchFrom::InputSnap => self.steady.map(f64::round),
+            PitchFrom::InputSnap => self.steady.map(|n| snap_to_scale(n, self.p.scale)),
         };
         let tracked = tracked.map(|n| clamp(n + self.p.coarse, 12.0, 108.0));
         out.push(tracked.map_or(0.0, |n| n as f32));
@@ -1948,6 +1980,20 @@ impl Suu {
     /// stayed near the candidate for the steady time.
     fn take_pitch(&mut self, n: f64) {
         let p = self.p;
+        // JUMP: a reading too far from the pitch taken is folded by octaves toward it, or skipped
+        let mut n = n;
+        if p.jump > 0.0
+            && let Some(cur) = self.steady
+            && (n - cur).abs() > p.jump
+        {
+            if !p.jump_fold {
+                return;
+            }
+            n -= 12.0 * ((n - cur) / 12.0).round();
+            if (n - cur).abs() > p.jump {
+                return;
+            }
+        }
         let hold = if p.steady_sync > 0.0 { p.steady_sync * 60.0 / p.bpm } else { p.steady_s };
         if self.steady.is_some_and(|a| (n - a).abs() < 0.5) {
             self.steady = Some(n);
@@ -1972,7 +2018,7 @@ impl Suu {
     fn base_note(&self) -> f64 {
         let n = match (self.p.pitch_from, self.steady) {
             (PitchFrom::Input, Some(n)) => n,
-            (PitchFrom::InputSnap, Some(n)) => n.round(),
+            (PitchFrom::InputSnap, Some(n)) => snap_to_scale(n, self.p.scale),
             _ => self.p.note,
         };
         clamp(n + self.p.coarse, 12.0, 108.0)
@@ -3354,5 +3400,40 @@ mod tests {
             assert!(off < 0.003, "a change at {t:.3} s, off the grid by {off:.4} s");
         }
         assert!(changes.len() <= 8, "no faster than the grid: {changes:?}");
+    }
+
+    #[test]
+    fn scale_snaps_the_input_and_jump_folds_or_skips() {
+        // C major: C D E F G A B
+        let major: u16 = [0, 2, 4, 5, 7, 9, 11].iter().map(|b| 1u16 << b).sum();
+        assert_eq!(snap_to_scale(60.8, major), 60.0, "C♯ −20 c → C (nearer than D)");
+        assert_eq!(snap_to_scale(61.6, major), 62.0, "→ D");
+        assert_eq!(snap_to_scale(66.0, major), 65.0, "F♯: F and G equally near, the lower");
+        assert_eq!(snap_to_scale(66.4, 0), 66.0, "none set: every semitone");
+        let fs = 48000.0;
+        let run = |s: &mut Suu, f0: f64, secs: f64, ph: &mut f64| {
+            let (mut inp, mut out) = ([0f32; 128], [0f32; 128]);
+            for _ in 0..(secs * fs / 128.0) as usize {
+                for x in inp.iter_mut() {
+                    *ph = (*ph + f0 / fs) % 1.0;
+                    *x = (0.3 * (2.0 * *ph - 1.0)) as f32;
+                }
+                s.process(&inp, &mut out);
+            }
+        };
+        let mut ph = 0.0;
+        let mut s = Suu::new(fs);
+        s.set_params(Params { gate: true, glide_s: 0.0, pitch_from: PitchFrom::InputSnap, scale: major, jump: 7.0, jump_fold: true, steady_s: 0.05, ..Params::default() });
+        // (STEADY 50 ms: the frames across a change of tone hold both, and can read as their
+        // common subharmonic for a moment)
+        run(&mut s, 277.18, 0.3, &mut ph); // C♯4 (61)
+        assert_eq!(s.pitch, 60.0, "C♯ snaps to C in C major");
+        run(&mut s, 277.18 * 4.0, 0.3, &mut ph); // two octaves up: folded back
+        assert_eq!(s.pitch, 60.0, "two octaves up folds back to the octave taken");
+        s.set_params(Params { jump_fold: false, ..s.params() });
+        run(&mut s, 440.0, 0.3, &mut ph); // A4 (69): 8 semitones from 61, beyond 7
+        assert_eq!(s.pitch, 60.0, "skipped: too far");
+        run(&mut s, 329.63, 0.3, &mut ph); // E4 (64): within 7
+        assert_eq!(s.pitch, 64.0, "within the jump: taken");
     }
 }

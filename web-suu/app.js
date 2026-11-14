@@ -929,6 +929,9 @@ function pushAll() {
   send(52, legato ? 1 : 0);
   send(56, hq ? 1 : 0);
   send(57, grid ? divBeats(grid) : 0);
+  send(58, scale);
+  send(59, jump);
+  send(60, jumpFold ? 1 : 0);
   sendHorn();
   gate();
   sendText(false);
@@ -1129,6 +1132,55 @@ function setLegato(on) {
   send(52, on ? 1 : 0);
 }
 $("legato").onclick = () => setLegato(!legato);
+// the input's pitch: SCALE (the pitch classes IN ♮ snaps to, bit 0 = C) and JUMP (the widest
+// move, 0 = any; a wider one folded by octaves, or skipped)
+let scale = 0xfff, jump = 0, jumpFold = true;
+const SCALES = { all: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], maj: [0, 2, 4, 5, 7, 9, 11], min: [0, 2, 3, 5, 7, 8, 10], penta: [0, 2, 4, 7, 9], minpenta: [0, 3, 5, 7, 10] };
+NAMES.forEach((n, i) => {
+  const b = document.createElement("button");
+  b.textContent = n;
+  b.dataset.pc = String(i);
+  b.onclick = () => setScale(scale ^ (1 << i));
+  $("scale-notes").append(b);
+});
+function setScale(mask) {
+  scale = mask & 0xfff;
+  for (const b of $("scale-notes").children) b.setAttribute("aria-pressed", String(((scale >> +b.dataset.pc) & 1) === 1));
+  send(58, scale);
+}
+for (const b of document.querySelectorAll("[data-preset]")) {
+  // from the root's pitch class
+  b.onclick = () => setScale(SCALES[b.dataset.preset].reduce((m, k) => m | (1 << ((k + lastNote) % 12)), 0));
+}
+function setJump(st, fold) {
+  jump = clamp(Math.round(st), 0, 48);
+  jumpFold = fold;
+  $("jump").textContent = jump === 0 ? "any" : "±" + jump + " st";
+  for (const b of document.querySelectorAll("[data-jump]")) b.setAttribute("aria-pressed", String((b.dataset.jump === "1") === fold));
+  send(59, jump);
+  send(60, fold ? 1 : 0);
+}
+dragValue($("jump"), () => jump / 48, (n) => setJump(clamp(n, 0, 1) * 48, jumpFold));
+$("jump").ondblclick = () => setJump(0, jumpFold);
+for (const b of document.querySelectorAll("[data-jump]")) b.onclick = () => setJump(jump, b.dataset.jump === "1");
+setScale(scale);
+setJump(jump, jumpFold);
+function showPitchPanel(open) {
+  const panel = $("pitch-panel");
+  if (open) {
+    const r = $("pitch-more").getBoundingClientRect();
+    panel.style.left = Math.max(8, Math.min(r.left, innerWidth - 320)) + "px";
+  }
+  panel.hidden = !open;
+  $("pitch-more").setAttribute("aria-expanded", String(open));
+}
+$("pitch-more").onclick = (e) => {
+  e.stopPropagation();
+  showPitchPanel($("pitch-panel").hidden);
+};
+addEventListener("pointerdown", (e) => {
+  if (!$("pitch-panel").hidden && !$("pitch-panel").contains(e.target) && e.target !== $("pitch-more")) showPitchPanel(false);
+});
 // GRID: the mouth's shape and the pitch change only on this note value (null: free)
 let grid = null;
 $("grid").add(new Option("FREE", ""));
@@ -1559,6 +1611,9 @@ function getState() {
     vowelIn,
     hq,
     grid,
+    scale,
+    jump,
+    jumpFold,
     space: spaceOn,
     knobs,
     motion,
@@ -1598,6 +1653,9 @@ function readState(raw) {
     vowelIn: bool(r.vowelIn, d.vowelIn),
     hq: bool(r.hq, d.hq),
     grid: div(r.grid, d.grid),
+    scale: Number.isInteger(r.scale) ? r.scale & 0xfff : d.scale,
+    jump: Math.round(num(r.jump, d.jump, 0, 48)),
+    jumpFold: bool(r.jumpFold, d.jumpFold),
     glideDir: [0, 1, 2].includes(r.glideDir) ? r.glideDir : d.glideDir,
     knobs: {},
     motion: {},
@@ -1678,6 +1736,8 @@ function applyState(st) {
   setVowelIn(st.vowelIn);
   setHq(st.hq);
   setGrid(st.grid);
+  setScale(st.scale);
+  setJump(st.jump, st.jumpFold);
   for (const [key, c] of controls) {
     const k = st.knobs[key];
     c.setSync?.(typeof k === "object" ? k.sync : null);
@@ -1865,6 +1925,11 @@ const TIPS = {
   "#octup": "Octave up (X)",
   "#notename": "Note\nThe root: the synth's pitch, the resonator's and the sequence's key. Pick it here, its octave with − and +; keys A … K play.",
   "#rootoct": "Octave\nThe root's octave: − and + (Z and X) change it.",
+  "#pitch-more": "Scale and jump\nThe input's pitch (PITCH IN): which notes IN ♮ snaps to, and how far it may jump.",
+  "#scale-notes button": "Note\nIN ♮ snaps the input's pitch to the notes lit. The presets build a scale on the root.",
+  "#jump": "Widest jump\nHow far the input's pitch may move at once, in semitones (any: no limit). Drag; double-click for any.",
+  "[data-jump='1']": "Fold\nA wider jump moves by octaves to the nearest the pitch it was.",
+  "[data-jump='0']": "Skip\nA wider jump is left out: the pitch stays.",
   "#grid": "Grid\nEvery movement of the mouth (pad, Motion, the input's vowel, step vowels, the horn) and the input's pitch change only on the lines of this note value, on the host's bars while it plays. A played note sounds at once. FREE: changes as they come.",
   "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
@@ -2009,6 +2074,9 @@ const PMAP = [];
   add("vowel_in", (st) => +st.vowelIn, (st, v) => (st.vowelIn = v > 0.5));
   add("hq", (st) => +st.hq, (st, v) => (st.hq = v > 0.5));
   add("grid", (st) => divIndex(st.grid), (st, v) => (st.grid = PDIVS[Math.round(v)]));
+  for (let i = 0; i < 12; i++) add(`scale_${i + 1}`, (st) => (st.scale >> i) & 1, (st, v) => (st.scale = v > 0.5 ? st.scale | (1 << i) : st.scale & ~(1 << i)));
+  add("jump", (st) => st.jump, (st, v) => (st.jump = Math.round(v)));
+  add("jump_mode", (st) => (st.jumpFold ? 0 : 1), (st, v) => (st.jumpFold = Math.round(v) === 0));
   add("glide_dir", (st) => st.glideDir, (st, v) => (st.glideDir = Math.round(v)));
   add("pitch", (st) => st.pitchFrom, (st, v) => (st.pitchFrom = Math.round(v)));
   add("root", (st) => st.note, (st, v) => (st.note = Math.round(v)));

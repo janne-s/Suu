@@ -43,6 +43,20 @@ pub enum GateMode {
     Midi,
 }
 
+/// What JUMP does with a reading too far from the pitch taken.
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum JumpMode {
+    #[id = "fold"]
+    #[name = "Fold"]
+    Fold,
+    #[id = "skip"]
+    #[name = "Skip"]
+    Skip,
+}
+
+/// The pitch classes, for the scale's parameters.
+pub const PITCH_CLASSES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
 /// Where the pitch comes from (`suu::PitchFrom`).
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PitchMode {
@@ -372,6 +386,13 @@ impl MotionParams {
     }
 }
 
+/// One pitch class of the scale (ids `scale_1` C … `scale_12` B).
+#[derive(Params)]
+pub struct ScaleParam {
+    #[id = "scale"]
+    pub on: BoolParam,
+}
+
 /// One sequencer step.
 #[derive(Params)]
 pub struct StepParams {
@@ -495,6 +516,14 @@ pub struct SuuParams {
     /// the mouth's shape and the pitch change only on this grid (off: free)
     #[id = "grid"]
     pub grid: EnumParam<Sync>,
+    /// SCALE (PITCH IN ♮): the pitch classes C … B the input snaps to
+    #[nested(array, group = "Scale")]
+    pub scale: [ScaleParam; 12],
+    /// JUMP: the widest move of the input's pitch (0: any), and what a wider one does
+    #[id = "jump"]
+    pub jump: IntParam,
+    #[id = "jump_mode"]
+    pub jump_mode: EnumParam<JumpMode>,
     #[id = "bend_range"]
     pub bend_range: IntParam,
     #[id = "glide"]
@@ -620,6 +649,9 @@ impl SuuParams {
             steady_sync: EnumParam::new("Steady Sync", Sync::Off),
             hq: BoolParam::new("HQ", true),
             grid: EnumParam::new("Grid", Sync::Off),
+            scale: core::array::from_fn(|i| ScaleParam { on: BoolParam::new(format!("Scale {}", PITCH_CLASSES[i]), true) }),
+            jump: IntParam::new("Jump", 0, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
+            jump_mode: EnumParam::new("Jump Mode", JumpMode::Fold),
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
             glide: FloatParam::new("Glide", 0.03, FloatRange::Skewed { min: 0.0, max: 2.0, factor: 0.5 })
                 .with_unit(" s")
@@ -750,6 +782,9 @@ impl SuuParams {
             steady_sync: self.steady_sync.value().beats(),
             hq: self.hq.value(),
             grid: self.grid.value().beats(),
+            scale: self.scale.iter().enumerate().map(|(i, p)| if p.on.value() { 1u16 << i } else { 0 }).sum(),
+            jump: self.jump.value() as f64,
+            jump_fold: self.jump_mode.value() == JumpMode::Fold,
             pitch_from: match self.pitch.value() {
                 PitchMode::Note => suu::PitchFrom::Note,
                 PitchMode::Input => suu::PitchFrom::Input,
