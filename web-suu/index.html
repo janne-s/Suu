@@ -56,7 +56,7 @@
         <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false"></button></form>
         <div class="text-row">
           <span class="tgroup"><span class="tlabel">STEP</span><span class="seg" role="group" aria-label="What moves the text on"><button data-tstep="0">NOTE</button><button data-tstep="1">CLOCK</button></span>
-            <span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
+            <label id="tgridbox" class="labeled">GRID<select id="textgrid" class="field" aria-label="The grid each part of the text starts on"></select></label><span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
           <span class="tgroup"><span class="tlabel">UNIT</span><span class="seg" role="group" aria-label="What is said at a time"><button data-tunit="0">SYL</button><button data-tunit="1">WORD</button></span></span>
           <span class="tgroup"><span class="tlabel">SAY</span><span class="seg" role="group" aria-label="How each is said"><button data-tsay="0">HOLD</button><button data-tsay="1">SHOT</button></span>
             <label id="lenbox" class="labeled">LEN<span id="textlen" class="field drag" tabindex="0" aria-label="Held length on the clock"></span></label></span>

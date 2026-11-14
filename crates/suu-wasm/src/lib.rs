@@ -25,7 +25,8 @@ pub struct Handle {
 /// 45 attack_s, 46 attack_sync, 47 decay_s, 48 decay_sync, 49 sustain, 50 release_s,
 /// 51 release_sync (beats, 0 = free), 52 legato (0/1), 53 coarse (semitones), 54 steady_s,
 /// 55 steady_sync (beats, 0 = free), 56 hq (0/1; rebuilds the mouth), 57 grid (beats, 0 = free),
-/// 58 scale (pitch classes, bit 0 = C … bit 11 = B), 59 jump (semitones, 0 = any), 60 jump_fold (0/1)
+/// 58 scale (pitch classes, bit 0 = C … bit 11 = B), 59 jump (semitones, 0 = any), 60 jump_fold (0/1),
+/// 61 text_grid (beats; 0 = free, < 0 = GRID's)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -86,6 +87,7 @@ fn set(p: &mut Params, id: u32, v: f64) {
         58 => p.scale = (v as i64).clamp(0, 0xfff) as u16,
         59 => p.jump = v,
         60 => p.jump_fold = v > 0.5,
+        61 => p.text_grid = v,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}

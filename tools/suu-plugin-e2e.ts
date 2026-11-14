@@ -79,6 +79,10 @@ ok("HQ off shown", (await page.getAttribute("#hq", "aria-pressed")) === "false")
 await tell({ type: "params", values: { scale_1: 1, scale_2: 0, jump: 7, jump_mode: 1 } });
 ok("SCALE: C♯ off shown", (await page.getAttribute('[data-pc="1"]', "aria-pressed")) === "false" && (await page.getAttribute('[data-pc="0"]', "aria-pressed")) === "true");
 ok("JUMP ±7 SKIP shown", (await page.textContent("#jump")) === "±7 st" && (await page.getAttribute('[data-jump="0"]', "aria-pressed")) === "true");
+await tell({ type: "params", values: { text_grid_main: 0, text_grid: 7, text_step: 0 } });
+ok("TEXT GRID 1/16 shown", (await page.inputValue("#textgrid")) === "1/16");
+await tell({ type: "params", values: { text_grid_main: 1 } });
+ok("TEXT GRID = GRID shown", (await page.inputValue("#textgrid")) === "GRID");
 await page.click("#pitch-more");
 await page.click('[data-pc="1"]');
 await page.click('[data-jump="1"]');

@@ -264,6 +264,11 @@ pub struct Params {
     /// further away is folded by octaves toward the pitch taken (`jump_fold`), or skipped.
     pub jump: f64,
     pub jump_fold: bool,
+    /// TEXT GRID (STEP NOTE): each part of the text starts, and (HOLD) ends, on the next line of
+    /// this grid (beats; 0 = free, at the note; < 0 = GRID's own). The part itself is said as
+    /// ever; notes quicker than a line run together. STEP CLOCK with sync is on the song's lines
+    /// anyway.
+    pub text_grid: f64,
 }
 
 impl Default for Params {
@@ -329,6 +334,7 @@ impl Default for Params {
             scale: 0xfff,
             jump: 0.0,
             jump_fold: true,
+            text_grid: 0.0,
         }
     }
 }
@@ -955,6 +961,9 @@ pub struct Suu {
     grid_held: Option<(f64, [f64; N_MOD])>,
     /// the host's song position (beats) and the sample it was at
     song: Option<(f64, u64)>,
+    /// TEXT GRID: the line last seen, and a note's start and end waiting for the next
+    text_line: i64,
+    text_pending: (bool, bool),
     /// VOWEL = IN: the input's vowel, and where the pad is gliding to it
     vowels: VowelTracker,
     in_pad: Option<(f64, f64)>,
@@ -1057,6 +1066,8 @@ impl Suu {
             grid_line: i64::MIN,
             grid_held: None,
             song: None,
+            text_line: i64::MIN,
+            text_pending: (false, false),
             vowels: VowelTracker::new(fs),
             in_pad: None,
             adsr: 0.0,
@@ -1146,6 +1157,7 @@ impl Suu {
         q.grid = clamp(q.grid, 0.0, 16.0);
         q.scale &= 0xfff;
         q.jump = clamp(q.jump.round(), 0.0, 48.0);
+        q.text_grid = if q.text_grid < 0.0 { -1.0 } else { clamp(q.text_grid, 0.0, 16.0) };
         for x in [&mut q.attack_sync, &mut q.decay_sync, &mut q.release_sync] {
             *x = clamp(*x, 0.0, 16.0);
         }
@@ -1604,8 +1616,8 @@ impl Suu {
         self.fired = 0;
         self.once_pending = true;
         self.restart_for = None;
-        let now = self.voice.clock;
-        (self.next_tick, self.next_pass) = (now + 0.1, now + 0.1);
+        let start = self.on_text_line(self.voice.clock + 0.1);
+        (self.next_tick, self.next_pass) = (start, start);
         self.applied = [f64::NAN; N_MOD];
         self.refresh_mouth();
         old
@@ -1734,10 +1746,34 @@ impl Suu {
         if p.text_step == TextStep::Note {
             let rising = self.gate_now && (!self.prev_gate || self.retrig);
             let falling = self.prev_gate && !self.gate_now;
+            let grid = if p.text_grid < 0.0 { p.grid } else { p.text_grid };
+            if grid <= 0.0 {
+                self.text_pending = (false, false);
+                if rising {
+                    self.text_note(true);
+                } else if falling {
+                    self.text_note(false);
+                }
+                return;
+            }
+            // on the grid: a start or an end waits for the next line; a start, then its end a
+            // line later at the earliest
             if rising {
-                self.text_note(true);
+                self.text_pending = (true, false);
             } else if falling {
-                self.text_note(false);
+                self.text_pending.1 = true;
+            }
+            let line = (self.beats_now() / grid).floor() as i64;
+            let crossed = line != self.text_line && self.text_line != i64::MIN;
+            self.text_line = line;
+            if crossed {
+                if self.text_pending.0 {
+                    self.text_pending.0 = false;
+                    self.text_note(true);
+                } else if self.text_pending.1 {
+                    self.text_pending.1 = false;
+                    self.text_note(false);
+                }
             }
             return;
         }
@@ -1773,7 +1809,8 @@ impl Suu {
         }
         // unit by unit, just in time: each unit's vowel on its tick
         if self.next_tick < now - self.plan.tick_s {
-            self.next_tick = now + lead; // the clock fell behind (it was stopped): pick it up
+            // the clock fell behind (it was stopped): pick it up, synced on the song's next line
+            self.next_tick = self.on_text_line(now + lead);
         }
         let horizon = now + 2.0 * CTRL as f64 / self.fs;
         while self.next_tick - lead <= horizon {
@@ -1956,6 +1993,17 @@ impl Suu {
         let crossed = line != self.grid_line;
         self.grid_line = line;
         crossed || self.grid_held.is_none()
+    }
+
+    /// A time on the voice's clock (s), moved on to the song's next line of the text clock's
+    /// note value when it is synced (else as it is).
+    fn on_text_line(&self, t: f64) -> f64 {
+        let p = self.p;
+        if p.text_sync <= 0.0 {
+            return t;
+        }
+        let beats = self.beats_now() + (t - self.voice.clock) * p.bpm / 60.0;
+        t + ((beats / p.text_sync).ceil() * p.text_sync - beats) * 60.0 / p.bpm
     }
 
     /// The song position, in beats: the host's (`set_song_position`) moved on by the samples
@@ -3435,5 +3483,59 @@ mod tests {
         assert_eq!(s.pitch, 60.0, "skipped: too far");
         run(&mut s, 329.63, 0.3, &mut ph); // E4 (64): within 7
         assert_eq!(s.pitch, 64.0, "within the jump: taken");
+    }
+
+    /// TEXT GRID: notes quicker than the grid start the text's parts only on its lines.
+    #[test]
+    fn text_grid_starts_each_part_on_a_line() {
+        let fs = 48000.0;
+        let mut s = Suu::new(fs);
+        s.load_dict("WOW  W AW1\nYEAH  Y AE1\n");
+        // 120 bpm, a grid of a beat (0.5 s); notes every 0.15 s
+        s.set_params(Params { bpm: 120.0, text_grid: 1.0, ..Params::default() });
+        s.set_text("wow yeah wow yeah wow yeah wow yeah");
+        let (inp, mut out) = ([0f32; 64], [0f32; 64]);
+        let mut said = Vec::new();
+        let mut last = s.said;
+        for b in 0..(2.6 * fs / 64.0) as usize {
+            let t = (b * 64) as f64 / fs;
+            let on = (t % 0.15) < 0.1;
+            if on != s.params().gate {
+                s.set_params(Params { gate: on, ..s.params() });
+            }
+            s.process(&inp, &mut out);
+            if s.said != last {
+                last = s.said;
+                said.push(t);
+            }
+        }
+        assert!(!said.is_empty());
+        for &t in &said {
+            let off = (t / 0.5 - (t / 0.5).round()).abs() * 0.5;
+            assert!(off < 0.003, "a part at {t:.3} s, off the beat by {off:.4} s");
+        }
+        assert!(said.len() <= 6, "no more than one a beat: {said:?}");
+        // GRID's own (−1) follows GRID
+        let mut g = Suu::new(fs);
+        g.set_params(Params { grid: 0.5, text_grid: -1.0, ..Params::default() });
+        assert_eq!(g.params().text_grid, -1.0);
+    }
+
+    /// STEP CLOCK with sync: the ticks fall on the song's lines (the host's position).
+    #[test]
+    fn the_synced_text_clock_is_on_the_song_lines() {
+        let fs = 48000.0;
+        let mut s = Suu::new(fs);
+        s.load_dict("WOW  W AW1\nYEAH  Y AE1\n");
+        s.set_params(Params { gate: true, bpm: 120.0, text_step: TextStep::Clock, text_sync: 1.0, ..Params::default() });
+        s.set_song_position(Some(0.3));
+        s.set_text("wow yeah wow yeah");
+        let (inp, mut out) = ([0f32; 64], [0f32; 64]);
+        for _ in 0..20 {
+            s.process(&inp, &mut out);
+        }
+        // the next tick, in song beats, is a whole beat
+        let beats = s.beats_now() + (s.next_tick - s.voice.clock) * 2.0;
+        assert!((beats - beats.round()).abs() < 1e-6, "the next tick at beat {beats}");
     }
 }

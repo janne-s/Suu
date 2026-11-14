@@ -1451,7 +1451,15 @@ for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 // What moves the text on (note or its own clock), what it says at a time (syllable or word),
 // how (held or said through, and on the clock how long a held one lasts), where it starts (free
 // or with the sequence), how often (over and over or once a pass) and how fast it is spoken.
-const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1 };
+// grid (STEP NOTE): null free, "GRID" GRID's, or a note value of its own
+const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1, grid: null };
+$("textgrid").add(new Option("FREE", ""));
+$("textgrid").add(new Option("GRID", "GRID"));
+for (const [n] of DIVS) $("textgrid").add(new Option(n, n));
+$("textgrid").onchange = () => {
+  tx.grid = $("textgrid").value || null;
+  sendText(false);
+};
 function sing(text) {
   if (!node && !inPlugin) return;
   const bytes = new TextEncoder().encode(text);
@@ -1495,6 +1503,9 @@ function sendText(final = true) {
   send(30, tx.once ? 1 : 0);
   send(29, tx.speech);
   send(38, tx.gate);
+  send(61, tx.grid === "GRID" ? -1 : tx.grid ? divBeats(tx.grid) : 0);
+  $("textgrid").value = tx.grid ?? "";
+  $("tgridbox").hidden = tx.step !== 0;
   $("textgate").textContent = Math.round(tx.gate * 100) + "%";
   $("textgate").classList.toggle("on", tx.gate < 1);
   const press = (attr, v) => document.querySelectorAll(`[${attr}]`).forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute(attr) === String(v))));
@@ -1719,6 +1730,7 @@ function readState(raw) {
     once: bool(text.once, d.text.once),
     speech: num(text.speech, d.text.speech, 0.25, 4),
     gate: num(text.gate, d.text.gate, 0.05, 1),
+    grid: text.grid === "GRID" ? "GRID" : div(text.grid, d.text.grid),
   };
   return out;
 }
@@ -1930,6 +1942,7 @@ const TIPS = {
   "#jump": "Widest jump\nHow far the input's pitch may move at once, in semitones (any: no limit). Drag; double-click for any.",
   "[data-jump='1']": "Fold\nA wider jump moves by octaves to the nearest the pitch it was.",
   "[data-jump='0']": "Skip\nA wider jump is left out: the pitch stays.",
+  "#textgrid": "Grid (text)\nSTEP NOTE: each part starts, and with HOLD ends, on the next line of this note value; quicker notes run together. GRID: the main GRID's. FREE: at the note. (STEP CLOCK with ♪ is on the song's lines.)",
   "#grid": "Grid\nEvery movement of the mouth (pad, Motion, the input's vowel, step vowels, the horn) and the input's pitch change only on the lines of this note value, on the host's bars while it plays. A played note sounds at once. FREE: changes as they come.",
   "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
@@ -2102,6 +2115,14 @@ const PMAP = [];
   text("text_seq", "seq", "bool");
   text("text_once", "once", "bool");
   text("speech", "speech");
+  // (the main grid first: off, the text's own value then applies)
+  add("text_grid_main", (st) => +(st.text.grid === "GRID"), (st, v) => {
+    if (v > 0.5) st.text.grid = "GRID";
+    else if (st.text.grid === "GRID") st.text.grid = null;
+  });
+  add("text_grid", (st) => (st.text.grid && st.text.grid !== "GRID" ? divIndex(st.text.grid) : 0), (st, v) => {
+    if (st.text.grid !== "GRID") st.text.grid = PDIVS[Math.round(v)];
+  });
   add("seq_rate", (st) => Math.round(Math.log2(st.seq.rate)), (st, v) => (st.seq.rate = 2 ** Math.round(v)));
   add("seq_length", (st) => st.seq.length, (st, v) => (st.seq.length = Math.round(v)));
   add("seq_gate", (st) => st.seq.gate, (st, v) => (st.seq.gate = v));
