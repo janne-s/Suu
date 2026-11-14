@@ -23,6 +23,8 @@ steady
 steady_sync
 hq
 grid
+text_reset_note
+text_restart_play
 text_grid
 text_grid_main
 grid_breath

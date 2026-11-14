@@ -388,6 +388,9 @@ impl<K: Kind> SuuPlugin<K> {
         let run = p.seq.value();
         let started = playing && !self.transport_was;
         self.transport_was = playing;
+        if started && p.text_restart_play.value() {
+            suu.restart_text();
+        }
         if run && started && suu.playing() {
             suu.set_playing(false);
         }
@@ -553,6 +556,22 @@ impl<K: Kind> SuuPlugin<K> {
     }
 
     fn note_event(&mut self, event: NoteEvent<()>) {
+        // the text's reset note: starts the text over, and does not sound
+        let reset = self.params.text_reset_note.value();
+        if reset >= 0 {
+            match event {
+                NoteEvent::NoteOn { note, velocity, .. } if note as i32 == reset => {
+                    if velocity > 0.0
+                        && let Some(suu) = self.suu.as_mut()
+                    {
+                        suu.restart_text();
+                    }
+                    return;
+                }
+                NoteEvent::NoteOff { note, .. } | NoteEvent::Choke { note, .. } if note as i32 == reset => return,
+                _ => {}
+            }
+        }
         match event {
             NoteEvent::NoteOn { note, channel, velocity, .. } if velocity > 0.0 => {
                 let held = self.keys.len > 0;

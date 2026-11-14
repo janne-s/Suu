@@ -210,3 +210,36 @@ fn the_last_note_stays_after_its_release() {
     run(&mut p, 24000, 256, &[on(4800, 64), off(14400, 64)], tone);
     assert_eq!(p.core().unwrap().params().note, 64.0, "the last note stays after its release");
 }
+
+/// A reset note in the clip starts the text over and does not sound; other notes go on saying it.
+#[test]
+fn a_reset_note_starts_the_text_over() {
+    let mut params = SuuParams::new(true);
+    params.text = BoolParam::new("Text", true);
+    params.text_reset_note = IntParam::new("Text Reset Note", 24, IntRange::Linear { min: -1, max: 127 });
+    let mut p = SuuSynth::with_params(params);
+    assert!(p.setup(FS, 256));
+    for _ in 0..300 {
+        run(&mut p, 2560, 256, &[], |_| 0.0);
+        if p.core().unwrap().syllables() > 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(p.core().unwrap().syllables() > 3);
+    // three notes say parts 0, 1, 2; then the reset note (C1), which does not sound; the next
+    // note says part 0
+    let mut ev = Vec::new();
+    for i in 0..3u32 {
+        ev.push(on(2400 + i * 9600, 57));
+        ev.push(off(2400 + i * 9600 + 7200, 57));
+    }
+    // (in the quiet once the last part has ended: about 0.35 s after its note)
+    ev.push(on(52000, 24));
+    ev.push(off(54000, 24));
+    let out = run(&mut p, 57600, 64, &ev, |_| 0.0);
+    assert_eq!(p.core().unwrap().text_part(), 2);
+    assert!(rms(&out[52000..57600]) < 1e-4, "the reset note does not sound");
+    run(&mut p, 9600, 64, &[on(100, 57), off(7000, 57)], |_| 0.0);
+    assert_eq!(p.core().unwrap().text_part(), 0, "the next note says the first part");
+}

@@ -81,6 +81,14 @@ ok("SCALE: C♯ off shown", (await page.getAttribute('[data-pc="1"]', "aria-pres
 ok("JUMP ±7 SKIP shown", (await page.textContent("#jump")) === "±7 st" && (await page.getAttribute('[data-jump="0"]', "aria-pressed")) === "true");
 await tell({ type: "params", values: { text_grid_main: 0, text_grid: 7, grid_breath: 0.4, grid_smooth: 0.25 } });
 ok("TEXT GRID 1/16 shown", (await page.inputValue("#textgrid")) === "1/16");
+await tell({ type: "params", values: { text_reset_note: 24 } });
+ok("RESET note shown", (await page.inputValue("#textreset")) === "24");
+if (await page.isHidden("#text-panel")) await page.click("#text-toggle");
+await page.click("#textplay");
+await page.click("#text-toggle");
+await frames();
+s = await sent();
+ok("↺ PLAY goes to the host", s.some((m) => m.type === "set" && m.id === "text_restart_play" && m.value === 1));
 ok("GRID BREATH and SMOOTH shown", (await page.textContent("#gridbreath")) === "40%" && (await page.textContent("#gridsmooth")) === "25%");
 await tell({ type: "params", values: { text_grid_main: 1 } });
 ok("TEXT GRID = GRID shown", (await page.inputValue("#textgrid")) === "GRID");

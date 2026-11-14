@@ -1544,6 +1544,26 @@ impl Suu {
         self.retrig = true;
     }
 
+    /// The part of the text said last (its index; for tests and the UI).
+    pub fn text_part(&self) -> usize {
+        self.last_unit
+    }
+
+    /// Start the text over from its beginning now (a reset note in a clip, the transport
+    /// starting): what it says now is cut, the next part is its first, "once" counts anew, and on
+    /// the clock its ticks start here.
+    pub fn restart_text(&mut self) {
+        if self.plan.text.is_empty() {
+            return;
+        }
+        let now = self.voice.clock;
+        self.voice.release_all(now);
+        self.open_unit = None;
+        (self.cursor, self.fired, self.once_pending) = (0, 0, true);
+        (self.next_tick, self.next_pass) = (now, now);
+        self.text_pending = (false, false);
+    }
+
     /// A note began with no other held: a new note, for the text and the ADSR, even when the
     /// last ended at the same moment (back to back, the gate never closes between them: they ran
     /// together as one note).
@@ -3674,5 +3694,54 @@ mod tests {
             assert!(peak < 1e-5, "grid {grid}: {peak} sounds a second after the note");
             assert!(s.asleep, "grid {grid}: asleep");
         }
+    }
+
+    /// `restart_text`: the text starts over from its first part, on notes and on the clock.
+    #[test]
+    fn the_text_restarts_from_its_beginning() {
+        let fs = 48000.0;
+        let run = |s: &mut Suu, secs: f64| {
+            let (inp, mut out) = ([0f32; 64], [0f32; 64]);
+            for _ in 0..(secs * fs / 64.0) as usize {
+                s.process(&inp, &mut out);
+            }
+        };
+        // on notes: three notes say parts 0, 1, 2; after a restart the next note says part 0
+        let mut s = Suu::new(fs);
+        s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+        s.set_text("wow yeah now");
+        for _ in 0..3 {
+            s.set_params(Params { gate: true, ..s.params() });
+            run(&mut s, 0.15);
+            s.set_params(Params { gate: false, ..s.params() });
+            run(&mut s, 0.1);
+        }
+        assert_eq!(s.last_unit, 2);
+        s.set_params(Params { gate: true, ..s.params() });
+        run(&mut s, 0.15);
+        s.set_params(Params { gate: false, ..s.params() });
+        run(&mut s, 0.1);
+        assert_eq!(s.last_unit, 0, "past the end it wraps to the first anyway");
+        run(&mut s, 0.05);
+        s.set_params(Params { gate: true, ..s.params() });
+        run(&mut s, 0.15);
+        assert_eq!(s.last_unit, 1);
+        s.restart_text();
+        s.set_params(Params { gate: false, ..s.params() });
+        run(&mut s, 0.1);
+        s.set_params(Params { gate: true, ..s.params() });
+        run(&mut s, 0.15);
+        assert_eq!(s.last_unit, 0, "restarted: the first part");
+        // on the clock: mid-text, a restart says the first part next
+        let mut c = Suu::new(fs);
+        c.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+        // (unit by unit: at LEN 100 % the clock says the text as one joined pass)
+        c.set_params(Params { gate: true, text_step: TextStep::Clock, text_sync: 0.0, text_rate_hz: 4.0, text_len: 0.5, ..Params::default() });
+        c.set_text("wow yeah now wow yeah now");
+        run(&mut c, 0.6);
+        assert!(c.last_unit > 0);
+        c.restart_text();
+        run(&mut c, 0.01);
+        assert_eq!(c.last_unit, 0, "restarted on the clock: the first part");
     }
 }

@@ -226,6 +226,7 @@ button.icon svg { display: block; margin: auto; }
 
 /* in the plug-in: what the host does instead (its input, its storage, its effects) is hidden */
 .in-plugin .web-only { display: none !important; }
+body:not(.in-plugin) .plugin-only { display: none !important; }
 .in-plugin #bpm { color: var(--dim); }
 .plugin-grip {
   position: fixed; right: 0; bottom: 0; width: 14px; height: 14px; z-index: 100; cursor: nwse-resize;

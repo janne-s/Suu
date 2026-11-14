@@ -518,6 +518,12 @@ pub struct SuuParams {
     pub grid: EnumParam<Sync>,
     /// the text's grid (off: free), or GRID's; how far its breath and voicing follow it; and how
     /// smoothly every move goes between lines (both grids)
+    /// a MIDI note that starts the text over (−1: none); it does not sound
+    #[id = "text_reset_note"]
+    pub text_reset_note: IntParam,
+    /// the text starts over when the host's transport starts
+    #[id = "text_restart_play"]
+    pub text_restart_play: BoolParam,
     #[id = "text_grid"]
     pub text_grid: EnumParam<Sync>,
     #[id = "text_grid_main"]
@@ -659,6 +665,10 @@ impl SuuParams {
             steady_sync: EnumParam::new("Steady Sync", Sync::Off),
             hq: BoolParam::new("HQ", true),
             grid: EnumParam::new("Grid", Sync::Off),
+            text_reset_note: IntParam::new("Text Reset Note", -1, IntRange::Linear { min: -1, max: 127 })
+                .with_value_to_string(Arc::new(|v| if v < 0 { "Off".into() } else { formatters::v2s_i32_note_formatter()(v) }))
+                .with_string_to_value(Arc::new(|s| if s.trim().eq_ignore_ascii_case("off") { Some(-1) } else { formatters::s2v_i32_note_formatter()(s) })),
+            text_restart_play: BoolParam::new("Text Restarts On Play", false),
             text_grid: EnumParam::new("Text Grid", Sync::Off),
             text_grid_main: BoolParam::new("Text Grid Follows Grid", false),
             grid_breath: percent(FloatParam::new("Text Grid Breath", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
