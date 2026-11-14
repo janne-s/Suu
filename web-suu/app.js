@@ -929,6 +929,8 @@ function pushAll() {
   send(52, legato ? 1 : 0);
   send(56, hq ? 1 : 0);
   send(57, grid ? divBeats(grid) : 0);
+  send(61, gridBreath);
+  send(62, gridSmooth);
   send(58, scale);
   send(59, jump);
   send(60, jumpFold ? 1 : 0);
@@ -1185,11 +1187,26 @@ addEventListener("pointerdown", (e) => {
 let grid = null;
 $("grid").add(new Option("FREE", ""));
 for (const [n] of DIVS) $("grid").add(new Option(n, n));
+let gridBreath = 1, gridSmooth = 0;
 function setGrid(div) {
   grid = div || null;
   $("grid").value = grid ?? "";
   send(57, grid ? divBeats(grid) : 0);
+  for (const el of document.querySelectorAll(".grid-more")) el.hidden = !grid;
 }
+function setGridMore(breath, smooth) {
+  gridBreath = clamp(breath, 0, 1);
+  gridSmooth = clamp(smooth, 0, 1);
+  $("gridbreath").textContent = Math.round(gridBreath * 100) + "%";
+  $("gridsmooth").textContent = Math.round(gridSmooth * 100) + "%";
+  send(61, gridBreath);
+  send(62, gridSmooth);
+}
+dragValue($("gridbreath"), () => gridBreath, (v) => setGridMore(v, gridSmooth));
+dragValue($("gridsmooth"), () => gridSmooth, (v) => setGridMore(gridBreath, v));
+$("gridbreath").ondblclick = () => setGridMore(1, gridSmooth);
+$("gridsmooth").ondblclick = () => setGridMore(gridBreath, 0);
+setGridMore(1, 0);
 $("grid").onchange = () => setGrid($("grid").value);
 // HQ: the airway at full rate (off: a lean one, much lighter; a change rebuilds the mouth)
 let hq = true;
@@ -1451,15 +1468,7 @@ for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 // What moves the text on (note or its own clock), what it says at a time (syllable or word),
 // how (held or said through, and on the clock how long a held one lasts), where it starts (free
 // or with the sequence), how often (over and over or once a pass) and how fast it is spoken.
-// grid (STEP NOTE): null free, "GRID" GRID's, or a note value of its own
-const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1, grid: null };
-$("textgrid").add(new Option("FREE", ""));
-$("textgrid").add(new Option("GRID", "GRID"));
-for (const [n] of DIVS) $("textgrid").add(new Option(n, n));
-$("textgrid").onchange = () => {
-  tx.grid = $("textgrid").value || null;
-  sendText(false);
-};
+const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1 };
 function sing(text) {
   if (!node && !inPlugin) return;
   const bytes = new TextEncoder().encode(text);
@@ -1503,9 +1512,6 @@ function sendText(final = true) {
   send(30, tx.once ? 1 : 0);
   send(29, tx.speech);
   send(38, tx.gate);
-  send(61, tx.grid === "GRID" ? -1 : tx.grid ? divBeats(tx.grid) : 0);
-  $("textgrid").value = tx.grid ?? "";
-  $("tgridbox").hidden = tx.step !== 0;
   $("textgate").textContent = Math.round(tx.gate * 100) + "%";
   $("textgate").classList.toggle("on", tx.gate < 1);
   const press = (attr, v) => document.querySelectorAll(`[${attr}]`).forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute(attr) === String(v))));
@@ -1622,6 +1628,8 @@ function getState() {
     vowelIn,
     hq,
     grid,
+    gridBreath,
+    gridSmooth,
     scale,
     jump,
     jumpFold,
@@ -1664,6 +1672,8 @@ function readState(raw) {
     vowelIn: bool(r.vowelIn, d.vowelIn),
     hq: bool(r.hq, d.hq),
     grid: div(r.grid, d.grid),
+    gridBreath: num(r.gridBreath, d.gridBreath, 0, 1),
+    gridSmooth: num(r.gridSmooth, d.gridSmooth, 0, 1),
     scale: Number.isInteger(r.scale) ? r.scale & 0xfff : d.scale,
     jump: Math.round(num(r.jump, d.jump, 0, 48)),
     jumpFold: bool(r.jumpFold, d.jumpFold),
@@ -1730,7 +1740,6 @@ function readState(raw) {
     once: bool(text.once, d.text.once),
     speech: num(text.speech, d.text.speech, 0.25, 4),
     gate: num(text.gate, d.text.gate, 0.05, 1),
-    grid: text.grid === "GRID" ? "GRID" : div(text.grid, d.text.grid),
   };
   return out;
 }
@@ -1748,6 +1757,7 @@ function applyState(st) {
   setVowelIn(st.vowelIn);
   setHq(st.hq);
   setGrid(st.grid);
+  setGridMore(st.gridBreath, st.gridSmooth);
   setScale(st.scale);
   setJump(st.jump, st.jumpFold);
   for (const [key, c] of controls) {
@@ -1942,8 +1952,9 @@ const TIPS = {
   "#jump": "Widest jump\nHow far the input's pitch may move at once, in semitones (any: no limit). Drag; double-click for any.",
   "[data-jump='1']": "Fold\nA wider jump moves by octaves to the nearest the pitch it was.",
   "[data-jump='0']": "Skip\nA wider jump is left out: the pitch stays.",
-  "#textgrid": "Grid (text)\nSTEP NOTE: each part starts, and with HOLD ends, on the next line of this note value; quicker notes run together. GRID: the main GRID's. FREE: at the note. (STEP CLOCK with ♪ is on the song's lines.)",
-  "#grid": "Grid\nEvery movement of the mouth (pad, Motion, the input's vowel, step vowels, the horn) and the input's pitch change only on the lines of this note value, on the host's bars while it plays. A played note sounds at once. FREE: changes as they come.",
+  "#grid": "Grid\nEvery inner movement on this note value's lines, on the host's bars while it plays: the speech itself, the pad, Motion, the input's vowel and pitch, step vowels, the horn; with STEP NOTE each part of the text starts on a line. A played note sounds at once. FREE: everything as it comes.",
+  "#gridbreath": "Breath\nHow far the breath and the voicing (where the text breathes, where the folds open and close) follow the grid. 0%: as they come.",
+  "#gridsmooth": "Smooth\n0%: a step on each line. Up to 100%: each move glides over the line.",
   "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
   "#vowelin": "In\nThe input's vowel places the pad, as a talk box does: sing or speak into it. Motion moves around it; held through consonants and quiet.",
@@ -2087,6 +2098,8 @@ const PMAP = [];
   add("vowel_in", (st) => +st.vowelIn, (st, v) => (st.vowelIn = v > 0.5));
   add("hq", (st) => +st.hq, (st, v) => (st.hq = v > 0.5));
   add("grid", (st) => divIndex(st.grid), (st, v) => (st.grid = PDIVS[Math.round(v)]));
+  add("grid_breath", (st) => st.gridBreath, (st, v) => (st.gridBreath = v));
+  add("grid_smooth", (st) => st.gridSmooth, (st, v) => (st.gridSmooth = v));
   for (let i = 0; i < 12; i++) add(`scale_${i + 1}`, (st) => (st.scale >> i) & 1, (st, v) => (st.scale = v > 0.5 ? st.scale | (1 << i) : st.scale & ~(1 << i)));
   add("jump", (st) => st.jump, (st, v) => (st.jump = Math.round(v)));
   add("jump_mode", (st) => (st.jumpFold ? 0 : 1), (st, v) => (st.jumpFold = Math.round(v) === 0));
@@ -2115,14 +2128,7 @@ const PMAP = [];
   text("text_seq", "seq", "bool");
   text("text_once", "once", "bool");
   text("speech", "speech");
-  // (the main grid first: off, the text's own value then applies)
-  add("text_grid_main", (st) => +(st.text.grid === "GRID"), (st, v) => {
-    if (v > 0.5) st.text.grid = "GRID";
-    else if (st.text.grid === "GRID") st.text.grid = null;
-  });
-  add("text_grid", (st) => (st.text.grid && st.text.grid !== "GRID" ? divIndex(st.text.grid) : 0), (st, v) => {
-    if (st.text.grid !== "GRID") st.text.grid = PDIVS[Math.round(v)];
-  });
+
   add("seq_rate", (st) => Math.round(Math.log2(st.seq.rate)), (st, v) => (st.seq.rate = 2 ** Math.round(v)));
   add("seq_length", (st) => st.seq.length, (st, v) => (st.seq.length = Math.round(v)));
   add("seq_gate", (st) => st.seq.gate, (st, v) => (st.seq.gate = v));

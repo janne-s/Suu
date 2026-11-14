@@ -23,6 +23,8 @@ steady
 steady_sync
 hq
 grid
+grid_breath
+grid_smooth
 scale_1
 scale_2
 scale_3
@@ -112,8 +114,6 @@ text_rate
 text_sync
 text_len
 text_gate
-text_grid
-text_grid_main
 text_seq
 text_once
 speech

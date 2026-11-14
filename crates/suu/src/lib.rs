@@ -251,11 +251,12 @@ pub struct Params {
     /// rate or less (sizes 0.4 … 1.6), much lighter, with fewer sections; it changes the sound.
     /// Takes effect when the mouth is rebuilt (`Suu::set_size`).
     pub hq: bool,
-    /// GRID: the mouth's shape (pad, Motion, the input's vowel, step vowels, the horn) and the
-    /// pitch change only on this grid (beats; 0 = free, as they come), on the host's bars when
-    /// its transport runs. A played note (PITCH NOTE) takes its pitch at once; the input's pitch
-    /// and every change of shape wait for the next line, however fast notes come. The
-    /// articulators' own motion and GLIDE still shape each move.
+    /// GRID: every inner movement on this grid (beats; 0 = free, as they come), on the host's
+    /// bars when its transport runs: the articulation (the text's speech, the pad, Motion, the
+    /// input's vowel, step vowels), the horn, the injection and damping, the input's pitch,
+    /// and by `grid_breath` the breath and voicing; with STEP NOTE, each part of the text
+    /// starts (and with HOLD ends) on a line. A played note (PITCH NOTE) takes its pitch at once.
+    /// `grid_smooth` glides between lines.
     pub grid: f64,
     /// SCALE (PITCH IN ♮): the pitch classes the input's pitch snaps to, bit 0 = C … bit 11 = B
     /// (none set: all)
@@ -264,11 +265,11 @@ pub struct Params {
     /// further away is folded by octaves toward the pitch taken (`jump_fold`), or skipped.
     pub jump: f64,
     pub jump_fold: bool,
-    /// TEXT GRID (STEP NOTE): each part of the text starts, and (HOLD) ends, on the next line of
-    /// this grid (beats; 0 = free, at the note; < 0 = GRID's own). The part itself is said as
-    /// ever; notes quicker than a line run together. STEP CLOCK with sync is on the song's lines
-    /// anyway.
-    pub text_grid: f64,
+    /// GRID's BREATH: how far the breath and the voicing (the text's breaths, the folds opening
+    /// and closing) follow the grid, 0 … 1
+    pub grid_breath: f64,
+    /// GRID's SMOOTH: 0 a step at each line … 1 a glide over the whole line
+    pub grid_smooth: f64,
 }
 
 impl Default for Params {
@@ -334,7 +335,8 @@ impl Default for Params {
             scale: 0xfff,
             jump: 0.0,
             jump_fold: true,
-            text_grid: 0.0,
+            grid_breath: 1.0,
+            grid_smooth: 0.0,
         }
     }
 }
@@ -1157,7 +1159,8 @@ impl Suu {
         q.grid = clamp(q.grid, 0.0, 16.0);
         q.scale &= 0xfff;
         q.jump = clamp(q.jump.round(), 0.0, 48.0);
-        q.text_grid = if q.text_grid < 0.0 { -1.0 } else { clamp(q.text_grid, 0.0, 16.0) };
+        q.grid_breath = clamp(q.grid_breath, 0.0, 1.0);
+        q.grid_smooth = clamp(q.grid_smooth, 0.0, 1.0);
         for x in [&mut q.attack_sync, &mut q.decay_sync, &mut q.release_sync] {
             *x = clamp(*x, 0.0, 16.0);
         }
@@ -1746,7 +1749,7 @@ impl Suu {
         if p.text_step == TextStep::Note {
             let rising = self.gate_now && (!self.prev_gate || self.retrig);
             let falling = self.prev_gate && !self.gate_now;
-            let grid = if p.text_grid < 0.0 { p.grid } else { p.text_grid };
+            let grid = p.grid;
             if grid <= 0.0 {
                 self.text_pending = (false, false);
                 if rising {
@@ -1897,6 +1900,14 @@ impl Suu {
         // NOTE: a key, MIDI, a step) takes its pitch at once; the input's pitch and every change
         // of shape wait for the line.
         let grid_take = self.grid_take();
+        {
+            let p = self.p;
+            let h = &mut self.voice.hold;
+            h.on = p.grid > 0.0;
+            h.take |= h.on && grid_take;
+            h.breath = p.grid_breath;
+            h.glide_s = p.grid_smooth * p.grid * 60.0 / p.bpm / 3.0;
+        }
         let played = self.p.pitch_from == PitchFrom::Note && self.gate_now && (!self.prev_gate || self.retrig);
         if let Some((note, shape)) = self.grid_held.filter(|_| !grid_take) {
             if played {
@@ -3487,12 +3498,12 @@ mod tests {
 
     /// TEXT GRID: notes quicker than the grid start the text's parts only on its lines.
     #[test]
-    fn text_grid_starts_each_part_on_a_line() {
+    fn grid_starts_each_part_of_the_text_on_a_line() {
         let fs = 48000.0;
         let mut s = Suu::new(fs);
         s.load_dict("WOW  W AW1\nYEAH  Y AE1\n");
         // 120 bpm, a grid of a beat (0.5 s); notes every 0.15 s
-        s.set_params(Params { bpm: 120.0, text_grid: 1.0, ..Params::default() });
+        s.set_params(Params { bpm: 120.0, grid: 1.0, ..Params::default() });
         s.set_text("wow yeah wow yeah wow yeah wow yeah");
         let (inp, mut out) = ([0f32; 64], [0f32; 64]);
         let mut said = Vec::new();
@@ -3515,10 +3526,6 @@ mod tests {
             assert!(off < 0.003, "a part at {t:.3} s, off the beat by {off:.4} s");
         }
         assert!(said.len() <= 6, "no more than one a beat: {said:?}");
-        // GRID's own (−1) follows GRID
-        let mut g = Suu::new(fs);
-        g.set_params(Params { grid: 0.5, text_grid: -1.0, ..Params::default() });
-        assert_eq!(g.params().text_grid, -1.0);
     }
 
     /// STEP CLOCK with sync: the ticks fall on the song's lines (the host's position).
@@ -3537,5 +3544,49 @@ mod tests {
         // the next tick, in song beats, is a whole beat
         let beats = s.beats_now() + (s.next_tick - s.voice.clock) * 2.0;
         assert!((beats - beats.round()).abs() < 1e-6, "the next tick at beat {beats}");
+    }
+
+    /// GRID holds the speech itself: the articulation the airway gets, and the voicing (BREATH
+    /// 100 %), change only on the lines; BREATH 0 leaves the voicing live; off, all is live.
+    #[test]
+    fn grid_holds_the_speech_between_lines() {
+        let fs = 48000.0;
+        // a grid of 1/16 at 120 bpm: a line every 0.125 s
+        let speak = |grid: f64, breath: f64| {
+            let mut s = Suu::new(fs);
+            s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+            s.set_params(Params { gate: true, bpm: 120.0, text_step: TextStep::Clock, grid, grid_breath: breath, ..Params::default() });
+            s.set_text("wow yeah now wow yeah now");
+            let (inp, mut out) = ([0f32; 64], [0f32; 64]);
+            let mut xs = Vec::new();
+            for _ in 0..(2.0 * fs / 64.0) as usize {
+                s.process(&inp, &mut out);
+                let x = if s.voice.hold.on { s.voice.hold.x_out() } else { s.voice.artic.x.to_array() };
+                xs.push((x, s.voice.glottis.params.abduction));
+            }
+            xs
+        };
+        // changes within a line (counted per block), held and live
+        let within = |xs: &[([f64; N_ARTIC], f64)], abd: bool| {
+            // the line of block i's end; a change shows within two blocks of a line (the voice's
+            // control step comes every 64 samples, after Suu's every 32)
+            let line = |i: usize| (((i + 1) * 64) as f64 / fs / 0.125).floor() as i64;
+            let mut n = 0;
+            for (i, w) in xs.windows(2).enumerate().skip(2) {
+                let same_line = line(i + 1) == line(i) && line(i) == line(i - 1) && line(i - 1) == line(i - 2);
+                let changed = if abd { w[0].1 != w[1].1 } else { w[0].0 != w[1].0 };
+                if same_line && changed {
+                    n += 1;
+                }
+            }
+            n
+        };
+        let free = speak(0.0, 1.0);
+        assert!(within(&free, false) > 100, "free: the articulation moves all the time");
+        let held = speak(0.25, 1.0);
+        assert_eq!(within(&held, false), 0, "on the grid: the articulation only changes on lines");
+        assert_eq!(within(&held, true), 0, "BREATH 100 %: the voicing too");
+        let live_breath = speak(0.25, 0.0);
+        assert!(within(&live_breath, true) > 0, "BREATH 0: the voicing as it comes");
     }
 }

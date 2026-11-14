@@ -56,7 +56,7 @@
         <form id="text-form"><input id="text" class="field" aria-label="Words to sing" value="wow yeah oh yeah now wah wow" maxlength="400"><button id="singtext" type="button" class="play" aria-pressed="false"></button></form>
         <div class="text-row">
           <span class="tgroup"><span class="tlabel">STEP</span><span class="seg" role="group" aria-label="What moves the text on"><button data-tstep="0">NOTE</button><button data-tstep="1">CLOCK</button></span>
-            <label id="tgridbox" class="labeled">GRID<select id="textgrid" class="field" aria-label="The grid each part of the text starts on"></select></label><span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
+            <span id="clockrate" class="rate"><span id="loophz" class="field drag" tabindex="0" aria-label="Clock rate, per second"></span><select id="loopdiv" class="field" aria-label="Clock rate as a note value"></select><button id="loopsync">♪</button></span></span>
           <span class="tgroup"><span class="tlabel">UNIT</span><span class="seg" role="group" aria-label="What is said at a time"><button data-tunit="0">SYL</button><button data-tunit="1">WORD</button></span></span>
           <span class="tgroup"><span class="tlabel">SAY</span><span class="seg" role="group" aria-label="How each is said"><button data-tsay="0">HOLD</button><button data-tsay="1">SHOT</button></span>
             <label id="lenbox" class="labeled">LEN<span id="textlen" class="field drag" tabindex="0" aria-label="Held length on the clock"></span></label></span>
@@ -71,7 +71,7 @@
     </div>
   </section>
   <section class="panel motion-panel">
-    <div class="panel-title"><h2>MOTION</h2><div><label class="labeled">GRID<select id="grid" class="field" aria-label="The grid every change of shape and pitch waits for"></select></label><button id="motion-reset" class="square icon" aria-label="Every depth back to 0"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 6.5A5 5 0 1 1 3 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M1.5 3v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
+    <div class="panel-title"><h2>MOTION</h2><div><label class="labeled">GRID<select id="grid" class="field" aria-label="The grid every inner movement waits for"></select></label><label class="labeled grid-more">BREATH<span id="gridbreath" class="field drag" tabindex="0" aria-label="How far the breath and voicing follow the grid"></span></label><label class="labeled grid-more">SMOOTH<span id="gridsmooth" class="field drag" tabindex="0" aria-label="How smoothly each move goes between lines"></span></label><button id="motion-reset" class="square icon" aria-label="Every depth back to 0"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 6.5A5 5 0 1 1 3 9.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M1.5 3v4h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div></div>
     <div class="motion-head"><span></span><span>BASE</span><span>DEPTH</span><span>RATE</span><span>SHAPE</span><span>SMOOTH</span></div>
     <div id="motion" class="motion"></div>
   </section>

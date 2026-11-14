@@ -5,7 +5,7 @@
 use super::human_airway::HumanAirway;
 use crate::airway::decimator::Decimator;
 use crate::anatomy::geom::Vec2;
-use crate::anatomy::human::{ArticKey, ArticPatch, BODY_MALE, HumanBody, N_ARTIC};
+use crate::anatomy::human::{ArticKey, ArticPatch, BODY_MALE, HumanArtic, HumanBody, N_ARTIC};
 use crate::control::articulators::ArticulatorBank;
 use crate::control::score::{Blended, ControlKey, Gesture, GestureScore, Label, N_CONTROL};
 use crate::math::{PI, clamp, exp, js_max, js_min, js_sign, js_trunc_i32, pow, sqrt, tanh};
@@ -143,6 +143,39 @@ pub struct VoiceTelemetry {
     pub active: Vec<Label>,
 }
 
+/// A grid for every inner movement (Suu's GRID): the articulation, and by `breath` the breath and
+/// the voicing (the score's breath, the folds' opening and closure), taken when a line is crossed
+/// (`take`) and held until the next. Off (the default) changes nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct GridHold {
+    pub on: bool,
+    /// a line was crossed since the last control step: take the present values
+    pub take: bool,
+    /// how far the breath and the voicing follow the grid (0 as they come … 1 held)
+    pub breath: f64,
+    /// the held articulation moves to each line's in this time constant (s; 0: a step, rounded
+    /// only by the airway's own rate limits)
+    pub glide_s: f64,
+    taken: bool,
+    x_held: [f64; N_ARTIC],
+    x_out: [f64; N_ARTIC],
+    /// breath value, breath weight, abduction, closure
+    b_held: [f64; 4],
+}
+
+impl GridHold {
+    /// The articulation the airway gets while held.
+    pub fn x_out(&self) -> [f64; N_ARTIC] {
+        self.x_out
+    }
+}
+
+impl Default for GridHold {
+    fn default() -> Self {
+        GridHold { on: false, take: false, breath: 1.0, glide_s: 0.0, taken: false, x_held: [0.0; N_ARTIC], x_out: [0.0; N_ARTIC], b_held: [0.0; 4] }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HumanVoice {
     pub fs_out: f64,
@@ -151,6 +184,8 @@ pub struct HumanVoice {
     pub airway: HumanAirway,
     pub glottis: crate::sources::glottis::ParametricGlottis,
     pub artic: ArticulatorBank,
+    /// GRID: every inner movement held on a grid's lines (off by default)
+    pub hold: GridHold,
     pub source: VoiceSource,
     dec: Decimator,
     /// internal samples per control step
@@ -231,6 +266,7 @@ impl HumanVoice {
             airway,
             glottis: crate::sources::glottis::ParametricGlottis::new(fs),
             artic: ArticulatorBank::new(),
+            hold: GridHold::default(),
             source: DEFAULT_SOURCE,
             dec: Decimator::new(m),
             ctrl_every: 64 * m,
@@ -531,13 +567,39 @@ impl HumanVoice {
             self.score_f0 = None;
         }
         self.clock += dt;
+        // GRID: the articulation and (by `breath`) the breath and voicing, held between lines
+        let held = self.hold.on;
+        if held {
+            let h = &mut self.hold;
+            let gp = &mut self.glottis.params;
+            let live = [breath_val, breath_act, gp.abduction, gp.closure];
+            let xa = self.artic.x.to_array();
+            if h.take || !h.taken {
+                (h.b_held, h.x_held) = (live, xa);
+                if !h.taken {
+                    h.x_out = xa;
+                }
+                (h.take, h.taken) = (false, true);
+            }
+            let a = clamp(h.breath, 0.0, 1.0);
+            // (at 1 the held value itself: live + 1·(held − live) can differ from it in the last bit)
+            let mix = |i: usize| if a >= 1.0 { h.b_held[i] } else { live[i] + a * (h.b_held[i] - live[i]) };
+            (breath_val, breath_act, gp.abduction, gp.closure) = (mix(0), mix(1), mix(2), mix(3));
+            let k = if h.glide_s > 0.0 { 1.0 - exp(-dt / h.glide_s) } else { 1.0 };
+            for i in 0..N_ARTIC {
+                h.x_out[i] += k * (h.x_held[i] - h.x_out[i]);
+            }
+        } else {
+            self.hold.taken = false;
+        }
         // contact constraint on the frame computed anyway; re-apply only if a correction was made
-        let x = self.artic.x;
+        // (held, the articulation is one the live one already had, corrected then)
+        let x = if held { HumanArtic::from_array(&self.hold.x_out) } else { self.artic.x };
         // a settled geometry with the same inputs would be computed again to the same targets
         // (and the same contact check): skip it (the largest cost after the airway's own step)
         if !self.airway.settled_for(&x, dt) {
             self.airway.apply(&x, dt);
-            let corrected = self.enforce_contacts();
+            let corrected = !held && self.enforce_contacts();
             if corrected {
                 let x = self.artic.x;
                 self.airway.reapply(&x);
