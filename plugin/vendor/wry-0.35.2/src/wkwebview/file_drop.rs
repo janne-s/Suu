@@ -80,13 +80,16 @@ unsafe fn collect_paths(drag_info: id) -> Vec<PathBuf> {
   let mut file_drop_paths = Vec::new();
   let types: id = msg_send![class!(NSArray), arrayWithObject: NSFilenamesPboardType];
   if !NSPasteboard::availableTypeFromArray(pb, types).is_null() {
-    // Suu's patch: a host's own drag (Ableton Live's, of a device or a clip) can name the file
-    // names type but give no list, or something other than an array: iterating it dereferenced
-    // null and took the host down. Only an array of strings is read.
+    // Suu's patch: a host's own drag (Ableton Live's, of a device or a clip) names the file
+    // names type with no list or an empty one. cocoa's fast iterator reads the mutations pointer
+    // before it knows there are items, and an empty enumeration leaves it null: it dereferenced
+    // null and took the host down. Only an array is read, by index, and only its strings.
     let list: id = NSPasteboard::propertyListForType(pb, NSFilenamesPboardType);
     let is_array: bool = !list.is_null() && msg_send![list, isKindOfClass: class!(NSArray)];
-    if is_array {
-      for path in list.iter() {
+    let count: usize = if is_array { msg_send![list, count] } else { 0 };
+    for i in 0..count {
+      let path: id = msg_send![list, objectAtIndex: i];
+      {
         if path.is_null() {
           continue;
         }
@@ -181,8 +184,8 @@ pub(crate) unsafe fn add_file_drop_methods(decl: &mut ClassDecl) {
 
 #[cfg(test)]
 mod suu_tests {
-  //! Suu's patch: a drag naming the file names type but holding no list reads no paths (it
-  //! crashed Ableton Live, 2026-11-15).
+  //! Suu's patch: a drag naming the file names type with no list, or an empty one, reads no
+  //! paths (it crashed Ableton Live, 2026-11-14).
   use super::*;
   use cocoa::base::nil;
   use objc::{declare::ClassDecl, runtime::Class};
@@ -214,6 +217,10 @@ mod suu_tests {
       let pb: id = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
       let types: id = msg_send![class!(NSArray), arrayWithObject: NSFilenamesPboardType];
       let _: i64 = msg_send![pb, declareTypes: types owner: nil];
+      assert!(collect_paths(drag_with(pb)).is_empty());
+      // an empty list (what Live's own drag gives): the fast iterator read a null pointer
+      let empty: id = msg_send![class!(NSArray), array];
+      let _: bool = msg_send![pb, setPropertyList: empty forType: NSFilenamesPboardType];
       assert!(collect_paths(drag_with(pb)).is_empty());
       // a real list still reads
       let path: id = msg_send![class!(NSString), stringWithUTF8String: b"/tmp/a.wav\0".as_ptr()];
