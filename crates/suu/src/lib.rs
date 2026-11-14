@@ -1900,11 +1900,18 @@ impl Suu {
         // NOTE: a key, MIDI, a step) takes its pitch at once; the input's pitch and every change
         // of shape wait for the line.
         let grid_take = self.grid_take();
+        // nothing sounds (no note, the envelope done, no text clock, no crossfade): the mouth
+        // stands still. Its moving walls push air, so a mouth moved by Motion (in steps on a
+        // grid most of all) went on sounding, a thump on each line, and never slept.
+        let still = !self.gate_now && self.stage == Stage::Idle && !self.on_clock() && self.fade.is_none();
         {
             let p = self.p;
             let h = &mut self.voice.hold;
-            h.on = p.grid > 0.0;
-            h.take |= h.on && grid_take;
+            h.on = p.grid > 0.0 || still;
+            h.take |= p.grid > 0.0 && grid_take && !still;
+            if still {
+                h.take = false;
+            }
             h.breath = p.grid_breath;
             h.glide_s = p.grid_smooth * p.grid * 60.0 / p.bpm / 3.0;
         }
@@ -1971,6 +1978,10 @@ impl Suu {
         let envn = clamp(self.env_peak * 4.0, 0.0, 1.0);
         self.env_peak = 0.0;
         self.run_mods(envn);
+        // still: Motion's cycles go on, but the mouth keeps the shape it has
+        if still && !self.applied[0].is_nan() {
+            self.eff = self.applied;
+        }
         if self.p.grid > 0.0 {
             match self.grid_held {
                 Some((_, held)) if !grid_take => self.eff = held,
@@ -3588,5 +3599,31 @@ mod tests {
         assert_eq!(within(&held, true), 0, "BREATH 100 %: the voicing too");
         let live_breath = speak(0.25, 0.0);
         assert!(within(&live_breath, true) > 0, "BREATH 0: the voicing as it comes");
+    }
+
+    /// After a note, a mouth moved by Motion stands still and the sound dies away (the owner's
+    /// bug: on a grid, a thump on each line went on after the note, and it never slept).
+    #[test]
+    fn a_moving_mouth_is_still_after_the_note_and_sleeps() {
+        for grid in [0.0, 0.25, 0.5] {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { gate: true, bpm: 120.0, grid, ..Params::default() });
+            s.set_mod(0, Mod { depth: 0.8, rate_hz: 0.7, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+            s.set_mod(1, Mod { depth: 0.8, rate_hz: 0.45, sync: 0.0, shape: Shape::Triangle, smooth: 0.0 });
+            let (inp, mut out) = ([0f32; 128], [0f32; 128]);
+            for _ in 0..375 {
+                s.process(&inp, &mut out);
+            }
+            s.set_params(Params { gate: false, ..s.params() });
+            let mut peak = 0f32;
+            for b in 0..(3.0 * 48000.0 / 128.0) as usize {
+                s.process(&inp, &mut out);
+                if b > 375 {
+                    peak = out.iter().fold(peak, |m, v| m.max(v.abs()));
+                }
+            }
+            assert!(peak < 1e-5, "grid {grid}: {peak} sounds a second after the note");
+            assert!(s.asleep, "grid {grid}: asleep");
+        }
     }
 }
