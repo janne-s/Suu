@@ -252,9 +252,10 @@ pub struct Params {
     /// Takes effect when the mouth is rebuilt (`Suu::set_size`).
     pub hq: bool,
     /// GRID: the mouth's shape (pad, Motion, the input's vowel, step vowels, the horn) and the
-    /// pitch change only on this grid (beats; 0 = free, as they come). A new note (the gate
-    /// opening, a retrigger) takes its pitch and shape at once; changes during it wait for the
-    /// next line. The articulators' own motion and GLIDE still shape each move.
+    /// pitch change only on this grid (beats; 0 = free, as they come), on the host's bars when
+    /// its transport runs. A played note (PITCH NOTE) takes its pitch at once; the input's pitch
+    /// and every change of shape wait for the next line, however fast notes come. The
+    /// articulators' own motion and GLIDE still shape each move.
     pub grid: f64,
 }
 
@@ -922,6 +923,8 @@ pub struct Suu {
     /// GRID: the line last crossed, the pitch and shape taken there (held until the next)
     grid_line: i64,
     grid_held: Option<(f64, [f64; N_MOD])>,
+    /// the host's song position (beats) and the sample it was at
+    song: Option<(f64, u64)>,
     /// VOWEL = IN: the input's vowel, and where the pad is gliding to it
     vowels: VowelTracker,
     in_pad: Option<(f64, f64)>,
@@ -1023,6 +1026,7 @@ impl Suu {
             candidate: None,
             grid_line: i64::MIN,
             grid_held: None,
+            song: None,
             vowels: VowelTracker::new(fs),
             in_pad: None,
             adsr: 0.0,
@@ -1271,8 +1275,7 @@ impl Suu {
     /// Advance the LFOs one control period and compute the modulated values.
     fn run_mods(&mut self, envn: f64) {
         let bases = self.bases();
-        let t = self.pos as f64 / self.fs;
-        let beats = t * self.p.bpm / 60.0;
+        let beats = self.beats_now();
         for i in 0..N_MOD {
             let m = self.mods[i];
             let (lo, hi) = MOD_RANGE[i];
@@ -1821,10 +1824,17 @@ impl Suu {
             self.run_env_gate();
             self.gate_now = self.p.gate || self.env_open;
         }
-        // GRID: on a new line, or a new note, the pitch and shape are taken; between, held
+        // GRID: on a new line the pitch and shape are taken; between, held. A played note (PITCH
+        // NOTE: a key, MIDI, a step) takes its pitch at once; the input's pitch and every change
+        // of shape wait for the line.
         let grid_take = self.grid_take();
-        if let Some((note, _)) = self.grid_held.filter(|_| !grid_take) {
-            self.note_now = note;
+        let played = self.p.pitch_from == PitchFrom::Note && self.gate_now && (!self.prev_gate || self.retrig);
+        if let Some((note, shape)) = self.grid_held.filter(|_| !grid_take) {
+            if played {
+                self.grid_held = Some((self.note_now, shape));
+            } else {
+                self.note_now = note;
+            }
         }
         self.run_text();
         let retrig = self.retrig;
@@ -1904,17 +1914,33 @@ impl Suu {
     }
 
     /// GRID: whether this control period takes a new pitch and shape: off, or a new grid line
-    /// crossed, or a new note (the gate opening, a retrigger).
+    /// crossed (or nothing taken yet).
     fn grid_take(&mut self) -> bool {
         let p = self.p;
         if p.grid <= 0.0 {
             return true;
         }
-        let beats = self.pos as f64 / self.fs * p.bpm / 60.0;
-        let line = (beats / p.grid).floor() as i64;
+        let line = (self.beats_now() / p.grid).floor() as i64;
         let crossed = line != self.grid_line;
         self.grid_line = line;
-        crossed || (self.gate_now && (!self.prev_gate || self.retrig)) || self.grid_held.is_none()
+        crossed || self.grid_held.is_none()
+    }
+
+    /// The song position, in beats: the host's (`set_song_position`) moved on by the samples
+    /// since, or, without a host transport, Suu's own clock.
+    fn beats_now(&self) -> f64 {
+        let since = |pos: u64| pos as f64 / self.fs * self.p.bpm / 60.0;
+        match self.song {
+            Some((beats, at)) => beats + since(self.pos - at),
+            None => since(self.pos),
+        }
+    }
+
+    /// The host's song position in beats at the start of the next `process` (None: no transport
+    /// running; Suu's own clock then). GRID's lines and Motion's synced cycles follow it, so they
+    /// line up with the host's bars.
+    pub fn set_song_position(&mut self, beats: Option<f64>) {
+        self.song = beats.map(|b| (b, self.pos));
     }
 
     /// STEADY: a voiced reading of the input's pitch. Near the pitch taken (within half a
@@ -3249,7 +3275,7 @@ mod tests {
     }
 
     #[test]
-    fn grid_holds_changes_until_the_next_line_and_a_new_note_is_at_once() {
+    fn grid_holds_every_change_until_the_next_line_of_the_song() {
         let fs = 48000.0;
         // a beat at 120 bpm is 0.5 s
         let run = |s: &mut Suu, secs: f64| {
@@ -3275,15 +3301,58 @@ mod tests {
         assert_eq!(s.pitch, 45.0, "the new pitch waits");
         run(&mut s, 0.2); // 1.05 s: past the line at 1.0
         assert_eq!(s.pitch, 50.0, "taken on the line");
-        // a new note is at once
+        // a played note takes its pitch at once, but not the shape: that waits for the line
+        let shape = s.eff[0];
         s.set_params(Params { gate: false, ..s.params() });
-        run(&mut s, 0.1);
+        run(&mut s, 0.1); // 1.15 s
         s.set_params(Params { gate: true, note: 57.0, ..s.params() });
-        run(&mut s, 0.01);
-        assert_eq!(s.pitch, 57.0, "a new note takes its pitch at once");
+        run(&mut s, 0.02);
+        assert_eq!(s.pitch, 57.0, "a played note's pitch at once");
+        assert_eq!(s.eff[0], shape, "its shape on the grid");
+        // the host's song position sets the lines: at beat 6.88, the next is at 7 (60 ms)
+        s.set_song_position(Some(6.88));
+        run(&mut s, 0.005);
+        s.set_params(Params { note: 62.0, ..s.params() });
+        run(&mut s, 0.03);
+        assert_eq!(s.pitch, 57.0, "before the host's line");
+        run(&mut s, 0.03);
+        assert_eq!(s.pitch, 62.0, "on the host's line");
         // off: free again
         s.set_params(Params { grid: 0.0, note: 60.0, ..s.params() });
         run(&mut s, 0.01);
         assert_eq!(s.pitch, 60.0, "free");
+    }
+
+    /// GRID with the input's pitch: quick onsets (the ENV gate) do not take it faster than the
+    /// grid; it changes on the lines only.
+    #[test]
+    fn grid_keeps_the_input_pitch_on_the_lines_however_fast_the_onsets() {
+        let fs = 48000.0;
+        let mut s = Suu::new(fs);
+        s.set_params(Params { source: Source::Off, env_gate: true, pitch_from: PitchFrom::InputSnap, grid: 1.0, bpm: 120.0, glide_s: 0.0, ..Params::default() });
+        let mut ph = 0.0;
+        let mut changes = Vec::new();
+        let mut last = f64::NAN;
+        let (mut inp, mut out) = ([0f32; 64], [0f32; 64]);
+        // bursts every 100 ms, the pitch alternating A3 and E4
+        for b in 0..(3.0 * fs / 64.0) as usize {
+            for (i, x) in inp.iter_mut().enumerate() {
+                let t = (b * 64 + i) as f64 / fs;
+                let f0 = if (t / 0.1) as usize % 2 == 0 { 220.0 } else { 330.0 };
+                ph = (ph + f0 / fs) % 1.0;
+                *x = if (t % 0.1) < 0.07 { (0.3 * (2.0 * ph - 1.0)) as f32 } else { 0.0 };
+            }
+            s.process(&inp, &mut out);
+            if s.pitch != last {
+                last = s.pitch;
+                changes.push((b * 64) as f64 / fs);
+            }
+        }
+        // after the first, every change is within a control period of a beat line (0.5 s)
+        for &t in &changes[1..] {
+            let off = (t / 0.5 - (t / 0.5).round()).abs() * 0.5;
+            assert!(off < 0.003, "a change at {t:.3} s, off the grid by {off:.4} s");
+        }
+        assert!(changes.len() <= 8, "no faster than the grid: {changes:?}");
     }
 }

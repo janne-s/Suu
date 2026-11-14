@@ -617,6 +617,11 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
             }
         }
 
+        // GRID's lines and Motion's synced cycles follow the song's position while it plays
+        let song = if playing { transport.pos_beats() } else { None };
+        if let Some(suu) = self.suu.as_mut() {
+            suu.set_song_position(song);
+        }
         self.window_exchange(n, bpm);
         self.render(n, bpm, playing, || context.next_event());
         for ch in buffer.as_slice() {

@@ -1865,7 +1865,7 @@ const TIPS = {
   "#octup": "Octave up (X)",
   "#notename": "Note\nThe root: the synth's pitch, the resonator's and the sequence's key. Pick it here, its octave with − and +; keys A … K play.",
   "#rootoct": "Octave\nThe root's octave: − and + (Z and X) change it.",
-  "#grid": "Grid\nEvery change of the mouth's shape (pad, Motion, the input's vowel, the horn) and of the pitch waits for the next line of this note value; a new note is at once. FREE: changes as they come. Glide still shapes each move.",
+  "#grid": "Grid\nEvery movement of the mouth (pad, Motion, the input's vowel, step vowels, the horn) and the input's pitch change only on the lines of this note value, on the host's bars while it plays. A played note sounds at once. FREE: changes as they come.",
   "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
   "#vowelin": "In\nThe input's vowel places the pad, as a talk box does: sing or speak into it. Motion moves around it; held through consonants and quiet.",
