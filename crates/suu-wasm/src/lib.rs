@@ -23,7 +23,8 @@ pub struct Handle {
 /// 39 env_gate (0/1), 40 env_thresh_db, 41 env_release_s, 42 env_release_sync (beats, 0 = free),
 /// 43 pitch_from (0 note, 1 input, 2 input snapped to semitones), 44 vowel_in (0/1),
 /// 45 attack_s, 46 attack_sync, 47 decay_s, 48 decay_sync, 49 sustain, 50 release_s,
-/// 51 release_sync (beats, 0 = free), 52 legato (0/1)
+/// 51 release_sync (beats, 0 = free), 52 legato (0/1), 53 coarse (semitones), 54 steady_s,
+/// 55 steady_sync (beats, 0 = free)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -76,6 +77,9 @@ fn set(p: &mut Params, id: u32, v: f64) {
         50 => p.release_s = v,
         51 => p.release_sync = v,
         52 => p.legato = v > 0.5,
+        53 => p.coarse = v,
+        54 => p.steady_s = v,
+        55 => p.steady_sync = v,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}

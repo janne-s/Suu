@@ -480,6 +480,14 @@ pub struct SuuParams {
     /// the note (root, MIDI) or the input's tracked pitch
     #[id = "pitch"]
     pub pitch: EnumParam<PitchMode>,
+    /// semitones on the sounding pitch
+    #[id = "coarse"]
+    pub coarse: IntParam,
+    /// how long a new input pitch must last to be taken
+    #[id = "steady"]
+    pub steady: FloatParam,
+    #[id = "steady_sync"]
+    pub steady_sync: EnumParam<Sync>,
     #[id = "bend_range"]
     pub bend_range: IntParam,
     #[id = "glide"]
@@ -600,6 +608,9 @@ impl SuuParams {
             vowel_in: BoolParam::new("Vowel From Input", false),
             root: IntParam::new("Root", 45, IntRange::Linear { min: 12, max: 108 }).with_value_to_string(formatters::v2s_i32_note_formatter()).with_string_to_value(formatters::s2v_i32_note_formatter()),
             pitch: EnumParam::new("Pitch", PitchMode::Note),
+            coarse: IntParam::new("Coarse", 0, IntRange::Linear { min: -48, max: 48 }).with_unit(" st"),
+            steady: seconds("Steady", 0.0, 0.0, 4.0, 0.2),
+            steady_sync: EnumParam::new("Steady Sync", Sync::Off),
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
             glide: FloatParam::new("Glide", 0.03, FloatRange::Skewed { min: 0.0, max: 2.0, factor: 0.5 })
                 .with_unit(" s")
@@ -725,6 +736,9 @@ impl SuuParams {
             release_s: self.release.value() as f64,
             release_sync: self.release_sync.value().beats(),
             legato: self.legato.value(),
+            coarse: self.coarse.value() as f64,
+            steady_s: self.steady.value() as f64,
+            steady_sync: self.steady_sync.value().beats(),
             pitch_from: match self.pitch.value() {
                 PitchMode::Note => suu::PitchFrom::Note,
                 PitchMode::Input => suu::PitchFrom::Input,

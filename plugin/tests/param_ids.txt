@@ -18,6 +18,9 @@ legato
 vowel_in
 root
 pitch
+coarse
+steady
+steady_sync
 bend_range
 glide
 glide_sync

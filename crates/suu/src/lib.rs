@@ -239,6 +239,13 @@ pub struct Params {
     /// LEGATO: a note while the sound is open (another key, an untied step) goes on with the
     /// envelope; else (RETRIG) it starts the attack again, from where the level is
     pub legato: bool,
+    /// COARSE: semitones on the sounding pitch, whatever PITCH takes it from (−48 … 48)
+    pub coarse: f64,
+    /// STEADY (PITCH = IN): a new pitch is taken only once the input has stayed on it (within a
+    /// semitone's width) this long; movement within the note (vibrato, a slide) passes at once.
+    /// In s, or in beats if `steady_sync` > 0. 0: every pitch at once.
+    pub steady_s: f64,
+    pub steady_sync: f64,
 }
 
 impl Default for Params {
@@ -296,6 +303,9 @@ impl Default for Params {
             release_s: 0.08,
             release_sync: 0.0,
             legato: false,
+            coarse: 0.0,
+            steady_s: 0.0,
+            steady_sync: 0.0,
         }
     }
 }
@@ -880,6 +890,9 @@ pub struct Suu {
     /// PITCH = INPUT: the input's pitch, analysed every `TRACK_EVERY` control periods
     tracker: PitchTracker,
     track_count: u32,
+    /// the input's pitch taken (after STEADY), and a new one waiting since the given sample
+    steady: Option<f64>,
+    candidate: Option<(f64, u64)>,
     /// VOWEL = IN: the input's vowel, and where the pad is gliding to it
     vowels: VowelTracker,
     in_pad: Option<(f64, f64)>,
@@ -976,6 +989,8 @@ impl Suu {
             env_below: 0.0,
             tracker: PitchTracker::new(fs),
             track_count: 0,
+            steady: None,
+            candidate: None,
             vowels: VowelTracker::new(fs),
             in_pad: None,
             adsr: 0.0,
@@ -1059,6 +1074,9 @@ impl Suu {
         q.decay_s = clamp(q.decay_s, 0.001, 10.0);
         q.release_s = clamp(q.release_s, 0.001, 10.0);
         q.sustain = clamp(q.sustain, 0.0, 1.0);
+        q.coarse = clamp(q.coarse.round(), -48.0, 48.0);
+        q.steady_s = clamp(q.steady_s, 0.0, 4.0);
+        q.steady_sync = clamp(q.steady_sync, 0.0, 16.0);
         for x in [&mut q.attack_sync, &mut q.decay_sync, &mut q.release_sync] {
             *x = clamp(*x, 0.0, 16.0);
         }
@@ -1346,7 +1364,13 @@ impl Suu {
             };
             out.push(a as f32);
         }
-        let tracked = if self.p.pitch_from == PitchFrom::Note { None } else { self.tracker.note() };
+        // (as it sounds: snapped for IN ♮, with COARSE)
+        let tracked = match self.p.pitch_from {
+            PitchFrom::Note => None,
+            PitchFrom::Input => self.steady,
+            PitchFrom::InputSnap => self.steady.map(f64::round),
+        };
+        let tracked = tracked.map(|n| clamp(n + self.p.coarse, 12.0, 108.0));
         out.push(tracked.map_or(0.0, |n| n as f32));
     }
 
@@ -1725,6 +1749,11 @@ impl Suu {
             if self.track_count >= TRACK_EVERY {
                 self.track_count = 0;
                 self.tracker.analyse();
+                if self.tracker.voiced()
+                    && let Some(n) = self.tracker.note()
+                {
+                    self.take_pitch(n);
+                }
                 // the vowel, from voiced frames only (a consonant or noise would throw it)
                 if self.p.vowel_in && self.tracker.voiced() {
                     self.vowels.analyse();
@@ -1815,18 +1844,44 @@ impl Suu {
         }
     }
 
-    /// The pitch the sound is at, before the sequencer's steps: the note, or the input's.
-    fn base_note(&self) -> f64 {
-        match (self.p.pitch_from, self.tracker.note()) {
-            (PitchFrom::Input, Some(n)) => clamp(n, 12.0, 108.0),
-            (PitchFrom::InputSnap, Some(n)) => clamp(n.round(), 12.0, 108.0),
-            _ => self.p.note,
+    /// STEADY: a voiced reading of the input's pitch. Near the pitch taken (within half a
+    /// semitone) it moves it at once; elsewhere it waits as a candidate until the input has
+    /// stayed near the candidate for the steady time.
+    fn take_pitch(&mut self, n: f64) {
+        let p = self.p;
+        let hold = if p.steady_sync > 0.0 { p.steady_sync * 60.0 / p.bpm } else { p.steady_s };
+        if self.steady.is_some_and(|a| (n - a).abs() < 0.5) {
+            self.steady = Some(n);
+            self.candidate = None;
+            return;
+        }
+        // the candidate goes on while the input stays near where it started; else a new one
+        let cand = match self.candidate {
+            Some((c, t0)) if (n - c).abs() < 0.5 => (c, t0),
+            _ => (n, self.pos),
+        };
+        if (self.pos - cand.1) as f64 >= hold * self.fs {
+            self.steady = Some(n);
+            self.candidate = None;
+        } else {
+            self.candidate = Some(cand);
         }
     }
 
-    /// The input's tracked pitch (MIDI), if one has been found (for the UI).
+    /// The pitch the sound is at, before the sequencer's steps: the note, or the input's (after
+    /// STEADY), then COARSE.
+    fn base_note(&self) -> f64 {
+        let n = match (self.p.pitch_from, self.steady) {
+            (PitchFrom::Input, Some(n)) => n,
+            (PitchFrom::InputSnap, Some(n)) => n.round(),
+            _ => self.p.note,
+        };
+        clamp(n + self.p.coarse, 12.0, 108.0)
+    }
+
+    /// The input's pitch as taken (after STEADY; MIDI), if one has been found (for the UI).
     pub fn tracked_note(&self) -> Option<f64> {
-        self.tracker.note()
+        self.steady
     }
 
     /// The ADSR at a control point: a new note starts the attack (from the level it is at), a
@@ -2996,5 +3051,51 @@ mod tests {
         // off: the pad's own place
         s.set_params(Params { vowel_in: false, ..s.params() });
         assert_eq!(&s.bases()[..2], &[1.0, 1.0]);
+    }
+
+    #[test]
+    fn steady_takes_a_new_pitch_only_once_it_has_lasted_and_coarse_transposes() {
+        let fs = 48000.0;
+        // a saw: `f0` for `secs`
+        let run = |s: &mut Suu, f0: f64, secs: f64, ph: &mut f64| {
+            let (mut inp, mut out) = ([0f32; 128], [0f32; 128]);
+            for _ in 0..(secs * fs / 128.0) as usize {
+                for x in inp.iter_mut() {
+                    *ph = (*ph + f0 / fs) % 1.0;
+                    *x = (0.3 * (2.0 * *ph - 1.0)) as f32;
+                }
+                s.process(&inp, &mut out);
+            }
+        };
+        let mut ph = 0.0;
+        let mut s = Suu::new(fs);
+        s.set_params(Params { gate: true, pitch_from: PitchFrom::InputSnap, steady_s: 0.2, ..Params::default() });
+        run(&mut s, 220.0, 0.4, &mut ph);
+        assert!(s.tracked_note().is_some_and(|n| (n - 57.0).abs() < 0.1), "A3 taken after it lasted");
+        // a 100 ms blip a fifth up is not taken; the note stays
+        run(&mut s, 330.0, 0.1, &mut ph);
+        run(&mut s, 220.0, 0.1, &mut ph);
+        assert_eq!(s.pitch, 57.0, "a short blip is filtered out");
+        // a fifth held 0.4 s is
+        run(&mut s, 330.0, 0.4, &mut ph);
+        assert_eq!(s.pitch, 64.0, "a held new note is taken");
+        // vibrato within the note passes at once (IN, not snapped)
+        s.set_params(Params { pitch_from: PitchFrom::Input, ..s.params() });
+        run(&mut s, 330.0 * pow(2.0, 0.3 / 12.0), 0.1, &mut ph);
+        assert!((s.pitch - 64.3).abs() < 0.05, "30 cents up follows at once: {}", s.pitch);
+        // COARSE: an octave down, on the input's pitch and on the note alike
+        s.set_params(Params { coarse: -12.0, pitch_from: PitchFrom::InputSnap, ..s.params() });
+        run(&mut s, 330.0, 0.1, &mut ph);
+        assert_eq!(s.pitch, 52.0, "COARSE −12 on IN ♮");
+        s.set_params(Params { pitch_from: PitchFrom::Note, note: 45.0, ..s.params() });
+        run(&mut s, 330.0, 0.05, &mut ph);
+        assert_eq!(s.pitch, 33.0, "COARSE −12 on the note");
+        // synced: a beat at 120 bpm is 0.5 s
+        let mut y = Suu::new(fs);
+        y.set_params(Params { gate: true, note: 40.0, pitch_from: PitchFrom::InputSnap, steady_sync: 1.0, bpm: 120.0, ..Params::default() });
+        run(&mut y, 220.0, 0.4, &mut ph);
+        assert_eq!(y.pitch, 40.0, "not yet after 0.4 s");
+        run(&mut y, 220.0, 0.2, &mut ph);
+        assert_eq!(y.pitch, 57.0, "taken after a beat");
     }
 }

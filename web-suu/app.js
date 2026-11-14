@@ -39,7 +39,9 @@ const secsFmt = (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + "
 // the ADSR's: shorter, for its smaller knobs
 const shortSecs = (v) => (v < 0.01 ? (v * 1000).toFixed(1) + "ms" : v < 1 ? (v * 1000).toFixed(0) + "ms" : v.toFixed(v < 10 ? 2 : 1) + "s");
 // the ADSR's knobs are smaller
-const MINI = new Set(["attack", "decay", "sustain", "release"]);
+const MINI = new Set(["attack", "decay", "sustain", "release", "coarse", "steady"]);
+// whole values only
+const INT = new Set(["coarse"]);
 const KNOBS = {
   "k-mouth": [
     ["size", "SIZE", 0.4, 4, 1, times, "log", 18, [0.7, 1.25]],
@@ -52,6 +54,9 @@ const KNOBS = {
     ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
+    // the pitch: transposed, and (from the input) taken only once it has lasted
+    ["coarse", "TUNE", -48, 48, 0, (v) => (Math.round(v) > 0 ? "+" : "") + Math.round(v) + " st", null, 53],
+    ["steady", "STEADY", 0, 4, 0, (v) => (v < 0.0005 ? "off" : shortSecs(v)), "sq", 54],
   ],
   // ENV: the input's level opens the sound at THRESH and closes HANG after it falls below;
   // then the ADSR of what the gate opens (smaller knobs)
@@ -107,11 +112,13 @@ const KNOB_TIPS = {
   decay: "Decay\nHow long it takes from the top down to Sustain. ♪: a note value.",
   sustain: "Sustain\nThe level it holds while the note is on.",
   release: "Release\nHow long it takes to fall silent after the note ends. ♪: a note value.",
+  coarse: "Tune (coarse)\nTransposes the pitch in semitones: the note's, or the input's (PITCH IN).",
+  steady: "Steady\nWith PITCH IN: a new pitch is taken only once the input has stayed on it this long, so quick changes pass by. Vibrato and slides within a note follow at once. ♪: a note value.",
   out: "Output\nOutput level.",
 };
 // time knobs that can lock to the tempo: the division they start from, and the engine id that
 // takes the synced length in beats (none: the page converts it to seconds itself)
-const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 } };
+const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 }, steady: { div: "1/16", id: 55 } };
 
 const state = {};
 const controls = new Map();
@@ -129,6 +136,7 @@ let sizeSent = 0;
 function update(key, v, final = true) {
   const c = controls.get(key);
   v = clamp(v, c.min, c.max);
+  if (INT.has(key)) v = Math.round(v);
   state[key] = v;
   const n = toNorm(c, v);
   c.input.value = n;
@@ -1950,12 +1958,12 @@ const PMAP = [];
     else st.knobs[key] = v;
   });
   add("wave", (st) => st.source, (st, v) => (st.source = Math.round(v)));
-  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"]]) knob(id, key);
+  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["coarse", "coarse"], ["steady", "steady"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"]]) knob(id, key);
   add("glide_sync", (st) => (typeof st.knobs.glide === "object" ? divIndex(st.knobs.glide.sync) : 0), (st, v) => {
     const val = knobVal(st.knobs.glide);
     st.knobs.glide = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
   });
-  for (const [id, key] of [["env_release_sync", "envRelease"], ["attack_sync", "attack"], ["decay_sync", "decay"], ["release_sync", "release"]])
+  for (const [id, key] of [["env_release_sync", "envRelease"], ["steady_sync", "steady"], ["attack_sync", "attack"], ["decay_sync", "decay"], ["release_sync", "release"]])
     add(id, (st) => (typeof st.knobs[key] === "object" ? divIndex(st.knobs[key].sync) : 0), (st, v) => {
       const val = knobVal(st.knobs[key]);
       st.knobs[key] = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
@@ -2077,9 +2085,12 @@ if (inPlugin) {
   $("bpm").readOnly = true;
   TIPS["#bpm"] = "Tempo\nThe host's.";
   $("bpm").dataset.tip = TIPS["#bpm"];
-  // outside a text field a key does nothing here (Space would press the button last clicked,
-  // a letter would pick from the note list): it is the host's
-  for (const ev of ["keydown", "keyup"]) addEventListener(ev, (e) => e.key !== "Escape" && !textField(e.target) && e.preventDefault(), true);
+  // keys are the host's (Live's computer keyboard, its shortcuts): a key the page handles, or
+  // whose default it prevents, does not reach the host. So nothing but a text field keeps the
+  // focus (Space would press the button last clicked, a letter pick from a list); a list lets
+  // go of it once picked from.
+  addEventListener("focusin", (e) => !textField(e.target) && e.target.tagName !== "SELECT" && e.target.blur?.(), true);
+  addEventListener("change", (e) => e.target.tagName === "SELECT" && e.target.blur(), true);
   TIPS["#rootoct"] = "Octave\nThe root's octave: − and + change it.";
   $("rootoct").dataset.tip = TIPS["#rootoct"];
   addEventListener("error", (e) => sendToPlugin({ type: "log", text: `${e.message} ${e.filename}:${e.lineno}` }));

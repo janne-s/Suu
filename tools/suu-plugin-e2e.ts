@@ -99,6 +99,22 @@ await page.keyboard.press(" ");
 await frames();
 s = await sent();
 ok("keys send no notes, no octave, no play", !s.some((m) => m.type === "key" || (m.type === "set" && (m.id === "root" || m.id === "sequencer"))));
+// and they reach the host: no control keeps the focus, and no key's default is prevented
+await page.click("#octup");
+await page.click("#legato");
+ok("a clicked button lets go of the focus", (await page.evaluate(() => document.activeElement === document.body)));
+await page.selectOption("#notename", "4");
+ok("a list lets go of it once picked from", (await page.evaluate(() => document.activeElement === document.body)));
+await page.focus('input[id="attack"]');
+ok("a knob does not keep it", (await page.evaluate(() => document.activeElement === document.body)));
+ok("a key's default is not prevented", await page.evaluate(() => {
+  const e = new KeyboardEvent("keydown", { key: "a", code: "KeyA", bubbles: true, cancelable: true });
+  document.body.dispatchEvent(e);
+  return !e.defaultPrevented;
+}));
+await page.click("#legato");
+await frames();
+await sent();
 // text and INIT
 await page.click("#text-toggle");
 // while typing in a field the keys stay in the window
