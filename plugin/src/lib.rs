@@ -543,12 +543,19 @@ impl<K: Kind> SuuPlugin<K> {
     fn note_event(&mut self, event: NoteEvent<()>) {
         match event {
             NoteEvent::NoteOn { note, channel, velocity, .. } if velocity > 0.0 => {
-                let sounding = self.params.gate.value() == GateMode::Hold || self.keys.len > 0 || self.suu.as_ref().is_some_and(|s| s.env_open());
+                let held = self.keys.len > 0;
+                let sounding = self.params.gate.value() == GateMode::Hold || held || self.suu.as_ref().is_some_and(|s| s.env_open());
                 self.keys.press(note, channel);
                 self.last_key = Some((note, channel));
-                if sounding && let Some(suu) = self.suu.as_mut() {
-                    // a new key while the sound is open: a new note for the text
-                    suu.retrigger();
+                if let Some(suu) = self.suu.as_mut() {
+                    if !held {
+                        // no other key held: a new note, even straight after the last one (back
+                        // to back, the gate never closed between them and they ran together)
+                        suu.note_start();
+                    } else if sounding {
+                        // a key over another (legato on the keys): a new note for the text
+                        suu.retrigger();
+                    }
                 }
             }
             NoteEvent::NoteOn { note, .. } | NoteEvent::NoteOff { note, .. } => {

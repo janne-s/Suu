@@ -937,6 +937,9 @@ pub struct Suu {
     next_tag: f64,
     prev_gate: bool,
     retrig: bool,
+    /// a note started with none held before it (`note_start`): a new note even if the gate never
+    /// closed in between, LEGATO or not
+    fresh: bool,
     pos: u64,
     env_peak: f64,
     seq: Seq,
@@ -1056,6 +1059,7 @@ impl Suu {
             next_tag: 1000.0,
             prev_gate: false,
             retrig: false,
+            fresh: false,
             pos: 0,
             env_peak: 0.0,
             seq: Seq::new(),
@@ -1540,6 +1544,14 @@ impl Suu {
         self.retrig = true;
     }
 
+    /// A note began with no other held: a new note, for the text and the ADSR, even when the
+    /// last ended at the same moment (back to back, the gate never closes between them: they ran
+    /// together as one note).
+    pub fn note_start(&mut self) {
+        self.retrig = true;
+        self.fresh = true;
+    }
+
     /// (current step, gate open, sounding note) for the UI
     pub fn seq_state(&self) -> (usize, bool, f64) {
         (self.seq.step, self.gate_now, self.note_now)
@@ -1938,13 +1950,13 @@ impl Suu {
             }
         }
         self.run_text();
-        let retrig = self.retrig;
-        self.retrig = false;
+        let (retrig, fresh) = (self.retrig, self.fresh);
+        (self.retrig, self.fresh) = (false, false);
         self.prev_gate = self.gate_now;
         let p = self.p;
         let was_open = self.gate_eff;
         self.gate_eff = self.gate_now && self.text_window_open();
-        self.run_adsr(was_open, retrig);
+        self.run_adsr(was_open, retrig, fresh);
         // sleep: nothing sounds and nothing can start a sound on its own (no note, no folds, no
         // text loop, no crossfade), and the last SLEEP_AFTER s were quiet; decided per control
         // period, so it does not depend on the host's block size
@@ -2134,9 +2146,9 @@ impl Suu {
 
     /// The ADSR at a control point: a new note starts the attack (from the level it is at), a
     /// closed gate the release; then this period's per-sample steps.
-    fn run_adsr(&mut self, was_open: bool, retrig: bool) {
+    fn run_adsr(&mut self, was_open: bool, retrig: bool, fresh: bool) {
         let p = self.p;
-        if self.gate_eff && (!was_open || (retrig && !p.legato)) {
+        if self.gate_eff && (!was_open || fresh || (retrig && !p.legato)) {
             self.stage = Stage::Attack;
         } else if !self.gate_eff && matches!(self.stage, Stage::Attack | Stage::Decay) {
             self.stage = Stage::Release;

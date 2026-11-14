@@ -154,3 +154,46 @@ fn sequencer_plays_without_the_transport() {
     run_t(&mut p, 256, 256, &[], |_| 0.0, true);
     assert_eq!(p.core().unwrap().seq_state().0, 0);
 }
+
+/// Notes back to back (one ends where the next starts) are separate notes: each starts the ADSR
+/// and says the next part of the text (they ran together as one until a gap let the gate close).
+#[test]
+fn notes_back_to_back_are_separate() {
+    for legato in [false, true] {
+        let mut params = SuuParams::new(true);
+        params.legato = BoolParam::new("Legato", legato);
+        // a 20 ms attack to the top, then down to 30 % in 50 ms: a new note rises above the last's end
+        params.attack = FloatParam::new("Attack", 0.02, FloatRange::Linear { min: 0.001, max: 10.0 });
+        params.decay = FloatParam::new("Decay", 0.05, FloatRange::Linear { min: 0.001, max: 10.0 });
+        params.sustain = FloatParam::new("Sustain", 0.3, FloatRange::Linear { min: 0.0, max: 1.0 });
+        let mut p = SuuSynth::with_params(params);
+        assert!(p.setup(FS, 512));
+        // four notes of 0.2 s, each starting where the last ends (off and on at the same sample)
+        let mut events = Vec::new();
+        for i in 0..4u32 {
+            let t = 4800 + i * 9600;
+            if i > 0 {
+                events.push(off(t, 55 + i as u8 - 1));
+            }
+            events.push(on(t, 55 + i as u8));
+        }
+        events.push(off(4800 + 4 * 9600, 58));
+        // the ADSR's level at the end of each 64-sample block
+        let mut level = Vec::new();
+        let mut at = 0usize;
+        while at < 48000 {
+            let mut evs = events.iter().filter(|e| (e.timing() as usize) >= at && (e.timing() as usize) < at + 64).map(|e| self::at(*e, e.timing() - at as u32));
+            p.render(64, 120.0, false, || evs.next());
+            level.push(p.core().unwrap().adsr_level());
+            at += 64;
+        }
+        // before each note: at sustain (30 %); within its first 40 ms: back at the top (before the
+        // fix it stayed at sustain: the notes ran together)
+        for i in 1..4usize {
+            let t = (4800 + i * 9600) / 64;
+            let before = level[t - 1];
+            let top = level[t..t + 30].iter().fold(0f64, |m, v| m.max(*v));
+            assert!(before < 0.4 && top > 0.9, "legato {legato}, note {i}: the ADSR starts again ({before} before, {top} at most after)");
+        }
+    }
+}
