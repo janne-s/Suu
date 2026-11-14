@@ -8,6 +8,7 @@ env_threshold
 env_release
 env_release_sync
 root
+pitch
 bend_range
 glide
 glide_sync

@@ -30,6 +30,9 @@ use chimera::phonetics::sing::{NoteOnOptions, SongOptions, SungNote, plan_note_o
 use chimera::phonetics::syllables::lyrics_to_syllables;
 use chimera::voice::human_voice::{HumanVoice, SourcePatch};
 
+mod track;
+use track::PitchTracker;
+
 /// The largest block `process` handles in one piece (longer calls are split).
 pub const MAX_BLOCK: usize = 256;
 /// Control grid (samples).
@@ -212,6 +215,9 @@ pub struct Params {
     pub env_thresh_db: f64,
     pub env_release_s: f64,
     pub env_release_sync: f64,
+    /// PITCH: the note, or the input's pitch (tracked; held through unvoiced and quiet parts,
+    /// the note until a first pitch is found)
+    pub pitch_from: PitchFrom,
 }
 
 impl Default for Params {
@@ -259,6 +265,7 @@ impl Default for Params {
             env_thresh_db: -40.0,
             env_release_s: 0.15,
             env_release_sync: 0.0,
+            pitch_from: PitchFrom::Note,
         }
     }
 }
@@ -281,6 +288,15 @@ pub struct Step {
 
 /// An accented step's level, × the source.
 pub const ACCENT: f64 = 1.6;
+
+/// Where the pitch comes from: the note (root, keys, MIDI), or the input's own pitch, as it
+/// moves or snapped to semitones. The sequencer's steps transpose from it either way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PitchFrom {
+    Note,
+    Input,
+    InputSnap,
+}
 
 /// Which pitch changes glide.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -329,6 +345,7 @@ struct Seq {
     t: f64,
     step: usize,
     gate_open: bool,
+    /// the sounding step's note, in semitones from the base note
     note: f64,
 }
 
@@ -368,7 +385,7 @@ impl Seq {
             t: 0.0,
             step: 0,
             gate_open: false,
-            note: 45.0,
+            note: 0.0,
         }
     }
 }
@@ -829,7 +846,13 @@ pub struct Suu {
     in_peak: f64,
     env_open: bool,
     env_below: f64,
+    /// PITCH = INPUT: the input's pitch, analysed every `TRACK_EVERY` control periods
+    tracker: PitchTracker,
+    track_count: u32,
 }
+
+/// The input's pitch is analysed this often (control periods: 5.3 ms at 48 kHz).
+const TRACK_EVERY: u32 = 8;
 
 impl Suu {
     pub fn new(fs: f64) -> Self {
@@ -904,6 +927,8 @@ impl Suu {
             in_peak: 0.0,
             env_open: false,
             env_below: 0.0,
+            tracker: PitchTracker::new(fs),
+            track_count: 0,
         };
         s.rest = s.voice.artic.target.to_array();
         let mix = BodyMix::new(0.0, 0.0);
@@ -1246,7 +1271,8 @@ impl Suu {
         out.push(self.seq.step as f32);
         out.push(self.gate_now as u32 as f32);
         out.push(self.seq.playing as u32 as f32);
-        // 20..23: morph, shift, open (modulated); 23..: the live area function, glottis → lips
+        // 20..23: morph, shift, open (modulated); 23..: the live area function, glottis → lips;
+        // then the input's tracked pitch (MIDI; 0: none, or PITCH is the note)
         out.extend(self.eff[6..9].iter().map(|&v| v as f32));
         let aw = &self.voice.airway;
         let total = aw.ph_len + aw.or_len;
@@ -1259,6 +1285,8 @@ impl Suu {
             };
             out.push(a as f32);
         }
+        let tracked = if self.p.pitch_from == PitchFrom::Note { None } else { self.tracker.note() };
+        out.push(tracked.map_or(0.0, |n| n as f32));
     }
 
     // ------------------------------------------------------------ sequencer
@@ -1335,7 +1363,7 @@ impl Suu {
         let st = self.seq.steps[self.seq.step];
         // a gate of 0 opens nothing (not even for a control period)
         if st.on && self.gate_len() > 0.0 {
-            self.seq.note = self.p.note + st.note as f64;
+            self.seq.note = st.note as f64; // from the base note (`base_note`)
             // a tied step continues the previous note; any other starts a new one
             let prev = self.seq.steps[(self.seq.step + self.seq.len - 1) % self.seq.len];
             self.retrig = !(prev.tie && prev.on && self.seq.gate_open);
@@ -1631,12 +1659,19 @@ impl Suu {
     /// At each control-grid point: sequencer, breath from the last period's envelope, the folds'
     /// pitch, and the text loop.
     fn control(&mut self) {
+        if self.p.pitch_from != PitchFrom::Note {
+            self.track_count += 1;
+            if self.track_count >= TRACK_EVERY {
+                self.track_count = 0;
+                self.tracker.analyse();
+            }
+        }
         if self.seq.playing {
             self.advance_seq();
-            self.note_now = self.seq.note;
+            self.note_now = self.base_note() + self.seq.note;
             self.gate_now = self.seq.gate_open;
         } else {
-            self.note_now = self.p.note;
+            self.note_now = self.base_note();
             self.run_env_gate();
             self.gate_now = self.p.gate || self.env_open;
         }
@@ -1706,6 +1741,20 @@ impl Suu {
         }
     }
 
+    /// The pitch the sound is at, before the sequencer's steps: the note, or the input's.
+    fn base_note(&self) -> f64 {
+        match (self.p.pitch_from, self.tracker.note()) {
+            (PitchFrom::Input, Some(n)) => clamp(n, 12.0, 108.0),
+            (PitchFrom::InputSnap, Some(n)) => clamp(n.round(), 12.0, 108.0),
+            _ => self.p.note,
+        }
+    }
+
+    /// The input's tracked pitch (MIDI), if one has been found (for the UI).
+    pub fn tracked_note(&self) -> Option<f64> {
+        self.tracker.note()
+    }
+
     /// ENV gate, per control period: open at the threshold, closed after the release below it.
     fn run_env_gate(&mut self) {
         let p = self.p;
@@ -1749,7 +1798,11 @@ impl Suu {
         // the ENV gate's follower: 1 ms up, 20 ms down, on the input as it comes
         let (in_a, in_r) = (1.0 - exp(-1.0 / (0.001 * fs)), 1.0 - exp(-1.0 / (0.02 * fs)));
         let mut in_peak = self.in_peak;
+        let track = p.pitch_from != PitchFrom::Note;
         for i in 0..n {
+            if track {
+                self.tracker.push(input[i] as f64);
+            }
             let a = (input[i] as f64).abs();
             self.in_env += (a - self.in_env) * if a > self.in_env { in_a } else { in_r };
             in_peak = js_max(in_peak, self.in_env);
@@ -1885,7 +1938,7 @@ mod tests {
             s.set_params(Params { text_step: step, text_unit: unit, text_say: say, text_len: len, ..Params::default() });
             s.set_text("wow yeah now wow");
             s.set_profile(&wave, true);
-            s.set_params(Params { gate: true, morph: 0.6, reson: 0.5, folds: 0.5, glide_s: 0.1, ..s.params() });
+            s.set_params(Params { gate: true, morph: 0.6, reson: 0.5, folds: 0.5, glide_s: 0.1, pitch_from: PitchFrom::Input, ..s.params() });
             for t in 0..N_MOD {
                 s.set_mod(t, Mod { depth: 0.4, rate_hz: 1.0 + t as f64, sync: 0.0, shape: Shape::Random, smooth: 0.5 });
             }
@@ -2103,7 +2156,7 @@ mod tests {
         let areas = |s: &Suu| {
             let mut ui = Vec::new();
             s.ui_state(&mut ui);
-            ui[23..].to_vec()
+            ui[23..23 + UI_AREAS].to_vec()
         };
         let mut s = playing();
         run(&mut s, 128, 9600);
@@ -2143,7 +2196,7 @@ mod tests {
             run(&mut s, 128, 24000);
             let mut ui = Vec::new();
             s.ui_state(&mut ui);
-            ui[23..].to_vec()
+            ui[23..23 + UI_AREAS].to_vec()
         };
         let (a, b, c) = (areas(0.0), areas(0.5), areas(-0.5));
         for k in 0..UI_AREAS {
@@ -2707,5 +2760,45 @@ mod tests {
             q.process(&inp, &mut out);
             assert!(!q.env_open());
         }
+    }
+
+    #[test]
+    fn pitch_follows_the_input() {
+        let fs = 48000.0;
+        // a saw 30 cents above A3 (57.3)
+        let f0 = 220.0 * pow(2.0, 0.3 / 12.0);
+        let run = |s: &mut Suu, secs: f64, ph: &mut f64| {
+            let (mut inp, mut out) = ([0f32; 128], [0f32; 128]);
+            for _ in 0..(secs * fs / 128.0) as usize {
+                for x in inp.iter_mut() {
+                    *ph = (*ph + f0 / fs) % 1.0;
+                    *x = (0.3 * (2.0 * *ph - 1.0)) as f32;
+                }
+                s.process(&inp, &mut out);
+            }
+        };
+        let mut ph = 0.0;
+        let mut s = Suu::new(fs);
+        s.set_params(Params { gate: true, note: 40.0, pitch_from: PitchFrom::Input, ..Params::default() });
+        run(&mut s, 0.3, &mut ph);
+        assert!((s.pitch - 57.3).abs() < 0.05, "INPUT: {}", s.pitch);
+        s.set_params(Params { pitch_from: PitchFrom::InputSnap, ..s.params() });
+        run(&mut s, 0.2, &mut ph);
+        assert_eq!(s.pitch, 57.0, "INPUT ♮ snaps to A3");
+        // the sequencer's steps transpose from the input's pitch
+        s.set_step(0, Step { on: true, note: 7, ..s.step(0) });
+        s.set_playing(true);
+        run(&mut s, 0.05, &mut ph);
+        assert_eq!(s.pitch, 64.0, "a step 7 above the input");
+        s.set_playing(false);
+        // silence holds the last pitch; NOTE goes back to the note
+        let (inp, mut out) = ([0f32; 128], [0f32; 128]);
+        for _ in 0..200 {
+            s.process(&inp, &mut out);
+        }
+        assert_eq!(s.pitch, 57.0, "held through silence");
+        s.set_params(Params { pitch_from: PitchFrom::Note, ..s.params() });
+        run(&mut s, 0.1, &mut ph);
+        assert_eq!(s.pitch, 40.0, "NOTE: the note");
     }
 }

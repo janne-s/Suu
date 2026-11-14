@@ -2,7 +2,7 @@
 //! Prints, for each, the time to render that many seconds at 48 kHz in 128-sample blocks, as a
 //! percentage of one core (real time = 100 %), the best of three runs.
 use std::time::Instant;
-use suu::{HORN_POINTS, Mod, Params, Shape, Source, Step, Suu, TextStep};
+use suu::{HORN_POINTS, Mod, Params, PitchFrom, Shape, Source, Step, Suu, TextStep};
 
 fn main() {
     let secs: f64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(4.0);
@@ -34,6 +34,7 @@ fn main() {
             s.set_mod(7, Mod { depth: 1.0, rate_hz: 1.0, sync: 0.0, shape: Shape::Saw, smooth: 0.0 });
         })),
         ("input + reson 0.8", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, ..gate }))),
+        ("input + reson, pitch IN", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, pitch_from: PitchFrom::Input, ..gate }))),
         ("folds 1", Box::new(move |s: &mut Suu| s.set_params(Params { folds: 1.0, ..gate }))),
         ("sequencer + text gate", Box::new(move |s: &mut Suu| {
             s.load_dict(dict);

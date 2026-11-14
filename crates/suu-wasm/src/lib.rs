@@ -2,7 +2,7 @@
 //! writes and reads through the wasm memory, parameters by index (see `PARAMS`), and text and
 //! the dictionary passed as UTF-8 in buffers from `suu_alloc`.
 
-use suu::{GlideDir, MAX_BLOCK, Mod, Params, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
+use suu::{GlideDir, MAX_BLOCK, Mod, Params, PitchFrom, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
 
 pub struct Handle {
     suu: Suu,
@@ -20,7 +20,8 @@ pub struct Handle {
 /// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn), 28 text_seq (0/1), 29 speech,
 /// 30 text_once (0/1), 31 text_step (0 note, 1 clock), 32 text_unit (0 syllable, 1 word),
 /// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down), 36 osc_db, 37 input_db, 38 text_gate,
-/// 39 env_gate (0/1), 40 env_thresh_db, 41 env_release_s, 42 env_release_sync (beats, 0 = free)
+/// 39 env_gate (0/1), 40 env_thresh_db, 41 env_release_s, 42 env_release_sync (beats, 0 = free),
+/// 43 pitch_from (0 note, 1 input, 2 input snapped to semitones)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -64,6 +65,7 @@ fn set(p: &mut Params, id: u32, v: f64) {
         40 => p.env_thresh_db = v,
         41 => p.env_release_s = v,
         42 => p.env_release_sync = v,
+        43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}
     }
@@ -210,7 +212,7 @@ pub extern "C" fn suu_ui(h: *mut Handle) -> *const f32 {
     unsafe { (*h).frame.as_ptr() }
 }
 
-/// 0 step, 1 gate (0/1), 2 sounding note, 3 playing (0/1)
+/// 0 step, 1 gate (0/1), 2 sounding note, 3 playing (0/1), 4 the input's tracked pitch (NaN: none)
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_state(h: *mut Handle, what: u32) -> f64 {
     let h = unsafe { &*h };
@@ -219,6 +221,7 @@ pub extern "C" fn suu_state(h: *mut Handle, what: u32) -> f64 {
         0 => step as f64,
         1 => gate as u32 as f64,
         2 => note,
+        4 => h.suu.tracked_note().unwrap_or(f64::NAN),
         _ => h.suu.playing() as u32 as f64,
     }
 }

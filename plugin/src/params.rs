@@ -43,6 +43,20 @@ pub enum GateMode {
     Midi,
 }
 
+/// Where the pitch comes from (`suu::PitchFrom`).
+#[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PitchMode {
+    #[id = "note"]
+    #[name = "Note"]
+    Note,
+    #[id = "input"]
+    #[name = "Input"]
+    Input,
+    #[id = "input_snap"]
+    #[name = "Input Snapped"]
+    InputSnap,
+}
+
 /// A note value for tempo sync, or free running.
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum Sync {
@@ -430,6 +444,9 @@ pub struct SuuParams {
     /// the pitch when no key is held, and the sequence's root
     #[id = "root"]
     pub root: IntParam,
+    /// the note (root, MIDI) or the input's tracked pitch
+    #[id = "pitch"]
+    pub pitch: EnumParam<PitchMode>,
     #[id = "bend_range"]
     pub bend_range: IntParam,
     #[id = "glide"]
@@ -540,6 +557,7 @@ impl SuuParams {
                 .with_value_to_string(Arc::new(|v| if v < 1.0 { format!("{:.0} m", v * 1000.0) } else { format!("{v:.2}") })),
             env_release_sync: EnumParam::new("Env Release Sync", Sync::Off),
             root: IntParam::new("Root", 45, IntRange::Linear { min: 12, max: 108 }).with_value_to_string(formatters::v2s_i32_note_formatter()).with_string_to_value(formatters::s2v_i32_note_formatter()),
+            pitch: EnumParam::new("Pitch", PitchMode::Note),
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
             glide: FloatParam::new("Glide", 0.03, FloatRange::Skewed { min: 0.0, max: 2.0, factor: 0.5 })
                 .with_unit(" s")
@@ -656,6 +674,11 @@ impl SuuParams {
             env_thresh_db: self.env_threshold.value() as f64,
             env_release_s: self.env_release.value() as f64,
             env_release_sync: self.env_release_sync.value().beats(),
+            pitch_from: match self.pitch.value() {
+                PitchMode::Note => suu::PitchFrom::Note,
+                PitchMode::Input => suu::PitchFrom::Input,
+                PitchMode::InputSnap => suu::PitchFrom::InputSnap,
+            },
         }
     }
 }

@@ -40,12 +40,12 @@ pub(crate) fn g2p() -> &'static EnglishG2P {
 }
 
 /// The length of `Suu::ui_state`'s frame.
-const UI_LEN: usize = 23 + suu::UI_AREAS;
+const UI_LEN: usize = 24 + suu::UI_AREAS;
 /// How often the audio thread leaves the window a frame of the mouth (s).
 const UI_EVERY: f64 = 1.0 / 30.0;
 
 /// What the audio thread and the window share, without locks: the mouth's last frame and the
-/// tempo (atomics), keys and the drawn horn (bounded queues), a source snapshot on request.
+/// tempo (atomics), the drawn horn (a bounded queue), a source snapshot on request.
 pub struct Shared {
     ui: [AtomicU32; UI_LEN],
     ui_len: AtomicUsize,
@@ -54,7 +54,6 @@ pub struct Shared {
     bpm: AtomicU64,
     /// counts cores made (`setup`): a new one means a reloaded state
     generation: AtomicU64,
-    keys: (Sender<(u8, bool)>, Receiver<(u8, bool)>),
     horn: (Sender<([f64; suu::HORN_POINTS], bool)>, Receiver<([f64; suu::HORN_POINTS], bool)>),
     /// the words changed: plan the text again
     words_changed: AtomicBool,
@@ -73,7 +72,6 @@ impl Default for Shared {
             ui_seq: AtomicU64::new(0),
             bpm: AtomicU64::new(DEFAULT_BPM.to_bits()),
             generation: AtomicU64::new(0),
-            keys: bounded(256),
             horn: bounded(4),
             words_changed: AtomicBool::new(false),
             horn_reset: AtomicBool::new(false),
@@ -505,14 +503,10 @@ impl<K: Kind> SuuPlugin<K> {
         true
     }
 
-    /// What the window left for the audio thread (keys, the horn, a snapshot asked for, new
+    /// What the window left for the audio thread (the horn, a snapshot asked for, new
     /// words), and the mouth's frame for it every `UI_EVERY`. No allocation, no lock.
     fn window_exchange(&mut self, n: usize, bpm: f64) {
         let shared = self.shared.clone();
-        while let Ok((note, on)) = shared.keys.1.try_recv() {
-            let e = if on { NoteEvent::NoteOn { timing: 0, voice_id: None, channel: 0, note, velocity: 0.8 } } else { NoteEvent::NoteOff { timing: 0, voice_id: None, channel: 0, note, velocity: 0.0 } };
-            self.note_event(e);
-        }
         if shared.words_changed.swap(false, Ordering::AcqRel) {
             self.planned_text = None;
         }
@@ -571,7 +565,7 @@ impl<K: Kind> SuuPlugin<K> {
 
 impl<K: Kind> Plugin for SuuPlugin<K> {
     const NAME: &'static str = K::NAME;
-    const VENDOR: &'static str = "Janne Särkelä";
+    const VENDOR: &'static str = "JS";
     const URL: &'static str = "https://janne-s.github.io/Suu/";
     const EMAIL: &'static str = "";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");

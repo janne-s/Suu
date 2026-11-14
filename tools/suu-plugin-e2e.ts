@@ -2,7 +2,7 @@
  * The Suu page as the plug-in's window, in headless Chrome: the webview's bridge is stood in for
  * (`sendToPlugin` records, `onPluginMessage` is called as the plug-in would), and the check is that
  * every host parameter is reached by the page, the host's changes land on the controls without
- * being sent back, keys go as notes, and the web-only parts are hidden.
+ * being sent back, keys go on to the host (held back only while typing), and the web-only parts are hidden.
  * Usage: bun run suu (in another shell), then bun tools/suu-plugin-e2e.ts [url]
  */
 import { chromium } from "playwright-core";
@@ -76,15 +76,25 @@ await page.click("#octup");
 await frames();
 s = await sent();
 ok("+ moves the root an octave (D4)", s.some((m) => m.type === "set" && m.id === "root" && m.value === 62) && (await page.textContent("#rootoct")) === "4");
-// keys play notes; the root stays
+// keys belong to the host: the page plays nothing and moves nothing
 await page.keyboard.down("d");
 await page.keyboard.up("d");
+await page.keyboard.press("x");
+await page.keyboard.press(" ");
 await frames();
 s = await sent();
-ok("a key is a note on and off", s.some((m) => m.type === "key" && m.on && m.note === 64) && s.some((m) => m.type === "key" && !m.on && m.note === 64));
-ok("a key does not move the root", !s.some((m) => m.type === "set" && m.id === "root"));
+ok("keys send no notes, no octave, no play", !s.some((m) => m.type === "key" || (m.type === "set" && (m.id === "root" || m.id === "sequencer"))));
 // text and INIT
 await page.click("#text-toggle");
+// while typing in a field the keys stay in the window
+await page.focus("#text");
+await frames();
+s = await sent();
+ok("a focused text field holds the keys back from the host", s.some((m) => m.type === "typing" && m.on === true));
+await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+await frames();
+s = await sent();
+ok("leaving it lets them go on", s.some((m) => m.type === "typing" && m.on === false));
 await page.click("#singtext");
 s = await sent();
 ok("SING sends the words", s.some((m) => m.type === "text" && m.text === "wow wow"));

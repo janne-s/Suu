@@ -13,7 +13,7 @@ let dirty = true;
 // in the plug-in's window: the bridge the webview provides
 const inPlugin = typeof window.sendToPlugin === "function";
 // the plug-in bridge's state (see "plug-in" at the end): the host's last values, and so on
-const plugin = { ready: false, quiet: false, host: {}, words: null, horn: "", ui: "", frame: 0, keys: new Set() };
+const plugin = { ready: false, quiet: false, host: {}, words: null, horn: "", ui: "", frame: 0, typing: false };
 let ctx, node, srcNode, fileBuf, micStream, analyser, fx = {};
 // the engine, compiled once: for the audio worklet, and for drawing the mouth before audio starts
 const wasmModule = inPlugin ? null : WebAssembly.compileStreaming(fetch("suu.wasm"));
@@ -875,6 +875,7 @@ function onWorklet(m) {
     ui = m.ui;
     dirty = true;
     showSeq(ui[19] > 0.5, ui[17]);
+    if (pitchFrom) showRoot();
   }
 }
 
@@ -892,6 +893,7 @@ function pushAll() {
   send(1, lastNote);
   send(35, glideDir);
   send(39, envOn ? 1 : 0);
+  send(43, pitchFrom);
   sendHorn();
   gate();
   sendText(false);
@@ -1067,14 +1069,27 @@ function note(midi) {
 // the root: a note of the octave from the list, the octave by − and + (or Z and X); in a host
 // it is set here rather than by MIDI
 function showRoot() {
-  $("notename").value = String(((lastNote % 12) + 12) % 12);
-  $("rootoct").textContent = String(Math.floor(lastNote / 12) - 1);
+  // PITCH from the input: the pitch it is at (the root, until one is found)
+  const t = pitchFrom && ui && ui.length > 23 + UI_AREAS ? ui[23 + UI_AREAS] : 0;
+  const m = t > 0 ? Math.round(t) : lastNote;
+  $("notename").value = String(((m % 12) + 12) % 12);
+  $("rootoct").textContent = String(Math.floor(m / 12) - 1);
 }
+// PITCH: 0 the note, 1 the input's pitch, 2 the input's snapped to semitones
+let pitchFrom = 0;
+function setPitchFrom(v) {
+  pitchFrom = v;
+  $("pitchfrom").value = String(v);
+  $("pitchfrom").closest(".keys").classList.toggle("tracking", v > 0);
+  send(43, v);
+  showRoot();
+}
+$("pitchfrom").onchange = () => setPitchFrom(+$("pitchfrom").value);
 NAMES.forEach((n, i) => $("notename").add(new Option(n, String(i))));
 showRoot();
 $("notename").onchange = () => note(12 * Math.floor(lastNote / 12) + +$("notename").value);
 function gate() {
-  if (inPlugin) return pluginKeys();
+  if (inPlugin) return; // the host's MIDI and the GATE parameter open the sound
   send(2, down.size || held ? 1 : 0);
 }
 function shiftOctave(d) {
@@ -1092,6 +1107,7 @@ function allKeysUp() {
 }
 addEventListener("keydown", async (e) => {
   if (e.key === "Escape") return allKeysUp();
+  if (inPlugin) return; // keys belong to the host (its computer keyboard, its shortcuts)
   if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   const key = e.key.toLowerCase();
   if (e.code === "Space") {
@@ -1115,8 +1131,7 @@ addEventListener("keydown", async (e) => {
   down.set(i, midi);
   await start();
   if (!down.has(i)) return; // released while starting
-  // (in the plug-in a key plays its note; the root stays, so playing writes no automation)
-  if (!inPlugin) note(midi);
+  note(midi);
   // a key while the gate is already open (another key, or hold) is still a new note for the text
   if (legato || held) post({ type: "retrigger" });
   gate();
@@ -1126,7 +1141,7 @@ addEventListener("keyup", (e) => {
   const i = KEYS.indexOf(e.key.toLowerCase());
   if (i < 0 || !down.has(i)) return;
   down.delete(i);
-  if (down.size && !inPlugin) note([...down.values()].pop()); // back to the key still held
+  if (down.size) note([...down.values()].pop()); // back to the key still held
   gate();
 });
 addEventListener("blur", allKeysUp);
@@ -1466,6 +1481,7 @@ function getState() {
     bpm: bpm(),
     glideDir,
     envGate: envOn,
+    pitchFrom,
     space: spaceOn,
     knobs,
     motion,
@@ -1500,6 +1516,7 @@ function readState(raw) {
     bpm: num(r.bpm, d.bpm, 30, 300),
     space: bool(r.space, d.space),
     envGate: bool(r.envGate, d.envGate),
+    pitchFrom: [0, 1, 2].includes(r.pitchFrom) ? r.pitchFrom : d.pitchFrom,
     glideDir: [0, 1, 2].includes(r.glideDir) ? r.glideDir : d.glideDir,
     knobs: {},
     motion: {},
@@ -1575,6 +1592,7 @@ function applyState(st) {
   note(st.note);
   setGlideDir(st.glideDir);
   setEnv(st.envGate);
+  setPitchFrom(st.pitchFrom);
   for (const [key, c] of controls) {
     const k = st.knobs[key];
     c.setSync?.(typeof k === "object" ? k.sync : null);
@@ -1762,6 +1780,7 @@ const TIPS = {
   "#octup": "Octave up (X)",
   "#notename": "Note\nThe root: the synth's pitch, the resonator's and the sequence's key. Pick it here, its octave with − and +; keys A … K play.",
   "#rootoct": "Octave\nThe root's octave: − and + (Z and X) change it.",
+  "#pitchfrom": "Pitch\nNOTE: the root and the keys. IN: the input's own pitch, as it moves; IN ♮ snaps it to semitones. The resonator, the folds, the oscillator and the sequence follow it; the note fields show it.",
   "#slotA": "A\nOne of two full settings to compare; switching keeps the other.",
   "#slotB": "B\nOne of two full settings to compare; switching keeps the other.",
   "#init": "Init\nThis side back to the initial settings.",
@@ -1897,6 +1916,7 @@ const PMAP = [];
     st.knobs.envRelease = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
   });
   add("glide_dir", (st) => st.glideDir, (st, v) => (st.glideDir = Math.round(v)));
+  add("pitch", (st) => st.pitchFrom, (st, v) => (st.pitchFrom = Math.round(v)));
   add("root", (st) => st.note, (st, v) => (st.note = Math.round(v)));
   const PREFIX = ["vowel_x", "vowel_y", "round", "nasal", "inject", "damping", "morph", "shift", "open"];
   MOTION_NAMES.forEach((name, i) => {
@@ -1960,7 +1980,15 @@ function applyHost(st, values) {
 }
 
 /** Each frame: a setting changed on the page goes to the host. */
+const textField = (el) => el?.tagName === "INPUT" && (el.type === "text" || el.type === "number") && !el.readOnly;
 function pluginSync() {
+  // keys go on to the host, except while a text field has the focus (the words, a typed value);
+  // read every frame, so a field removed while focused cannot leave the keys held back
+  const typing = textField(document.activeElement);
+  if (typing !== plugin.typing) {
+    plugin.typing = typing;
+    sendToPlugin({ type: "typing", on: typing });
+  }
   if (!plugin.ready || plugin.quiet) return;
   const st = getState();
   for (const m of PMAP) {
@@ -1996,20 +2024,17 @@ function pluginPost(m) {
   } else if (m.type === "snapshot") sendToPlugin({ type: "snapshot" });
 }
 
-/** The keys held go to the plug-in as notes. */
-function pluginKeys() {
-  const want = new Set(down.values());
-  for (const n of plugin.keys) if (!want.has(n)) sendToPlugin({ type: "key", note: n, on: false });
-  for (const n of want) if (!plugin.keys.has(n)) sendToPlugin({ type: "key", note: n, on: true });
-  plugin.keys = want;
-}
-
 if (inPlugin) {
   window.__suuPlugin = { ids: PMAP.map((m) => m.id) }; // for automated checks
   document.body.classList.add("in-plugin");
   $("bpm").readOnly = true;
   TIPS["#bpm"] = "Tempo\nThe host's.";
   $("bpm").dataset.tip = TIPS["#bpm"];
+  // outside a text field a key does nothing here (Space would press the button last clicked,
+  // a letter would pick from the note list): it is the host's
+  for (const ev of ["keydown", "keyup"]) addEventListener(ev, (e) => e.key !== "Escape" && !textField(e.target) && e.preventDefault(), true);
+  TIPS["#rootoct"] = "Octave\nThe root's octave: − and + change it.";
+  $("rootoct").dataset.tip = TIPS["#rootoct"];
   addEventListener("error", (e) => sendToPlugin({ type: "log", text: `${e.message} ${e.filename}:${e.lineno}` }));
   addEventListener("unhandledrejection", (e) => sendToPlugin({ type: "log", text: String(e.reason?.stack ?? e.reason) }));
   window.onPluginMessage = (m) => {

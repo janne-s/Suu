@@ -8,8 +8,11 @@
 //! the drawn horn and the page's own extras are persisted fields, never browser storage (shared
 //! by every instance and project).
 //!
-//! The mouth's live state comes from the audio thread through atomics (`Shared`), keys go to it
-//! through a bounded queue: the audio thread neither locks nor allocates for the window.
+//! The mouth's live state comes from the audio thread through atomics (`Shared`): the audio
+//! thread neither locks nor allocates for the window.
+//!
+//! The page plays no keys in a host: they go on to the host (Live's own computer keyboard, its
+//! shortcuts), except while a text field has the focus, so typing words plays nothing.
 //!
 //! Neartect's lessons from Live on macOS: Escape is consumed (Live crashed on it in a webview),
 //! file dialogs are async sheets (a modal one on baseview's timer crashed Live), and the page
@@ -30,7 +33,7 @@ use std::future::Future;
 use std::io::Write;
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -76,7 +79,8 @@ enum Message {
     Horn { areas: Vec<f64>, wrap: bool },
     /// the page's own extras (its full state as JSON), kept with the host's state
     Ui { json: String },
-    Key { note: u8, on: bool },
+    /// a text field has the focus: its keys stay in the window, away from the host
+    Typing { on: bool },
     Snapshot,
     Resize { width: u32, height: u32 },
     Log { text: String },
@@ -243,6 +247,8 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
         dialog: None,
         frame: 0,
     });
+    let typing = Arc::new(AtomicBool::new(false));
+    let typing_keys = typing.clone();
     let editor = WebViewEditor::new(HTMLSource::URL("suu://localhost/index.html"), WINDOW_SIZE)
         .with_background_color((13, 18, 23, 255))
         .with_developer_mode(cfg!(debug_assertions))
@@ -253,7 +259,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 None => http::Response::builder().status(404).body(Cow::Borrowed(&[][..])).expect("a valid response"),
             })
         })
-        .with_keyboard_handler(|event| event.key == Key::Escape)
+        .with_keyboard_handler(move |event| event.key == Key::Escape || typing_keys.load(Ordering::Relaxed))
         .with_event_loop(move |page, setter, window| {
             let Ok(mut gui) = gui.lock() else { return };
             let gui = &mut *gui;
@@ -329,9 +335,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                             *u = json;
                         }
                     }
-                    Message::Key { note, on } => {
-                        let _ = shared.keys.0.try_send((note.min(127), on));
-                    }
+                    Message::Typing { on } => typing.store(on, Ordering::Relaxed),
                     Message::Snapshot => shared.snap_state.store(1, Ordering::Release),
                     Message::Resize { width, height } => page.resize(window, width.max(SMALLEST_WINDOW.0), height.max(SMALLEST_WINDOW.1)),
                     Message::Log { text } => log(&text),
