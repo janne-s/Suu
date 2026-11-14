@@ -102,8 +102,14 @@ class SuuProcessor extends AudioWorkletProcessor {
     if (this.untilFrame <= 0) {
       this.untilFrame += FRAME_EVERY;
       const len = this.x.suu_ui_update(this.h);
-      const ui = new Float32Array(this.x.memory.buffer, this.x.suu_ui(this.h), len).slice();
-      this.port.postMessage({ type: "ui", ui }, [ui.buffer]);
+      const now = new Float32Array(this.x.memory.buffer, this.x.suu_ui(this.h), len);
+      // an unchanged frame (a still or silent mouth) is not sent: the page would redraw for it
+      const last = this.lastUi;
+      if (!last || last.length !== len || now.some((v, i) => v !== last[i])) {
+        this.lastUi = now.slice();
+        const ui = now.slice();
+        this.port.postMessage({ type: "ui", ui }, [ui.buffer]);
+      }
     }
     return true;
   }

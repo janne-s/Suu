@@ -165,6 +165,9 @@ struct Gui {
     ready: bool,
     generation: u64,
     ui_seq: u64,
+    /// the mouth's frame and the tempo last sent: an unchanged frame is not sent again (a still
+    /// or silent mouth would have the page redraw 30 times a second for nothing)
+    ui_sent: (Vec<f32>, f64),
     /// what the page was last told about the text: (said, words)
     text_shown: Option<(bool, String)>,
     dialog: Option<Dialog>,
@@ -243,6 +246,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
         ready: false,
         generation: 0,
         ui_seq: 0,
+        ui_sent: (Vec::new(), f64::NAN),
         text_shown: None,
         dialog: None,
         frame: 0,
@@ -290,6 +294,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                         gui.ready = true;
                         gui.generation = generation;
                         gui.text_shown = None;
+                        gui.ui_sent = (Vec::new(), f64::NAN);
                         page.send_json(init_message(gui, &params, synth));
                     }
                     Message::Set { id, value } => {
@@ -409,7 +414,11 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 gui.ui_seq = seq;
                 let len = shared.ui_len.load(Ordering::Acquire).min(shared.ui.len());
                 let ui: Vec<f32> = shared.ui[..len].iter().map(|v| f32::from_bits(v.load(Ordering::Relaxed))).collect();
-                page.send_json(json!({ "type": "ui", "ui": ui, "bpm": f64::from_bits(shared.bpm.load(Ordering::Relaxed)) }));
+                let bpm = f64::from_bits(shared.bpm.load(Ordering::Relaxed));
+                if (&ui, bpm) != (&gui.ui_sent.0, gui.ui_sent.1) {
+                    page.send_json(json!({ "type": "ui", "ui": ui, "bpm": bpm }));
+                    gui.ui_sent = (ui, bpm);
+                }
             }
             let snap = shared.snap_state.load(Ordering::Acquire);
             if snap >= 2 {

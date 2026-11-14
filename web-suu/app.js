@@ -831,9 +831,13 @@ function frameLoop() {
     // live markers on the Motion rows
     for (const r of rows) {
       const live = ui[r.t < 6 ? r.t : 14 + r.t]; // the horn's three come after the first 20 values
-      r.marker.hidden = r.depth === 0;
-      r.marker.style.left = 100 * clamp(baseNorm(r, live), 0, 1) + "%";
       const a = baseNorm(r, r.base) * 100, b = clamp(baseNorm(r, live), 0, 1) * 100;
+      // only what changed: a style change recalculates styles, 30 times a second
+      const key = `${r.depth === 0} ${b} ${a}`;
+      if (key === r.shown) continue;
+      r.shown = key;
+      r.marker.hidden = r.depth === 0;
+      r.marker.style.left = b + "%";
       r.input.style.setProperty("--lo", Math.min(a, b) + "%");
       r.input.style.setProperty("--hi", Math.max(a, b) + "%");
     }
