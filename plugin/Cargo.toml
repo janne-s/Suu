@@ -8,6 +8,7 @@ publish = false
 
 [workspace]
 members = ["fx", "synth", "xtask"]
+exclude = ["vendor"]
 
 [dependencies]
 suu = { path = "../crates/suu" }
@@ -31,3 +32,9 @@ debug = false
 [profile.profiling]
 inherits = "release"
 debug = true
+
+# wry 0.35.2 with one fix: dragging a host's own item (a Live device) over the window crashed
+# the host in its file drop handler (a missing file list dereferenced). See the patch in
+# vendor/wry-0.35.2/src/wkwebview/file_drop.rs (`collect_paths`).
+[patch.crates-io]
+wry = { path = "vendor/wry-0.35.2" }
