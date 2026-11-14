@@ -528,10 +528,16 @@ impl HumanVoice {
         self.clock += dt;
         // contact constraint on the frame computed anyway; re-apply only if a correction was made
         let x = self.artic.x;
-        self.airway.apply(&x, dt);
-        if self.enforce_contacts() {
-            let x = self.artic.x;
-            self.airway.reapply(&x);
+        // a settled geometry with the same inputs would be computed again to the same targets
+        // (and the same contact check): skip it (the largest cost after the airway's own step)
+        if !self.airway.settled_for(&x, dt) {
+            self.airway.apply(&x, dt);
+            let corrected = self.enforce_contacts();
+            if corrected {
+                let x = self.artic.x;
+                self.airway.reapply(&x);
+            }
+            self.airway.note_settled(&x, dt, !corrected);
         }
         self.airway.net.begin_block(self.ctrl_every);
         self.ctrl_counter = self.ctrl_every as i64;

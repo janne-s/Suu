@@ -5,9 +5,13 @@
 //! the turbulence noise sources at constrictions and the teeth.
 
 use crate::airway::network::{AirwayNetwork, Area, NoiseSpec, PortSpec, Tube, TubeSpec};
-use crate::anatomy::human::{HumanArtic, HumanBody, HumanFrame, HumanVocalTract};
+use crate::anatomy::human::{HumanArtic, HumanBody, HumanFrame, HumanVocalTract, N_ARTIC};
 use crate::math::{js_max, js_min, js_round, smoothstep as smooth, sqrt};
 use crate::physics::{C_SOUND, RHO, WALL_NASAL, WALL_SOFT, WALL_TRACHEA};
+
+/// Room for the settled-geometry key: the articulation, 17 settings and a drawn horn of up to
+/// 256 points (Suu's has 32), so comparing it never allocates.
+const GEOM_KEY_CAP: usize = N_ARTIC + 17 + 256;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NoiseGains {
@@ -77,6 +81,16 @@ pub struct HumanAirway {
     base_dt: f64,
     noise_list: Vec<NoiseSpec>,
     scratch_frame: HumanFrame,
+    /// Settled geometry (`settled_for`, `note_settled`): the inputs of the last geometry update,
+    /// whether it gave the same targets as the one before (and needed no contact correction),
+    /// those targets, and a buffer for the next key. All sized at construction.
+    geom_key: Vec<f64>,
+    key_scratch: Vec<f64>,
+    prev_targets: [Vec<f64>; 4],
+    settled: bool,
+    /// skip settled geometry updates (on by default; off only to check that skipping changes
+    /// nothing)
+    pub skip_settled: bool,
 }
 
 impl HumanAirway {
@@ -188,7 +202,68 @@ impl HumanAirway {
             base_dt: 0.0,
             noise_list: Vec::with_capacity(8),
             scratch_frame: HumanFrame::with_capacity(),
+            geom_key: Vec::with_capacity(GEOM_KEY_CAP),
+            key_scratch: Vec::with_capacity(GEOM_KEY_CAP),
+            prev_targets: [vec![0.0; n_ph], vec![0.0; n_or], vec![0.0; n_ph], vec![0.0; n_or]],
+            settled: false,
+            skip_settled: true,
         }
+    }
+
+    /// Everything a geometry update (`apply`) reads besides the targets it ramps from: the
+    /// articulation, the step, the drawn horn and its settings, the slew limits, the body and the
+    /// noise gains.
+    fn geom_key_into(&self, a: &HumanArtic, dt: f64, out: &mut Vec<f64>) {
+        out.clear();
+        out.extend_from_slice(&a.to_array());
+        let g = self.noise_gain;
+        out.extend_from_slice(&[
+            dt,
+            if self.profile_wrap { 1.0 } else { 0.0 },
+            self.profile_mix,
+            self.profile_shift,
+            self.profile_open,
+            self.max_area_rate,
+            self.area_rate_gain,
+            self.seal_rate,
+            self.seal_lo,
+            self.seal_hi,
+            self.seal_ease,
+            self.body.scale,
+            g.glottis,
+            g.constriction,
+            g.teeth,
+            g.glottis_lowpass,
+            g.glottis_highpass,
+        ]);
+        out.extend_from_slice(&self.profile);
+    }
+
+    /// Whether `apply(a, dt)` would set the same targets as the last update did: its inputs are
+    /// unchanged (bit for bit) and that update had already settled. Then it need not run.
+    pub fn settled_for(&mut self, a: &HumanArtic, dt: f64) -> bool {
+        if !self.settled || !self.skip_settled {
+            return false;
+        }
+        let mut k = core::mem::take(&mut self.key_scratch);
+        self.geom_key_into(a, dt, &mut k);
+        let same = k == self.geom_key;
+        self.key_scratch = k;
+        same
+    }
+
+    /// After a geometry update from `a` and `dt`: record its inputs, and whether it settled (the
+    /// same targets as the update before, and `clean`: no correction re-applied after it).
+    pub fn note_settled(&mut self, a: &HumanArtic, dt: f64, clean: bool) {
+        let mut k = core::mem::take(&mut self.geom_key);
+        self.geom_key_into(a, dt, &mut k);
+        self.geom_key = k;
+        let now = [&self.ph_areas, &self.or_areas, &self.ph_min, &self.or_min];
+        let same = (0..4).all(|i| self.prev_targets[i] == *now[i]);
+        for (i, v) in now.into_iter().enumerate() {
+            self.prev_targets[i].copy_from_slice(v);
+        }
+        self.settled = clean && same;
     }
 
     /// Internal branch index helpers

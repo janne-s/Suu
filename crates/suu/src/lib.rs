@@ -3098,4 +3098,40 @@ mod tests {
         run(&mut y, 220.0, 0.2, &mut ph);
         assert_eq!(y.pitch, 57.0, "taken after a beat");
     }
+
+    /// Skipping settled geometry updates (CHIMERA's `HumanAirway::settled_for`) changes nothing:
+    /// a held vowel settles, then the drawn horn, its morph, the vowel and the size change.
+    #[test]
+    fn skipping_settled_geometry_changes_nothing() {
+        let render = |skip: bool| {
+            let mut s = Suu::new(48000.0);
+            s.voice.airway.skip_settled = skip;
+            s.set_params(Params { gate: true, ..Params::default() });
+            let (inp, mut out) = ([0f32; 128], [0f32; 128]);
+            let mut all = Vec::new();
+            let mut run = |s: &mut Suu, blocks: usize| {
+                for _ in 0..blocks {
+                    s.process(&inp, &mut out);
+                    all.extend_from_slice(&out);
+                }
+            };
+            run(&mut s, 600); // 1.6 s: settled
+            let wave: Vec<f64> = (0..HORN_POINTS).map(|i| 3.0 + 2.0 * (i as f64 * 0.4).sin()).collect();
+            s.set_profile(&wave, false);
+            run(&mut s, 400);
+            s.set_params(Params { morph: 0.5, ..s.params() });
+            run(&mut s, 400);
+            s.set_profile(&[4.0; HORN_POINTS], false);
+            run(&mut s, 400);
+            s.set_params(Params { vowel_x: 0.0, vowel_y: 0.0, open: 2.0, ..s.params() });
+            run(&mut s, 400);
+            s.set_size(1.3);
+            s.voice.airway.skip_settled = skip;
+            run(&mut s, 600);
+            all
+        };
+        let (on, off) = (render(true), render(false));
+        assert!(on.iter().zip(&off).all(|(a, b)| a.to_bits() == b.to_bits()), "skipping changed the output");
+        assert!(on.iter().any(|v| v.abs() > 1e-3), "it sounds");
+    }
 }
