@@ -516,7 +516,12 @@ pub struct SuuParams {
     /// the mouth's shape and the pitch change only on this grid (off: free)
     #[id = "grid"]
     pub grid: EnumParam<Sync>,
-    /// how far the breath and voicing follow GRID, and how smoothly every move goes between lines
+    /// the text's grid (off: free), or GRID's; how far its breath and voicing follow it; and how
+    /// smoothly every move goes between lines (both grids)
+    #[id = "text_grid"]
+    pub text_grid: EnumParam<Sync>,
+    #[id = "text_grid_main"]
+    pub text_grid_main: BoolParam,
     #[id = "grid_breath"]
     pub grid_breath: FloatParam,
     #[id = "grid_smooth"]
@@ -654,7 +659,9 @@ impl SuuParams {
             steady_sync: EnumParam::new("Steady Sync", Sync::Off),
             hq: BoolParam::new("HQ", true),
             grid: EnumParam::new("Grid", Sync::Off),
-            grid_breath: percent(FloatParam::new("Grid Breath", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            text_grid: EnumParam::new("Text Grid", Sync::Off),
+            text_grid_main: BoolParam::new("Text Grid Follows Grid", false),
+            grid_breath: percent(FloatParam::new("Text Grid Breath", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
             grid_smooth: percent(FloatParam::new("Grid Smooth", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
             scale: core::array::from_fn(|i| ScaleParam { on: BoolParam::new(format!("Scale {}", PITCH_CLASSES[i]), true) }),
             jump: IntParam::new("Jump", 0, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
@@ -789,6 +796,7 @@ impl SuuParams {
             steady_sync: self.steady_sync.value().beats(),
             hq: self.hq.value(),
             grid: self.grid.value().beats(),
+            text_grid: if self.text_grid_main.value() { -1.0 } else { self.text_grid.value().beats() },
             grid_breath: self.grid_breath.value() as f64,
             grid_smooth: self.grid_smooth.value() as f64,
             scale: self.scale.iter().enumerate().map(|(i, p)| if p.on.value() { 1u16 << i } else { 0 }).sum(),

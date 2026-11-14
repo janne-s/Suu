@@ -23,6 +23,8 @@ steady
 steady_sync
 hq
 grid
+text_grid
+text_grid_main
 grid_breath
 grid_smooth
 scale_1
