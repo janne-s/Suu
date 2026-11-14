@@ -369,11 +369,27 @@ pub struct AirwayNetwork {
     pub noise_scale: f64,
     /// last output sample (radiated pressure derivative)
     pub out: f64,
+    /// The per-node geometry coefficients (`inv_a`, `inv_amin`, `sqrt_a`, `half_l`, `half_r`)
+    /// and volumes are current, made with this `min_node_area`: a node whose ramps are all 0
+    /// keeps them as they are (recomputing gives the same bits). Cleared where the geometry is
+    /// set directly (`snap_to_targets`).
+    coef_valid: bool,
+    coef_min_a: f64,
+    /// `step`'s loss constants, made from these settings: (t, viscous_omega, viscous_scale,
+    /// thermal losses)
+    loss_key: [f64; 4],
+    visc: f64,
+    sq_alpha: [f64; 4],
 }
 
 impl AirwayNetwork {
     pub fn new(fs: f64) -> Self {
         AirwayNetwork {
+            coef_valid: false,
+            coef_min_a: f64::NAN,
+            loss_key: [f64::NAN; 4],
+            visc: 0.0,
+            sq_alpha: [0.0; 4],
             fs,
             t: 1.0 / fs,
             inv_t: fs,
@@ -747,6 +763,7 @@ impl AirwayNetwork {
 
     /// Jump the geometry to the current targets immediately (initialisation; no dV/dt transient).
     pub fn snap_to_targets(&mut self) {
+        self.coef_valid = false;
         for k in 0..self.n_nodes {
             self.area[k] = self.area_target[k];
             self.amin[k] = self.amin_target[k];
@@ -859,12 +876,22 @@ impl AirwayNetwork {
         if vol_on {
             self.spill.fill(0.0);
         }
+        // nodes whose geometry does not move this step keep their coefficients
+        let fresh = self.coef_valid && self.coef_min_a == min_a;
         {
             let area = &mut self.area;
             let amin = &mut self.amin;
             let dx = &mut self.dx;
             let inj = &mut self.spill; // the per-node raw injection accumulator
             for k in 0..n {
+                if fresh && self.area_step[k] == 0.0 && self.amin_step[k] == 0.0 && self.dx_step[k] == 0.0 {
+                    // area, minimum, length, coefficients and volume as last step; its own
+                    // volume source is −0 (adds nothing)
+                    self.inv_lsum[k] = 0.0;
+                    self.flow_sum[k] = self.ext_flow[k];
+                    self.ext_flow[k] = 0.0;
+                    continue;
+                }
                 let mut a = area[k] + self.area_step[k];
                 if a < 0.0 {
                     a = 0.0;
@@ -921,6 +948,7 @@ impl AirwayNetwork {
                 self.ext_flow[k] = 0.0;
             }
         }
+        (self.coef_valid, self.coef_min_a) = (true, min_a);
         if vol_on {
             let c = self.vol_lp_coef;
             for k in 0..n {
@@ -938,7 +966,13 @@ impl AirwayNetwork {
         }
 
         // 3) branches
-        let visc = sqrt((RHO * MU * self.viscous_omega) / 2.0) * self.viscous_scale * if self.thermal_losses { 1.0 + THERMAL_FACTOR } else { 1.0 };
+        let key = [t, self.viscous_omega, self.viscous_scale, if self.thermal_losses { 1.0 } else { 0.0 }];
+        if key != self.loss_key {
+            self.loss_key = key;
+            self.visc = sqrt((RHO * MU * self.viscous_omega) / 2.0) * self.viscous_scale * if self.thermal_losses { 1.0 + THERMAL_FACTOR } else { 1.0 };
+            self.sq_alpha = SQRT_LOSS_POLES_HZ.map(|f| 1.0 - exp(-2.0 * PI * f * t));
+        }
+        let visc = self.visc;
         let closed = self.closed_area;
         let half_rho = 0.5 * RHO;
         let enable_energy_safe = self.energy_safe;
@@ -946,7 +980,7 @@ impl AirwayNetwork {
         let sqrt_on = self.sqrt_losses;
         let hf_loss = self.hf_loss;
         let mid_loss = self.mid_loss;
-        let sq_alpha = SQRT_LOSS_POLES_HZ.map(|f| 1.0 - exp(-2.0 * PI * f * t));
+        let sq_alpha = self.sq_alpha;
         {
             // the arrays the branch loop reads, borrowed once (checked indexing costs nothing
             // measurable here, against get_unchecked)
