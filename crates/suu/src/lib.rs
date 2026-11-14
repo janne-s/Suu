@@ -2024,10 +2024,6 @@ impl Suu {
         let envn = clamp(self.env_peak * 4.0, 0.0, 1.0);
         self.env_peak = 0.0;
         self.run_mods(envn);
-        // still: Motion's cycles go on, but the mouth keeps the shape it has
-        if still && !self.applied[0].is_nan() {
-            self.eff = self.applied;
-        }
         if self.p.grid > 0.0 {
             if self.grid_held.is_none() {
                 self.grid_eff = self.eff; // the glide starts where the shape is
@@ -2049,6 +2045,11 @@ impl Suu {
             }
         } else {
             self.grid_held = None;
+        }
+        // still: Motion and GRID run on as if it sounded (they never depend on the sound); only
+        // the mouth keeps the shape it has, and takes the current one when a note starts
+        if still && !self.applied[0].is_nan() {
+            self.eff = self.applied;
         }
         self.apply_mouth();
         // the breath follows the source's level; while the folds sound, at their full pressure
@@ -3668,6 +3669,40 @@ mod tests {
         assert!(within(&mod_only, 0) > 50, "GRID alone: the speech stays free");
         let follows = speak(0.25, -1.0, 1.0);
         assert_eq!(within(&follows, 0), 0, "TEXT GRID = GRID: on GRID's lines");
+    }
+
+    /// GRID and Motion do not depend on the sound: an arpeggio (gaps between the notes, each
+    /// note-on just after the line, mid control period) gets the same shape on each line as a
+    /// held note (the owner's bug: the still mouth's shape was what the grid took, so under an
+    /// arpeggio the mouth never moved).
+    #[test]
+    fn the_grid_moves_the_mouth_under_an_arpeggio_as_under_a_held_note() {
+        let shapes = |arp: bool| {
+            let mut s = Suu::new(48000.0);
+            // the owner's 1 ms release: the gap is silent at the line
+            s.set_params(Params { gate: !arp, bpm: 120.0, grid: 0.25, morph: 0.5, attack_s: 0.001, release_s: 0.001, ..Params::default() });
+            s.set_mod(6, Mod { depth: 0.9, rate_hz: 0.7, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+            let (inp, mut out) = ([0f32; 3000], [0f32; 3000]);
+            let mut got = Vec::new();
+            for _ in 0..16 {
+                // a 1/16 line (6000 samples at 120 bpm): the note on 40 samples after the line
+                // (mid control period), the shape read mid-note, the note off at half the line
+                s.process(&inp[..40], &mut out[..40]);
+                s.set_params(Params { gate: true, ..s.params() });
+                s.process(&inp[..1460], &mut out[..1460]);
+                got.push(s.applied[6]);
+                s.process(&inp[..1500], &mut out[..1500]);
+                s.set_params(Params { gate: !arp, ..s.params() });
+                s.process(&inp[..3000], &mut out[..3000]);
+            }
+            got
+        };
+        let (arp, held) = (shapes(true), shapes(false));
+        let moved = arp.windows(2).filter(|w| (w[0] - w[1]).abs() > 1e-3).count();
+        assert!(moved >= 12, "the mouth moves line by line under the arpeggio: {arp:?}");
+        for (i, (a, h)) in arp.iter().zip(&held).enumerate() {
+            assert!((a - h).abs() < 1e-9, "line {i}: arpeggio {a}, held note {h}");
+        }
     }
 
     /// After a note, a mouth moved by Motion stands still and the sound dies away (the owner's
