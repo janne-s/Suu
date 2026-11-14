@@ -1419,7 +1419,14 @@ fn project_on(pl: &Polyline, cum: &[f64], px: f64, py: f64) -> Projection {
             t
         };
         let (qx, qy) = (ax + ex * t, ay + ey * t);
-        let d = hypot(px - qx, py - qy);
+        let (dx, dy) = (px - qx, py - qy);
+        // a segment whose squared distance is clearly beyond the best cannot win the comparison
+        // below (hypot is within an ulp, the square within two): skip its hypot. The choice, and
+        // so the result, is the same bit for bit as comparing every hypot.
+        if dx * dx + dy * dy > best * best * (1.0 + 1e-12) {
+            continue;
+        }
+        let d = hypot(dx, dy);
         if d < best {
             best = d;
             bs = cum[i] + t * sqrt(l2);
