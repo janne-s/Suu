@@ -197,3 +197,16 @@ fn notes_back_to_back_are_separate() {
         }
     }
 }
+
+/// The effect under ENV: after a MIDI note ends and the track goes on, the last note's pitch
+/// stays (it went back to the root). (A changed root takes over again: `sync`; a parameter
+/// cannot be changed from here.)
+#[test]
+fn the_last_note_stays_after_its_release() {
+    let mut p = SuuFx::default();
+    assert!(p.setup(FS, 512));
+    // the track sounds throughout (ENV open); a note from 0.1 to 0.3 s
+    let tone = |i: usize| 0.3 * ((i as f32) * 2.0 * std::f32::consts::PI * 110.0 / 48000.0).sin();
+    run(&mut p, 24000, 256, &[on(4800, 64), off(14400, 64)], tone);
+    assert_eq!(p.core().unwrap().params().note, 64.0, "the last note stays after its release");
+}

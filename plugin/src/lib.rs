@@ -232,8 +232,10 @@ pub struct SuuPlugin<K: Kind> {
     input: Vec<f32>,
     output: Vec<f32>,
     keys: Keys,
-    /// the last key played (MIDI mode keeps its pitch after the release)
+    /// the last key played (its pitch stays after the release, until the root changes), and the
+    /// root it was played over
     last_key: Option<(u8, u8)>,
+    last_root: i32,
     /// pitch bend per channel, −1 … 1
     bend: [f32; 16],
     size_job: bool,
@@ -266,6 +268,7 @@ impl<K: Kind> Default for SuuPlugin<K> {
             output: Vec::new(),
             keys: Keys::new(),
             last_key: None,
+            last_root: i32::MIN,
             bend: [0.0; 16],
             size_job: false,
             text_job: false,
@@ -286,8 +289,9 @@ impl<K: Kind> SuuPlugin<K> {
     fn note_and_gate(&self) -> (f64, bool) {
         let p = &self.params;
         let mode = p.gate.value();
-        // with no key, MIDI keeps the last key's pitch (its release); the others sound the root
-        let key = self.keys.top().or(if mode == GateMode::Midi { self.last_key } else { None });
+        // with no key, the last key's pitch stays (its release, and the input going on under ENV
+        // or HOLD), until the root is changed
+        let key = self.keys.top().or(self.last_key);
         let (note, bend) = match key {
             Some((n, ch)) => (n as f64, self.bend[ch as usize & 15]),
             None => (p.root.value() as f64, self.bend[0]),
@@ -345,6 +349,14 @@ impl<K: Kind> SuuPlugin<K> {
     /// Bring the core in line with the host's parameters (only what changed), and ask the
     /// worker for a new mouth or text plan when they are due.
     fn sync(&mut self, bpm: f64, playing: bool) {
+        // a changed root takes over from the last key
+        let root = self.params.root.value();
+        if root != self.last_root {
+            if self.last_root != i32::MIN {
+                self.last_key = None;
+            }
+            self.last_root = root;
+        }
         let (note, gate) = self.note_and_gate();
         let p = self.params.clone();
         let Some(suu) = self.suu.as_mut() else { return };
