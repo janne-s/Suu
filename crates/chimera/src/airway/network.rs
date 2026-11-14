@@ -858,13 +858,29 @@ impl AirwayNetwork {
     // ---------------------------------------------------------------- per-sample step
 
     /// Advance one internal sample. Returns radiated pressure (arbitrary units ∝ dU_rad/dt).
+    ///
+    /// The step's five stages are separate functions, kept out of line: as one inlined body it
+    /// ran 14 % slower (Suu's bench, M4 Pro, 2026-11-14; the output is the same bit for bit), and
+    /// apart they show in a profile and can be measured one by one.
     pub fn step(&mut self) -> f64 {
+        let inv_t = self.inv_t;
+        self.ramp_geometry();
+        self.turbulence();
+        self.branch_flows();
+        let w = self.walls();
+        let rad_total = self.node_pressures(w);
+        let out = (rad_total - self.rad_prev_total) * inv_t;
+        self.rad_prev_total = rad_total;
+        self.out = out;
+        out
+    }
+
+    /// 1) The geometry's ramps, its coefficients, and the moving walls' volume source.
+    #[inline(never)]
+    fn ramp_geometry(&mut self) {
         let n = self.n_nodes;
-        let nb = self.n_branches;
-        let t = self.t;
         let inv_t = self.inv_t;
         let min_a = self.min_node_area;
-
         // 1) geometry ramps and the moving-wall volume source. The raw −dV/dt of each node is first
         //    split between the node and its open neighbours (a nearly closed cell cannot hold the air
         //    its walls displace), THEN each node's total injection is low-passed: dV/dt is piecewise
@@ -959,12 +975,24 @@ impl AirwayNetwork {
             }
         }
 
+    }
+    /// 2) Turbulence noise into the branches' series pressure sources.
+    #[inline(never)]
+    fn turbulence(&mut self) {
         // 2) turbulence noise → series pressure sources
         self.psrc.fill(0.0);
         if !self.noise.is_empty() {
             self.compute_noise();
         }
 
+    }
+    /// 3) Each branch's flow from the pressures across it.
+    #[inline(never)]
+    fn branch_flows(&mut self) {
+        let n = self.n_nodes;
+        let nb = self.n_branches;
+        let t = self.t;
+        let inv_t = self.inv_t;
         // 3) branches
         let key = [t, self.viscous_omega, self.viscous_scale, if self.thermal_losses { 1.0 } else { 0.0 }];
         if key != self.loss_key {
@@ -1129,6 +1157,14 @@ impl AirwayNetwork {
             }
         }
 
+    }
+    /// 4) The yielding walls; returns their radiated flow (and the chest's, delayed).
+    #[inline(never)]
+    fn walls(&mut self) -> (f64, f64) {
+        let n = self.n_nodes;
+        let t = self.t;
+        let inv_t = self.inv_t;
+        let min_a = self.min_node_area;
         // 4) walls (velocity at half step from p(n), displacement integrates)
         let mut wall_rad_sum = 0.0;
         let mut chest_sum = 0.0;
@@ -1158,6 +1194,15 @@ impl AirwayNetwork {
             wall_rad_sum += self.chest_buf[self.chest_pos];
         }
 
+        (wall_rad_sum, chest_sum)
+    }
+    /// 5) The nodes' pressures, radiation loads semi-implicit; returns the total radiated flow.
+    #[inline(never)]
+    fn node_pressures(&mut self, w: (f64, f64)) -> f64 {
+        let n = self.n_nodes;
+        let t = self.t;
+        let inv_t = self.inv_t;
+        let (wall_rad_sum, _chest_sum) = w;
         // 5) nodes (radiation loads handled semi-implicitly)
         let t2 = t * t;
         let mut rad_total = wall_rad_sum;
@@ -1236,10 +1281,7 @@ impl AirwayNetwork {
                 rad_total += ur;
             }
         }
-        let out = (rad_total - self.rad_prev_total) * inv_t;
-        self.rad_prev_total = rad_total;
-        self.out = out;
-        out
+        rad_total
     }
 
     fn compute_noise(&mut self) {
