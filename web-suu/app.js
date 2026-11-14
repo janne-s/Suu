@@ -1471,12 +1471,20 @@ for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 // grid: the text's (null free, "GRID" GRID's, or a note value of its own)
 // resetNote: a MIDI note that starts the text over (-1 none), restartPlay: over when the host plays
 const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1, grid: null, resetNote: -1, restartPlay: false };
-$("textreset").add(new Option("OFF", "-1"));
-// (with its number: hosts name the octaves differently, Live calls 60 C3)
-for (let m = 0; m < 128; m++) $("textreset").add(new Option(`${noteName(m)} · ${m}`, String(m)));
-$("textreset").onchange = () => {
-  tx.resetNote = +$("textreset").value;
+$("textresetoff").onclick = () => {
+  tx.resetNote = -1;
   sendText(false);
+};
+// LEARN: the next note played becomes the reset note (the plug-in sets it and says "learned")
+let learning = false;
+function setLearning(on) {
+  learning = on;
+  $("textlearn").setAttribute("aria-pressed", String(on));
+  $("textlearn").textContent = on ? "PLAY A NOTE…" : "LEARN";
+}
+$("textlearn").onclick = () => {
+  setLearning(!learning);
+  if (inPlugin) sendToPlugin({ type: "learn", on: learning });
 };
 $("textplay").onclick = () => {
   tx.restartPlay = !tx.restartPlay;
@@ -1534,7 +1542,9 @@ function sendText(final = true) {
   send(38, tx.gate);
   send(63, tx.grid === "GRID" ? -1 : tx.grid ? divBeats(tx.grid) : 0);
   $("textgrid").value = tx.grid ?? "";
-  $("textreset").value = String(tx.resetNote);
+  // (its MIDI number: hosts name the octaves differently, so a name could mislead)
+  $("textreset").textContent = tx.resetNote < 0 ? "off" : String(tx.resetNote);
+  $("textresetoff").hidden = tx.resetNote < 0;
   $("textplay").setAttribute("aria-pressed", String(tx.restartPlay));
   $("tbreathbox").hidden = !tx.grid;
   $("textgate").textContent = Math.round(tx.gate * 100) + "%";
@@ -1982,7 +1992,9 @@ const TIPS = {
   "[data-jump='0']": "Skip\nA wider jump is left out: the pitch stays.",
   "#grid": "Grid (modulation)\nThe mouth's own movement on this note value's lines, on the host's bars while it plays: the pad, Motion, the input's vowel and pitch, step vowels, the horn. A played note sounds at once. The text has its own grid. FREE: as it comes.",
   "#gridsmooth": "Smooth\nBoth grids: 0% a step on each line; up to 100% each move glides over the line.",
-  "#textreset": "Reset note\nA MIDI note (in a clip, or from another track) that starts the text over from its beginning; it does not sound. Put it where the text should start. Its number is shown: hosts name the octaves differently (Live calls 60 C3).",
+  "#textreset": "Reset note\nThe MIDI note (its number) that starts the text over from its beginning; it does not sound. Set it with LEARN; put it in a clip where the text should start.",
+  "#textresetoff": "No reset note",
+  "#textlearn": "Learn\nPress, then play the reset note (or let the clip play it): that note becomes the reset note, whatever the host calls it.",
   "#textplay": "Restart on play\nThe text starts over when the host's transport starts.",
   "#textgrid": "Grid (text)\nThe speech on this note value's lines: what it asks of the mouth held line to line (a stepped, robotic voice), and with STEP NOTE each part starting on a line. GRID: the modulation's. FREE: as it comes.",
   "#gridbreath": "Breath\nHow far the text's breath and voicing (where it breathes, where the folds open and close) follow its grid. 0%: as they come.",
@@ -2301,6 +2313,9 @@ if (inPlugin) {
       onWorklet({ type: "text", syllables: m.syllables });
     } else if (m.type === "snapshot") {
       onSnapshot(m.values);
+    } else if (m.type === "learned") {
+      setLearning(false);
+      status(`reset note: ${m.note}`);
     } else if (m.type === "opened") {
       let raw;
       try {

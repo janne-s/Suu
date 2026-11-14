@@ -82,6 +82,8 @@ enum Message {
     /// a text field has the focus: its keys stay in the window, away from the host
     Typing { on: bool },
     Snapshot,
+    /// LEARN the text's reset note from the next note played (or stop)
+    Learn { on: bool },
     Resize { width: u32, height: u32 },
     Log { text: String },
     Save { name: String, text: String },
@@ -342,6 +344,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                     }
                     Message::Typing { on } => typing.store(on, Ordering::Relaxed),
                     Message::Snapshot => shared.snap_state.store(1, Ordering::Release),
+                    Message::Learn { on } => shared.learn.store(on, Ordering::Release),
                     Message::Resize { width, height } => page.resize(window, width.max(SMALLEST_WINDOW.0), height.max(SMALLEST_WINDOW.1)),
                     Message::Log { text } => log(&text),
                     Message::Save { name, text } => {
@@ -407,6 +410,18 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                     page.send_json(json!({ "type": "text", "syllables": syllables, "words": words }));
                     gui.text_shown = Some((said, words));
                 }
+            }
+            // LEARN: a note was played; it is the reset note now (the page hears it as a host change)
+            let learned = shared.learned.swap(-1, Ordering::AcqRel);
+            if learned >= 0
+                && let Some((_, p)) = gui.param("text_reset_note")
+            {
+                unsafe {
+                    setter.raw_context.raw_begin_set_parameter(p);
+                    setter.raw_context.raw_set_parameter_normalized(p, p.preview_normalized(learned as f32));
+                    setter.raw_context.raw_end_set_parameter(p);
+                }
+                page.send_json(json!({ "type": "learned", "note": learned }));
             }
             // the mouth, as the audio thread last left it
             let seq = shared.ui_seq.load(Ordering::Acquire);

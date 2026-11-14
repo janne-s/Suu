@@ -11,7 +11,7 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use nih_plug::prelude::*;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 use suu::{Mod, Mouth, MouthSeed, N_MOD, STEPS, Step, Suu, TextPlan};
@@ -62,6 +62,9 @@ pub struct Shared {
     /// 0 idle, 1 asked for, 2 ready, 3 ready but silent
     snap_state: AtomicU8,
     snap: [AtomicU32; suu::HORN_POINTS],
+    /// LEARN (the text's reset note): the next note played becomes it (the window sets it)
+    learn: AtomicBool,
+    learned: AtomicI32,
 }
 
 impl Default for Shared {
@@ -77,6 +80,8 @@ impl Default for Shared {
             horn_reset: AtomicBool::new(false),
             snap_state: AtomicU8::new(0),
             snap: core::array::from_fn(|_| AtomicU32::new(0)),
+            learn: AtomicBool::new(false),
+            learned: AtomicI32::new(-1),
         }
     }
 }
@@ -556,6 +561,14 @@ impl<K: Kind> SuuPlugin<K> {
     }
 
     fn note_event(&mut self, event: NoteEvent<()>) {
+        // LEARN: the next note played becomes the reset note, whatever the host calls it
+        if let NoteEvent::NoteOn { note, velocity, .. } = event
+            && velocity > 0.0
+            && self.shared.learn.swap(false, Ordering::AcqRel)
+        {
+            self.shared.learned.store(note as i32, Ordering::Release);
+            return;
+        }
         // the text's reset note: starts the text over, and does not sound
         let reset = self.params.text_reset_note.value();
         if reset >= 0 {

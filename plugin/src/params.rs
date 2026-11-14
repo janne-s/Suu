@@ -666,8 +666,9 @@ impl SuuParams {
             hq: BoolParam::new("HQ", true),
             grid: EnumParam::new("Grid", Sync::Off),
             text_reset_note: IntParam::new("Text Reset Note", -1, IntRange::Linear { min: -1, max: 127 })
-                .with_value_to_string(Arc::new(|v| if v < 0 { "Off".into() } else { formatters::v2s_i32_note_formatter()(v) }))
-                .with_string_to_value(Arc::new(|s| if s.trim().eq_ignore_ascii_case("off") { Some(-1) } else { formatters::s2v_i32_note_formatter()(s) })),
+                // its MIDI number: hosts name the octaves differently (Live calls 60 C3)
+                .with_value_to_string(Arc::new(|v| if v < 0 { "Off".into() } else { v.to_string() }))
+                .with_string_to_value(Arc::new(|s| if s.trim().eq_ignore_ascii_case("off") { Some(-1) } else { s.trim().parse().ok() })),
             text_restart_play: BoolParam::new("Text Restarts On Play", false),
             text_grid: EnumParam::new("Text Grid", Sync::Off),
             text_grid_main: BoolParam::new("Text Grid Follows Grid", false),
