@@ -24,7 +24,7 @@ pub struct Handle {
 /// 43 pitch_from (0 note, 1 input, 2 input snapped to semitones), 44 vowel_in (0/1),
 /// 45 attack_s, 46 attack_sync, 47 decay_s, 48 decay_sync, 49 sustain, 50 release_s,
 /// 51 release_sync (beats, 0 = free), 52 legato (0/1), 53 coarse (semitones), 54 steady_s,
-/// 55 steady_sync (beats, 0 = free)
+/// 55 steady_sync (beats, 0 = free), 56 hq (0/1; rebuilds the mouth), 57 grid (beats, 0 = free)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -80,6 +80,8 @@ fn set(p: &mut Params, id: u32, v: f64) {
         53 => p.coarse = v,
         54 => p.steady_s = v,
         55 => p.steady_sync = v,
+        56 => p.hq = v > 0.5,
+        57 => p.grid = v,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}
@@ -134,6 +136,11 @@ pub extern "C" fn suu_set(h: *mut Handle, id: u32, v: f64) {
     let mut p = h.suu.params();
     set(&mut p, id, v);
     h.suu.set_params(p);
+    // HQ builds a new mouth, as a size does
+    if h.suu.hq() != p.hq {
+        let size = h.suu.size();
+        h.suu.set_size(size);
+    }
 }
 
 fn text<'a>(ptr: *const u8, len: usize) -> &'a str {

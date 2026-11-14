@@ -28,6 +28,7 @@ use chimera::control::articulators::ArticulatorBank;
 use chimera::control::score::{ControlKey, Gesture};
 use chimera::phonetics::sing::{NoteOnOptions, SongOptions, SungNote, plan_note_off, plan_note_on, plan_song_at};
 use chimera::phonetics::syllables::lyrics_to_syllables;
+use chimera::voice::human_airway::HumanAirway;
 use chimera::voice::human_voice::{HumanVoice, SourcePatch};
 
 mod track;
@@ -246,6 +247,15 @@ pub struct Params {
     /// In s, or in beats if `steady_sync` > 0. 0: every pitch at once.
     pub steady_s: f64,
     pub steady_sync: f64,
+    /// HQ: the airway at the rate and resolution it was made for. Off: a lean airway at half the
+    /// rate or less (sizes 0.4 … 1.6), much lighter, with fewer sections; it changes the sound.
+    /// Takes effect when the mouth is rebuilt (`Suu::set_size`).
+    pub hq: bool,
+    /// GRID: the mouth's shape (pad, Motion, the input's vowel, step vowels, the horn) and the
+    /// pitch change only on this grid (beats; 0 = free, as they come). A new note (the gate
+    /// opening, a retrigger) takes its pitch and shape at once; changes during it wait for the
+    /// next line. The articulators' own motion and GLIDE still shape each move.
+    pub grid: f64,
 }
 
 impl Default for Params {
@@ -306,6 +316,8 @@ impl Default for Params {
             coarse: 0.0,
             steady_s: 0.0,
             steady_sync: 0.0,
+            hq: true,
+            grid: 0.0,
         }
     }
 }
@@ -532,9 +544,18 @@ impl Reson {
     }
 }
 
+/// HQ off: the fewest sections per tract tube (CHIMERA's own is `MIN_CELLS`, 8).
+const LEAN_CELLS: usize = 6;
+
 /// Oversampling for a mouth of scale `k`: a small mouth has short cells and needs a finer time
-/// step (CFL); a large one is stable at the output rate and stays affordable there.
-fn oversample_for(fs: f64, k: f64) -> usize {
+/// step (CFL); a large one is stable at the output rate and stays affordable there. HQ off: the
+/// lowest rate at which a lean airway (`LEAN_CELLS`, fewer sections in the nose and the
+/// piriform sinus too) is stable: half the rate, or less, between sizes 0.4 and 1.6.
+fn oversample_for(fs: f64, k: f64, hq: bool) -> usize {
+    if !hq {
+        let body = HumanBody { name: "suu", scale: k, ..BODY_MALE };
+        return (1..=4).find(|&m| HumanAirway::fits(fs * m as f64, &body, LEAN_CELLS)).unwrap_or(4);
+    }
     let base: usize = if k < 0.5 {
         4
     } else if k < 0.68 {
@@ -561,6 +582,7 @@ pub struct MouthSeed {
     damping: f64,
     folds: f64,
     pressure: f64,
+    hq: bool,
 }
 
 impl MouthSeed {
@@ -574,6 +596,7 @@ impl MouthSeed {
 pub struct Mouth {
     voice: Box<HumanVoice>,
     scale: f64,
+    hq: bool,
 }
 
 impl Mouth {
@@ -582,7 +605,8 @@ impl Mouth {
     /// output limiter clamping for 300 ms). Allocates; a few milliseconds.
     pub fn build(seed: &MouthSeed) -> Mouth {
         let body = HumanBody { name: "suu", scale: seed.scale, ..BODY_MALE };
-        let mut v = Box::new(HumanVoice::new(seed.fs, body, oversample_for(seed.fs, seed.scale)));
+        let os = oversample_for(seed.fs, seed.scale, seed.hq);
+        let mut v = Box::new(if seed.hq { HumanVoice::new(seed.fs, body, os) } else { HumanVoice::with_min_cells(seed.fs, body, os, LEAN_CELLS) });
         v.artic = seed.artic.clone();
         v.airway.profile = seed.profile.to_vec();
         v.airway.profile_wrap = seed.wrap;
@@ -604,7 +628,7 @@ impl Mouth {
             v.render_driven(&zeros[..n], 100.0, &mut out[..n]);
             left -= n;
         }
-        Mouth { voice: v, scale: seed.scale }
+        Mouth { voice: v, scale: seed.scale, hq: seed.hq }
     }
 
     pub fn scale(&self) -> f64 {
@@ -799,6 +823,8 @@ pub struct Suu {
     /// the faded-out airway, kept until `take_retired` (so the audio thread never frees it)
     retired: Option<Box<HumanVoice>>,
     scale: f64,
+    /// the playing mouth was built at HQ
+    hq: bool,
     p: Params,
     osc: Osc,
     /// the oscillator's pitch (MIDI, gliding toward `glide_to` by `glide_rate` per sample) and Hz
@@ -893,6 +919,9 @@ pub struct Suu {
     /// the input's pitch taken (after STEADY), and a new one waiting since the given sample
     steady: Option<f64>,
     candidate: Option<(f64, u64)>,
+    /// GRID: the line last crossed, the pitch and shape taken there (held until the next)
+    grid_line: i64,
+    grid_held: Option<(f64, [f64; N_MOD])>,
     /// VOWEL = IN: the input's vowel, and where the pad is gliding to it
     vowels: VowelTracker,
     in_pad: Option<(f64, f64)>,
@@ -919,10 +948,11 @@ impl Suu {
         chimera::phonetics::planner::init();
         let mut s = Suu {
             fs,
-            voice: Box::new(HumanVoice::new(fs, BODY_MALE, oversample_for(fs, 1.0))),
+            voice: Box::new(HumanVoice::new(fs, BODY_MALE, oversample_for(fs, 1.0, true))),
             fade: None,
             retired: None,
             scale: 1.0,
+            hq: true,
             p: Params::default(),
             osc: Osc::new(),
             pitch: 45.0,
@@ -991,6 +1021,8 @@ impl Suu {
             track_count: 0,
             steady: None,
             candidate: None,
+            grid_line: i64::MIN,
+            grid_held: None,
             vowels: VowelTracker::new(fs),
             in_pad: None,
             adsr: 0.0,
@@ -1077,6 +1109,7 @@ impl Suu {
         q.coarse = clamp(q.coarse.round(), -48.0, 48.0);
         q.steady_s = clamp(q.steady_s, 0.0, 4.0);
         q.steady_sync = clamp(q.steady_sync, 0.0, 16.0);
+        q.grid = clamp(q.grid, 0.0, 16.0);
         for x in [&mut q.attack_sync, &mut q.decay_sync, &mut q.release_sync] {
             *x = clamp(*x, 0.0, 16.0);
         }
@@ -1090,7 +1123,7 @@ impl Suu {
     /// splits this: `mouth_seed` and `set_mouth` on the audio thread, `Mouth::build` elsewhere.
     pub fn set_size(&mut self, scale: f64) {
         let s = clamp(scale, 0.4, 4.0);
-        if s == self.scale {
+        if s == self.scale && self.p.hq == self.hq {
             return;
         }
         let m = Mouth::build(&self.mouth_seed(s));
@@ -1118,6 +1151,7 @@ impl Suu {
             damping: self.eff[5],
             folds: self.voice.glottal_area_scale,
             pressure: self.voice.source.pressure,
+            hq: self.p.hq,
         }
     }
 
@@ -1128,8 +1162,8 @@ impl Suu {
         if self.fade.is_some() || self.retired.is_some() {
             return Err(m);
         }
-        let Mouth { voice: mut nv, scale } = m;
-        self.scale = scale;
+        let Mouth { voice: mut nv, scale, hq } = m;
+        (self.scale, self.hq) = (scale, hq);
         nv.artic = self.voice.artic.clone();
         nv.airway.profile.copy_from_slice(&self.voice.airway.profile);
         nv.airway.profile_wrap = self.voice.airway.profile_wrap;
@@ -1151,7 +1185,7 @@ impl Suu {
 
     /// The airway a size change faded out, once it has (to be dropped off the audio thread).
     pub fn take_retired(&mut self) -> Option<Mouth> {
-        self.retired.take().map(|voice| Mouth { voice, scale: 0.0 })
+        self.retired.take().map(|voice| Mouth { voice, scale: 0.0, hq: true })
     }
 
     /// The drawn horn: `HORN_POINTS` areas (cm², adult scale) from the glottis to the lips,
@@ -1194,6 +1228,12 @@ impl Suu {
 
     pub fn size(&self) -> f64 {
         self.scale
+    }
+
+    /// Whether the mouth playing was built at HQ (`Params::hq`; a change rebuilds it, as a size
+    /// does: `set_size`, or the plug-in's worker).
+    pub fn hq(&self) -> bool {
+        self.hq
     }
 
     /// The voice-wide settings that follow the parameters (cheap, no allocation).
@@ -1327,6 +1367,12 @@ impl Suu {
             if self.mods[i].depth == 0.0 {
                 self.eff[i] = b[i];
             }
+        }
+        // GRID: a changed parameter waits for the next line, as every change does
+        if self.p.grid > 0.0
+            && let Some((_, held)) = self.grid_held
+        {
+            self.eff = held;
         }
         self.applied = [f64::NAN; N_MOD];
         self.apply_mouth();
@@ -1775,6 +1821,11 @@ impl Suu {
             self.run_env_gate();
             self.gate_now = self.p.gate || self.env_open;
         }
+        // GRID: on a new line, or a new note, the pitch and shape are taken; between, held
+        let grid_take = self.grid_take();
+        if let Some((note, _)) = self.grid_held.filter(|_| !grid_take) {
+            self.note_now = note;
+        }
         self.run_text();
         let retrig = self.retrig;
         self.retrig = false;
@@ -1830,6 +1881,14 @@ impl Suu {
         let envn = clamp(self.env_peak * 4.0, 0.0, 1.0);
         self.env_peak = 0.0;
         self.run_mods(envn);
+        if self.p.grid > 0.0 {
+            match self.grid_held {
+                Some((_, held)) if !grid_take => self.eff = held,
+                _ => self.grid_held = Some((self.note_now, self.eff)),
+            }
+        } else {
+            self.grid_held = None;
+        }
         self.apply_mouth();
         // the breath follows the source's level; while the folds sound, at their full pressure
         // (so their level depends on Folds and Breath alone: a louder oscillator drove them up
@@ -1842,6 +1901,20 @@ impl Suu {
             self.voice.set_source(&SourcePatch { pressure: Some(pressure), f0: Some(f0), ..Default::default() });
             self.folds_f0 = f0;
         }
+    }
+
+    /// GRID: whether this control period takes a new pitch and shape: off, or a new grid line
+    /// crossed, or a new note (the gate opening, a retrigger).
+    fn grid_take(&mut self) -> bool {
+        let p = self.p;
+        if p.grid <= 0.0 {
+            return true;
+        }
+        let beats = self.pos as f64 / self.fs * p.bpm / 60.0;
+        let line = (beats / p.grid).floor() as i64;
+        let crossed = line != self.grid_line;
+        self.grid_line = line;
+        crossed || (self.gate_now && (!self.prev_gate || self.retrig)) || self.grid_held.is_none()
     }
 
     /// STEADY: a voiced reading of the input's pitch. Near the pitch taken (within half a
@@ -3133,5 +3206,84 @@ mod tests {
         let (on, off) = (render(true), render(false));
         assert!(on.iter().zip(&off).all(|(a, b)| a.to_bits() == b.to_bits()), "skipping changed the output");
         assert!(on.iter().any(|v| v.abs() > 1e-3), "it sounds");
+    }
+
+    /// HQ off builds a lean mouth at a lower rate; at every size it sounds, stays bounded and
+    /// has no NaN, through the vowels, folds and the drawn horn; HQ on again rebuilds as before.
+    #[test]
+    fn hq_off_is_lighter_and_stable_at_every_size() {
+        for size in [0.4, 0.5, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 4.0] {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { gate: true, hq: false, folds: 0.5, ..Params::default() });
+            s.set_size(size);
+            assert!(!s.hq());
+            assert!(s.voice.m <= oversample_for(48000.0, size, true), "size {size}: no higher rate than HQ");
+            let (inp, mut out) = ([0f32; 128], [0f32; 128]);
+            let mut peak = 0f32;
+            for b in 0..1500 {
+                if b % 150 == 0 {
+                    let v = (b / 150) as f64 / 10.0;
+                    s.set_params(Params { vowel_x: v, vowel_y: 1.0 - v, morph: if b > 750 { 0.7 } else { 0.0 }, ..s.params() });
+                }
+                s.process(&inp, &mut out);
+                for v in out {
+                    assert!(v.is_finite(), "size {size}: NaN");
+                    peak = peak.max(v.abs());
+                }
+            }
+            assert!(peak > 0.01 && peak <= 1.0, "size {size}: peak {peak}");
+        }
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { hq: false, ..Params::default() });
+        s.set_size(1.0);
+        assert_eq!((s.hq(), s.voice.m), (false, 1), "size 1 lean: the output rate");
+        // (the crossfade must end before another rebuild)
+        let (inp, mut out) = ([0f32; 128], [0f32; 128]);
+        for _ in 0..20 {
+            s.process(&inp, &mut out);
+        }
+        let _ = s.take_retired();
+        s.set_params(Params { hq: true, ..s.params() });
+        s.set_size(1.0);
+        assert_eq!((s.hq(), s.voice.m), (true, 2), "HQ again: twice the rate");
+    }
+
+    #[test]
+    fn grid_holds_changes_until_the_next_line_and_a_new_note_is_at_once() {
+        let fs = 48000.0;
+        // a beat at 120 bpm is 0.5 s
+        let run = |s: &mut Suu, secs: f64| {
+            let (inp, mut out) = ([0f32; 64], [0f32; 64]);
+            for _ in 0..(secs * fs / 64.0).round() as usize {
+                s.process(&inp, &mut out);
+            }
+        };
+        let mut s = Suu::new(fs);
+        s.set_params(Params { gate: true, note: 45.0, bpm: 120.0, grid: 1.0, glide_s: 0.0, ..Params::default() });
+        s.set_mod(0, Mod { depth: 0.8, rate_hz: 3.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+        run(&mut s, 0.05);
+        // Motion: one value per beat
+        let first = s.eff[0];
+        run(&mut s, 0.3);
+        assert_eq!(s.eff[0], first, "held within the beat");
+        run(&mut s, 0.2);
+        assert_ne!(s.eff[0], first, "a new value on the next line");
+        // a pitch change during the note waits for the line; so does the pad
+        run(&mut s, 0.1); // 0.65 s
+        s.set_params(Params { note: 50.0, vowel_x: 0.0, ..s.params() });
+        run(&mut s, 0.2); // 0.85 s
+        assert_eq!(s.pitch, 45.0, "the new pitch waits");
+        run(&mut s, 0.2); // 1.05 s: past the line at 1.0
+        assert_eq!(s.pitch, 50.0, "taken on the line");
+        // a new note is at once
+        s.set_params(Params { gate: false, ..s.params() });
+        run(&mut s, 0.1);
+        s.set_params(Params { gate: true, note: 57.0, ..s.params() });
+        run(&mut s, 0.01);
+        assert_eq!(s.pitch, 57.0, "a new note takes its pitch at once");
+        // off: free again
+        s.set_params(Params { grid: 0.0, note: 60.0, ..s.params() });
+        run(&mut s, 0.01);
+        assert_eq!(s.pitch, 60.0, "free");
     }
 }

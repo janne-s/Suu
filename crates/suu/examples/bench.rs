@@ -62,6 +62,13 @@ fn main() {
         ("input + reson 0.8", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, reson: 0.8, ..gate })), false),
         ("input saw, PITCH + VOWEL IN", Box::new(move |s: &mut Suu| s.set_params(Params { source: Source::Off, pitch_from: PitchFrom::Input, vowel_in: true, ..gate })), true),
         ("folds 1", Box::new(move |s: &mut Suu| s.set_params(Params { folds: 1.0, ..gate })), false),
+        ("HQ off: held supersaw", Box::new(move |s: &mut Suu| { s.set_params(Params { hq: false, ..gate }); s.set_size(1.0) }), false),
+        ("HQ off: size 0.4", Box::new(move |s: &mut Suu| { s.set_params(Params { hq: false, ..gate }); s.set_size(0.4) }), false),
+        ("HQ off: Motion on all 9", Box::new(move |s: &mut Suu| {
+            s.set_params(Params { morph: 0.5, hq: false, ..gate });
+            s.set_size(1.0);
+            for t in 0..9 { s.set_mod(t, Mod { depth: 0.5, rate_hz: 0.7 + t as f64 * 0.3, sync: 0.0, shape: Shape::Sine, smooth: 0.0 }); }
+        }), false),
         ("size automation (rebuilds)", Box::new(move |s: &mut Suu| s.set_params(gate)), false),
     ];
     let period = 128.0 / fs;

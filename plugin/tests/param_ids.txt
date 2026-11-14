@@ -21,6 +21,8 @@ pitch
 coarse
 steady
 steady_sync
+hq
+grid
 bend_range
 glide
 glide_sync

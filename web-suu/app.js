@@ -614,6 +614,9 @@ function setView(v) {
   $("view-horn").setAttribute("aria-pressed", String(v === "horn"));
   mouthEl.style.cursor = v === "horn" ? "cell" : "";
   $("horn-bar").hidden = v !== "horn";
+  // a view of the mouth, not the words: the text panel closes
+  $("text-panel").hidden = true;
+  $("text-toggle").setAttribute("aria-expanded", "false");
 }
 $("view-pad").onclick = () => setView("pad");
 $("view-horn").onclick = () => setView("horn");
@@ -922,6 +925,8 @@ function pushAll() {
   send(43, pitchFrom);
   send(44, vowelIn ? 1 : 0);
   send(52, legato ? 1 : 0);
+  send(56, hq ? 1 : 0);
+  send(57, grid ? divBeats(grid) : 0);
   sendHorn();
   gate();
   sendText(false);
@@ -1122,6 +1127,24 @@ function setLegato(on) {
   send(52, on ? 1 : 0);
 }
 $("legato").onclick = () => setLegato(!legato);
+// GRID: the mouth's shape and the pitch change only on this note value (null: free)
+let grid = null;
+$("grid").add(new Option("FREE", ""));
+for (const [n] of DIVS) $("grid").add(new Option(n, n));
+function setGrid(div) {
+  grid = div || null;
+  $("grid").value = grid ?? "";
+  send(57, grid ? divBeats(grid) : 0);
+}
+$("grid").onchange = () => setGrid($("grid").value);
+// HQ: the airway at full rate (off: a lean one, much lighter; a change rebuilds the mouth)
+let hq = true;
+function setHq(on) {
+  hq = on;
+  $("hq").setAttribute("aria-pressed", String(on));
+  send(56, on ? 1 : 0);
+}
+$("hq").onclick = () => setHq(!hq);
 // VOWEL IN: the input's vowel places the pad
 let vowelIn = false;
 function setVowelIn(on) {
@@ -1532,6 +1555,8 @@ function getState() {
     pitchFrom,
     legato,
     vowelIn,
+    hq,
+    grid,
     space: spaceOn,
     knobs,
     motion,
@@ -1569,6 +1594,8 @@ function readState(raw) {
     pitchFrom: [0, 1, 2].includes(r.pitchFrom) ? r.pitchFrom : d.pitchFrom,
     legato: bool(r.legato, d.legato),
     vowelIn: bool(r.vowelIn, d.vowelIn),
+    hq: bool(r.hq, d.hq),
+    grid: div(r.grid, d.grid),
     glideDir: [0, 1, 2].includes(r.glideDir) ? r.glideDir : d.glideDir,
     knobs: {},
     motion: {},
@@ -1647,6 +1674,8 @@ function applyState(st) {
   setPitchFrom(st.pitchFrom);
   setLegato(st.legato);
   setVowelIn(st.vowelIn);
+  setHq(st.hq);
+  setGrid(st.grid);
   for (const [key, c] of controls) {
     const k = st.knobs[key];
     c.setSync?.(typeof k === "object" ? k.sync : null);
@@ -1834,6 +1863,8 @@ const TIPS = {
   "#octup": "Octave up (X)",
   "#notename": "Note\nThe root: the synth's pitch, the resonator's and the sequence's key. Pick it here, its octave with − and +; keys A … K play.",
   "#rootoct": "Octave\nThe root's octave: − and + (Z and X) change it.",
+  "#grid": "Grid\nEvery change of the mouth's shape (pad, Motion, the input's vowel, the horn) and of the pitch waits for the next line of this note value; a new note is at once. FREE: changes as they come. Glide still shapes each move.",
+  "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
   "#vowelin": "In\nThe input's vowel places the pad, as a talk box does: sing or speak into it. Motion moves around it; held through consonants and quiet.",
   "#pitchfrom": "Pitch\nNOTE: the root and the keys. IN: the input's own pitch, as it moves; IN ♮ snaps it to semitones. The resonator, the folds, the oscillator and the sequence follow it; the note fields show it.",
@@ -1974,6 +2005,8 @@ const PMAP = [];
     });
   add("legato", (st) => +st.legato, (st, v) => (st.legato = v > 0.5));
   add("vowel_in", (st) => +st.vowelIn, (st, v) => (st.vowelIn = v > 0.5));
+  add("hq", (st) => +st.hq, (st, v) => (st.hq = v > 0.5));
+  add("grid", (st) => divIndex(st.grid), (st, v) => (st.grid = PDIVS[Math.round(v)]));
   add("glide_dir", (st) => st.glideDir, (st, v) => (st.glideDir = Math.round(v)));
   add("pitch", (st) => st.pitchFrom, (st, v) => (st.pitchFrom = Math.round(v)));
   add("root", (st) => st.note, (st, v) => (st.note = Math.round(v)));

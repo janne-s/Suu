@@ -215,9 +215,14 @@ pub struct HumanVoice {
 impl HumanVoice {
     /// A voice rendering at `fs_out`, simulating at `fs_out · oversample`.
     pub fn new(fs_out: f64, body: HumanBody, oversample: usize) -> Self {
+        Self::with_min_cells(fs_out, body, oversample, crate::voice::human_airway::MIN_CELLS)
+    }
+
+    /// As `new`, with at least `min_cells` sections per tract tube (`HumanAirway::with_min_cells`).
+    pub fn with_min_cells(fs_out: f64, body: HumanBody, oversample: usize, min_cells: usize) -> Self {
         let m = oversample;
         let fs = fs_out * m as f64;
-        let airway = HumanAirway::new(fs, body);
+        let airway = HumanAirway::with_min_cells(fs, body, min_cells);
         let n_tract = airway.n_ph + airway.n_or;
         let mut v = HumanVoice {
             fs_out,

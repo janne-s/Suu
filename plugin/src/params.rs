@@ -488,6 +488,13 @@ pub struct SuuParams {
     pub steady: FloatParam,
     #[id = "steady_sync"]
     pub steady_sync: EnumParam<Sync>,
+    /// the airway at full rate and resolution (off: a lean one, much lighter; a change rebuilds
+    /// the mouth)
+    #[id = "hq"]
+    pub hq: BoolParam,
+    /// the mouth's shape and the pitch change only on this grid (off: free)
+    #[id = "grid"]
+    pub grid: EnumParam<Sync>,
     #[id = "bend_range"]
     pub bend_range: IntParam,
     #[id = "glide"]
@@ -611,6 +618,8 @@ impl SuuParams {
             coarse: IntParam::new("Coarse", 0, IntRange::Linear { min: -48, max: 48 }).with_unit(" st"),
             steady: seconds("Steady", 0.0, 0.0, 4.0, 0.2),
             steady_sync: EnumParam::new("Steady Sync", Sync::Off),
+            hq: BoolParam::new("HQ", true),
+            grid: EnumParam::new("Grid", Sync::Off),
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 48 }).with_unit(" st"),
             glide: FloatParam::new("Glide", 0.03, FloatRange::Skewed { min: 0.0, max: 2.0, factor: 0.5 })
                 .with_unit(" s")
@@ -739,6 +748,8 @@ impl SuuParams {
             coarse: self.coarse.value() as f64,
             steady_s: self.steady.value() as f64,
             steady_sync: self.steady_sync.value().beats(),
+            hq: self.hq.value(),
+            grid: self.grid.value().beats(),
             pitch_from: match self.pitch.value() {
                 PitchMode::Note => suu::PitchFrom::Note,
                 PitchMode::Input => suu::PitchFrom::Input,

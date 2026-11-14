@@ -387,7 +387,8 @@ impl<K: Kind> SuuPlugin<K> {
         }
         let Some(jobs) = &self.jobs else { return };
         let size = p.size.value() as f64;
-        if !self.size_job && self.mouth.is_none() && size != suu.size() {
+        // a new size, or HQ switched: a new mouth (HQ is already in the core's parameters)
+        if !self.size_job && self.mouth.is_none() && (size != suu.size() || p.hq.value() != suu.hq()) {
             // (the seed is plain values: a full queue just drops it, and it is asked for again)
             if jobs.try_send(Job::Size { generation: self.generation, seed: suu.mouth_seed(size) }).is_ok() {
                 self.size_job = true;

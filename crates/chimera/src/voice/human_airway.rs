@@ -9,6 +9,9 @@ use crate::anatomy::human::{HumanArtic, HumanBody, HumanFrame, HumanVocalTract, 
 use crate::math::{js_max, js_min, js_round, smoothstep as smooth, sqrt};
 use crate::physics::{C_SOUND, RHO, WALL_NASAL, WALL_SOFT, WALL_TRACHEA};
 
+/// The fewest sections in the pharynx and the oral tube (`HumanAirway::new`).
+pub const MIN_CELLS: usize = 8;
+
 /// Room for the settled-geometry key: the articulation, 17 settings and a drawn horn of up to
 /// 256 points (Suu's has 32), so comparing it never allocates.
 const GEOM_KEY_CAP: usize = N_ARTIC + 17 + 256;
@@ -114,22 +117,28 @@ impl HumanAirway {
 
     /// `fs`: internal sample rate (Hz).
     pub fn new(fs: f64, body: HumanBody) -> Self {
+        Self::with_min_cells(fs, body, MIN_CELLS)
+    }
+
+    /// As `new`, with at least `min_cells` sections in the pharynx and the oral tube instead of
+    /// `MIN_CELLS` (fewer allow a lower rate for the same body; the tube resolves less).
+    pub fn with_min_cells(fs: f64, body: HumanBody, min_cells: usize) -> Self {
         let k = body.scale;
         let tract = HumanVocalTract::new(body);
         let mut net = AirwayNetwork::new(fs);
         let dx_min = (C_SOUND / fs) / 0.93;
-        // node counts from the shortest expected lengths (larynx raised, lips retracted)
-        let ph_min_len = 8.7 * k * (0.55 + 0.45 * body.pharynx) - 1.6 * k;
-        let or_min_len = 8.3 * k - 1.0 * k;
-        let n_ph = (8.0f64).max((ph_min_len / dx_min).floor()) as usize;
-        let n_or = (8.0f64).max((or_min_len / dx_min).floor()) as usize;
+        let (n_ph, n_or) = Self::cells(fs, &body, min_cells);
 
         let tr_len = 12.0 * k;
         let trachea = net.add_tube(TubeSpec::new("trachea", js_max(6.0, (tr_len / js_max(dx_min, 0.9 * k)).floor()) as usize, tr_len, Area::Uniform(2.5 * k * k)).wall(Some(WALL_TRACHEA)));
         let pharynx = net.add_tube(TubeSpec::new("pharynx", n_ph, 8.8 * k, Area::Uniform(3.0 * k * k)).wall(Some(WALL_SOFT)).radiating(0.25).perimeter(1.25));
         let oral = net.add_tube(TubeSpec::new("oral", n_or, 8.3 * k, Area::Uniform(3.0 * k * k)).wall(Some(WALL_SOFT)).radiating(0.25).perimeter(1.5));
         let na_len = 11.4 * k;
-        let n_na = js_max(8.0, (na_len / js_max(dx_min, 0.5 * k)).floor()) as usize;
+        // a lean airway (fewer cells than MIN_CELLS) lets the nose and the piriform sinus have
+        // fewer too, so none is shorter than the stable step at its lower rate
+        let lean = min_cells < MIN_CELLS;
+        let n_na = js_max(if lean { min_cells as f64 } else { 8.0 }, (na_len / js_max(dx_min, 0.5 * k)).floor()) as usize;
+        let n_fossa = if lean { (2.0 * k / dx_min).floor().clamp(2.0, 3.0) as usize } else { 3 };
         let na_areas: Vec<f64> = (0..n_na)
             .map(|i| {
                 let u = (i as f64 + 0.5) / n_na as f64;
@@ -146,7 +155,7 @@ impl HumanAirway {
             })
             .collect();
         let nasal = net.add_tube(TubeSpec::new("nasal", n_na, na_len, Area::Profile(na_areas)).wall(Some(WALL_NASAL)).perimeter(3.2).viscous(2.5));
-        let fossa = net.add_tube(TubeSpec::new("piriform", 3, 2.0 * k, Area::Uniform(0.9 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.3));
+        let fossa = net.add_tube(TubeSpec::new("piriform", n_fossa, 2.0 * k, Area::Uniform(0.9 * k * k)).wall(Some(WALL_SOFT)).perimeter(1.3));
 
         let lungs = net.add_pressure_node("lungs");
         let tr_a = 2.5 * k * k;
@@ -264,6 +273,30 @@ impl HumanAirway {
             self.prev_targets[i].copy_from_slice(v);
         }
         self.settled = clean && same;
+    }
+
+    /// Sections in the pharynx and the oral tube at internal rate `fs`: as many as the shortest
+    /// expected lengths (larynx raised, lips retracted) allow at the stable step, at least
+    /// `min_cells`.
+    pub fn cells(fs: f64, body: &HumanBody, min_cells: usize) -> (usize, usize) {
+        let k = body.scale;
+        let dx_min = (C_SOUND / fs) / 0.93;
+        let ph_min_len = 8.7 * k * (0.55 + 0.45 * body.pharynx) - 1.6 * k;
+        let or_min_len = 8.3 * k - 1.0 * k;
+        let n_ph = (min_cells as f64).max((ph_min_len / dx_min).floor()) as usize;
+        let n_or = (min_cells as f64).max((or_min_len / dx_min).floor()) as usize;
+        (n_ph, n_or)
+    }
+
+    /// Whether a lean airway (`min_cells` < `MIN_CELLS`) is stable at rate `fs`: no tube's
+    /// minimum count forces its sections shorter than the stable step.
+    pub fn fits(fs: f64, body: &HumanBody, min_cells: usize) -> bool {
+        let k = body.scale;
+        let dx_min = (C_SOUND / fs) / 0.93;
+        let ph_min_len = 8.7 * k * (0.55 + 0.45 * body.pharynx) - 1.6 * k;
+        let or_min_len = 8.3 * k - 1.0 * k;
+        let m = min_cells as f64;
+        (ph_min_len / dx_min).floor() >= m && (or_min_len / dx_min).floor() >= m && (11.4 * k / dx_min).floor() >= m && (2.0 * k / dx_min).floor() >= 2.0
     }
 
     /// Internal branch index helpers

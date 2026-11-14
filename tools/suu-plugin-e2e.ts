@@ -67,7 +67,7 @@ await frames();
 s = await sent();
 ok("ENV sent as GATE ENV", s.some((m) => m.type === "set" && m.id === "gate" && m.value === 0));
 // the ADSR, legato, the input's vowel and pitch: host → page, page → host
-await tell({ type: "params", values: { legato: 1, vowel_in: 1, attack: 0.5, attack_sync: 0, pitch: 2, vowel_y_shape: 6 } });
+await tell({ type: "params", values: { legato: 1, vowel_in: 1, attack: 0.5, attack_sync: 0, pitch: 2, vowel_y_shape: 6, hq: 0, grid: 7, coarse: -12 } });
 await frames();
 s = await sent();
 ok("host ADSR, LEGATO, VOWEL IN, PITCH not echoed", !s.some((m) => m.type === "set"), JSON.stringify(s.filter((m) => m.type === "set")));
@@ -75,6 +75,9 @@ ok("LEGATO shown", (await page.textContent("#legato")) === "LEGATO");
 ok("VOWEL IN shown", (await page.getAttribute("#vowelin", "aria-pressed")) === "true");
 ok("ATTACK shown", (await page.textContent('output[for="attack"]')) === "500ms", (await page.textContent('output[for="attack"]')) ?? "");
 ok("PITCH IN ♮ shown", (await page.inputValue("#pitchfrom")) === "2");
+ok("HQ off shown", (await page.getAttribute("#hq", "aria-pressed")) === "false");
+ok("GRID 1/16 shown", (await page.inputValue("#grid")) === "1/16");
+ok("TUNE −12 shown", (await page.textContent('output[for="coarse"]')) === "-12 st", (await page.textContent('output[for="coarse"]')) ?? "");
 ok("Motion shape ADSR shown", (await page.evaluate(() => (document.querySelectorAll("select.shape")[1] as HTMLSelectElement).value)) === "6");
 await page.click("#legato");
 await page.click("#vowelin");
