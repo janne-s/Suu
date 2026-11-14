@@ -87,13 +87,15 @@
   <div id="steps" class="steps"></div>
 </section>
 
-<div class="panel stages">
-  <section class="stage"><h2>BODY <button id="hq" class="tiny" aria-pressed="true">HQ</button></h2><div id="k-mouth" class="knobs"></div></section>
-  <section class="stage"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
-  <section class="stage gate-stage"><h2>GATE <button id="legato" class="tiny" aria-pressed="false">RETRIG</button></h2><div id="k-gate" class="knobs"></div></section>
-  <section class="stage"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
-  <section class="stage web-only"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
-  <section class="stage"><h2>OUT <output id="peak" class="web-only">−∞</output></h2><div id="k-out" class="knobs"></div></section>
+<div class="stages">
+  <section class="stage" style="--n: 3"><h2>BODY <button id="hq" class="tiny" aria-pressed="true">HQ</button></h2><div id="k-mouth" class="knobs"></div></section>
+  <section class="stage" style="--n: 4"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
+  <section class="stage" style="--n: 3"><h2>PITCH</h2><div id="k-pitch" class="knobs"></div></section>
+  <section class="stage" style="--n: 2"><h2>GATE</h2><div id="k-gate" class="knobs"></div></section>
+  <section class="stage" style="--n: 4"><h2>ENV <button id="legato" class="tiny" aria-pressed="false">RETRIG</button></h2><div id="k-env" class="knobs"></div></section>
+  <section class="stage" style="--n: 4"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
+  <section class="stage web-only" style="--n: 5"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
+  <section class="stage" style="--n: 2"><h2>OUT <output id="peak" class="web-only">−∞</output></h2><div id="k-out" class="knobs"></div></section>
 </div>
 
 <div id="info" class="popover" hidden role="dialog" aria-label="Keys and credits">

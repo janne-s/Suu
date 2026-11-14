@@ -38,8 +38,6 @@ const dbOff = (v) => (v <= -59.95 ? "off" : (v > 0 ? "+" : "") + v.toFixed(1) + 
 const secsFmt = (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s");
 // the ADSR's: shorter, for its smaller knobs
 const shortSecs = (v) => (v < 0.01 ? (v * 1000).toFixed(1) + "ms" : v < 1 ? (v * 1000).toFixed(0) + "ms" : v.toFixed(v < 10 ? 2 : 1) + "s");
-// the ADSR's knobs are smaller
-const MINI = new Set(["attack", "decay", "sustain", "release", "coarse", "steady"]);
 // whole values only
 const INT = new Set(["coarse"]);
 const KNOBS = {
@@ -53,16 +51,20 @@ const KNOBS = {
     ["input", "INPUT", -60, 12, 0, dbOff, null, 37],
     ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
+  ],
+  // the pitch: its glide, transposed, and (from the input) taken only once it has lasted
+  "k-pitch": [
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
-    // the pitch: transposed, and (from the input) taken only once it has lasted
     ["coarse", "TUNE", -48, 48, 0, (v) => (Math.round(v) > 0 ? "+" : "") + Math.round(v) + " st", null, 53],
     ["steady", "STEADY", 0, 4, 0, (v) => (v < 0.0005 ? "off" : shortSecs(v)), "sq", 54],
   ],
-  // ENV: the input's level opens the sound at THRESH and closes HANG after it falls below;
-  // then the ADSR of what the gate opens (smaller knobs)
+  // ENV gate: the input's level opens the sound at THRESH and closes HANG after it falls below
   "k-gate": [
     ["envThresh", "THRESH", -80, 0, -40, (v) => v.toFixed(0) + " dB", null, 40],
     ["envRelease", "HANG", 0.005, 4, 0.15, secsFmt, "log", 41],
+  ],
+  // the ADSR of what the gate opens
+  "k-env": [
     ["attack", "A", 0.001, 10, 0.005, shortSecs, "log", 45],
     ["decay", "D", 0.001, 10, 0.2, shortSecs, "log", 47],
     ["sustain", "S", 0, 1, 1, pct, null, 49],
@@ -179,7 +181,7 @@ function dragValue(el, get, set, perPx = 1 / 180) {
 
 function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
   const cell = document.createElement("div");
-  cell.className = MINI.has(key) ? "knob mini" : "knob";
+  cell.className = "knob";
   cell.innerHTML = `<label for="${key}">${label}</label><input id="${key}" type="range" min="0" max="1" step="0.001" aria-label="${label}"><output for="${key}"></output>`;
   $(parent).append(cell);
   const input = cell.querySelector("input");
