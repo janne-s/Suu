@@ -196,13 +196,30 @@ struct Keys {
     notes: [u8; 128],
     channels: [u8; 128],
     len: usize,
+    /// note-ons not yet ended, per note: the same note again before its note-off (a Note Length
+    /// or an arpeggiator before the plug-in) is held until its own note-off; the first one's
+    /// closed the gate under it
+    count: [u8; 128],
 }
 
 impl Keys {
     fn new() -> Self {
-        Keys { notes: [0; 128], channels: [0; 128], len: 0 }
+        Keys { notes: [0; 128], channels: [0; 128], len: 0, count: [0; 128] }
     }
+    /// A note-off: the note is let go when every note-on of it has ended.
     fn remove(&mut self, note: u8) {
+        let c = &mut self.count[note as usize & 127];
+        *c = c.saturating_sub(1);
+        if *c == 0 {
+            self.drop_note(note);
+        }
+    }
+    /// A choke: the note is let go at once, however often it was played.
+    fn choke(&mut self, note: u8) {
+        self.count[note as usize & 127] = 0;
+        self.drop_note(note);
+    }
+    fn drop_note(&mut self, note: u8) {
         if let Some(i) = self.notes[..self.len].iter().position(|&n| n == note) {
             self.notes.copy_within(i + 1..self.len, i);
             self.channels.copy_within(i + 1..self.len, i);
@@ -210,7 +227,10 @@ impl Keys {
         }
     }
     fn press(&mut self, note: u8, channel: u8) {
-        self.remove(note);
+        // on top again (the newest key sounds)
+        self.drop_note(note);
+        let c = &mut self.count[note as usize & 127];
+        *c = c.saturating_add(1);
         if self.len < 128 {
             self.notes[self.len] = note;
             self.channels[self.len] = channel;
@@ -608,7 +628,7 @@ impl<K: Kind> SuuPlugin<K> {
                     self.last_key = Some(k);
                 }
             }
-            NoteEvent::Choke { note, .. } => self.keys.remove(note),
+            NoteEvent::Choke { note, .. } => self.keys.choke(note),
             NoteEvent::MidiPitchBend { channel, value, .. } => self.bend[channel as usize & 15] = (value - 0.5) * 2.0,
             _ => {}
         }

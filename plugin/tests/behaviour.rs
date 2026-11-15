@@ -243,3 +243,28 @@ fn a_reset_note_starts_the_text_over() {
     run(&mut p, 9600, 64, &[on(100, 57), off(7000, 57)], |_| 0.0);
     assert_eq!(p.core().unwrap().text_part(), 0, "the next note says the first part");
 }
+
+/// The same note again before its last note-off (a Note Length or an arpeggiator before the
+/// plug-in, notes longer than the taps): it sounds until its own note-off. The first note's
+/// note-off closed the gate (the key was kept once), so a repeated note was cut short, or did
+/// not sound at all when it came just before that note-off.
+#[test]
+fn a_repeated_note_lasts_until_its_own_note_off() {
+    let mut p = SuuSynth::default();
+    assert!(p.setup(FS, 512));
+    // 55 at 0.1 s, 55 again at 0.25 s, the first one's off at 0.35 s, the second's at 0.5 s
+    let events = [on(4800, 55), on(12000, 55), off(16800, 55), off(24000, 55)];
+    let mut open = Vec::new();
+    let mut at = 0usize;
+    while at < 36000 {
+        let mut evs = events.iter().filter(|e| (e.timing() as usize) >= at && (e.timing() as usize) < at + 64).map(|e| self::at(*e, e.timing() - at as u32));
+        p.render(64, 120.0, false, || evs.next());
+        open.push((at, p.core().unwrap().adsr_level()));
+        at += 64;
+    }
+    let level = |t: usize| open.iter().find(|(a, _)| *a >= t).unwrap().1;
+    assert!(level(20000) > 0.5, "the repeated note still sounds after the first one's note-off: {}", level(20000));
+    assert!(level(23000) > 0.5, "until its own note-off: {}", level(23000));
+    // the release (80 ms) done 125 ms after it
+    assert!(level(30000) < 0.01, "and ends there: {}", level(30000));
+}
