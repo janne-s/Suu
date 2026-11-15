@@ -1,23 +1,3 @@
-//! The plug-in's window: the web app's page (`web/`) in a webview, its controls tied to the
-//! host's parameters.
-//!
-//! The page keeps its own state; in a plug-in it sends a parameter's new value (`set`, by
-//! parameter ID, in plain units) when a control changes it, and takes the host's values
-//! (`params`) when automation or the host changes them. A run of `set`s on one parameter is one
-//! host gesture, ended after a short pause, so a drag records as one automation edit. The words,
-//! the drawn horn and the page's own extras are persisted fields, never browser storage (shared
-//! by every instance and project).
-//!
-//! The mouth's live state comes from the audio thread through atomics (`Shared`): the audio
-//! thread neither locks nor allocates for the window.
-//!
-//! The page plays no keys in a host: they go on to the host (Live's own computer keyboard, its
-//! shortcuts), except while a text field has the focus, so typing words plays nothing.
-//!
-//! Neartect's lessons from Live on macOS: Escape is consumed (Live crashed on it in a webview),
-//! file dialogs are async sheets (a modal one on baseview's timer crashed Live), and the page
-//! cannot download files, so saving goes through a native dialog.
-
 use crate::params::{HornState, MAX_WORDS, SuuParams};
 use crate::{Shared, g2p};
 use nih_plug::prelude::*;
@@ -40,7 +20,6 @@ use std::time::{Duration, Instant};
 
 const WINDOW_SIZE: (u32, u32) = (1280, 640);
 const SMALLEST_WINDOW: (u32, u32) = (1024, 640);
-/// A gesture ends this long after its last change.
 const GESTURE_IDLE: Duration = Duration::from_millis(300);
 const LOG_FILE: &str = "suu-plugin.log";
 
@@ -72,25 +51,18 @@ fn log(text: &str) {
 enum Message {
     Ready,
     Set { id: String, value: f32 },
-    /// say these words (empty: stop saying them)
     Text { text: String },
-    /// the words, edited (whether or not they are being said)
     Words { text: String },
     Horn { areas: Vec<f64>, wrap: bool },
-    /// the page's own extras (its full state as JSON), kept with the host's state
     Ui { json: String },
-    /// a text field has the focus: its keys stay in the window, away from the host
     Typing { on: bool },
-    /// a control was let go (not a text field): the keys go back to the host at once
     Keys,
     Snapshot,
-    /// LEARN the text's reset note from the next note played (or stop)
     Learn { on: bool },
     Resize { width: u32, height: u32 },
     Log { text: String },
     Save { name: String, text: String },
     Open,
-    /// every setting back to its default (INIT)
     Reset,
 }
 
@@ -131,7 +103,6 @@ fn dialog(window: &impl HasRawWindowHandle) -> AsyncFileDialog {
     }
 }
 
-/// A finished dialog's result, if it has finished.
 fn settle(dialog: &mut Dialog, page: &WindowHandler) -> bool {
     let chosen = match dialog {
         Dialog::Open(chosen) | Dialog::Save(chosen, _) => chosen,
@@ -157,44 +128,24 @@ fn settle(dialog: &mut Dialog, page: &WindowHandler) -> bool {
     true
 }
 
-/// The window's side, on the GUI thread only.
 struct Gui {
-    /// every parameter by ID, in the host's order
     params: Vec<(String, ParamPtr)>,
     index: HashMap<String, usize>,
-    /// the value last sent to or taken from the page, per parameter (plain)
     known: Vec<f32>,
-    /// parameters the page is changing: when it last did
     gestures: HashMap<usize, Instant>,
     ready: bool,
     generation: u64,
     ui_seq: u64,
-    /// the mouth's frame and the tempo last sent: an unchanged frame is not sent again (a still
-    /// or silent mouth would have the page redraw 30 times a second for nothing)
     ui_sent: (Vec<f32>, f64),
-    /// what the page was last told about the text: (said, words)
     text_shown: Option<(bool, String)>,
     dialog: Option<Dialog>,
     frame: u64,
-    /// since when the webview has held the keys with no text field focused (macOS)
     keys_held: Option<Instant>,
-    /// a change of the keys' view is waiting on the main queue
     keys_pending: Arc<AtomicBool>,
 }
 
-/// After a click the webview held the keys (it is the first responder then) and handed the ones
-/// it does not use on to the host from its web process, late and unevenly: Live's computer
-/// keyboard lost its timing after any control was touched, until the window was closed.
 const KEYS_BACK: Duration = Duration::from_millis(300);
 
-/// macOS: give the keys back to the window's own view, which passes them on to the host at once
-/// (baseview: unused keys go up the responder chain). Only from the webview, never from a view of
-/// the host's. `now`: the page says a control was let go; otherwise after `KEYS_BACK`, the time
-/// the page has to say that a click went into a text field.
-///
-/// The change is made on the main queue's next turn, never here: this runs in baseview's frame
-/// callback, which holds its window handler, and the view becoming first responder calls that
-/// handler again (a second borrow: a panic that cannot unwind, and Live went down with it).
 #[cfg(target_os = "macos")]
 fn keys_to_host(window: &impl HasRawWindowHandle, held: &mut Option<Instant>, now: bool, pending: &Arc<AtomicBool>) {
     use objc::runtime::{BOOL, NO, Object, YES};
@@ -224,7 +175,6 @@ fn keys_to_host(window: &impl HasRawWindowHandle, held: &mut Option<Instant>, no
         if now || since.elapsed() >= KEYS_BACK {
             *held = None;
             pending.store(true, Ordering::Release);
-            // kept alive until the call has run
             let _: *mut Object = msg_send![view, retain];
             let _: *mut Object = msg_send![win, retain];
             let job = Box::new(KeysBack { view, win, pending: pending.clone() });
@@ -240,8 +190,6 @@ struct KeysBack {
     pending: Arc<AtomicBool>,
 }
 
-/// On the main queue, outside baseview's callbacks: the view takes the keys if it is still in
-/// the same window (a closed editor's view has left it: nothing is done then).
 #[cfg(target_os = "macos")]
 extern "C" fn keys_back(job: *mut std::ffi::c_void) {
     use objc::runtime::{BOOL, Object};
@@ -266,7 +214,6 @@ struct DispatchQueue {
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    /// the main queue (`dispatch_get_main_queue()` is this, as a macro)
     static _dispatch_main_q: DispatchQueue;
     fn dispatch_async_f(queue: *const DispatchQueue, context: *mut std::ffi::c_void, work: extern "C" fn(*mut std::ffi::c_void));
 }
@@ -299,7 +246,6 @@ impl Gui {
             setter.raw_context.raw_set_parameter_normalized(p, p.preview_normalized(value));
         }
         self.gestures.insert(i, Instant::now());
-        // what the host made of it (rounded to the parameter's steps): not sent back
         self.known[i] = plain(p);
     }
 
@@ -372,7 +318,6 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
             {
                 gui.dialog = None;
             }
-            // a reloaded state (a new core): the page starts over from the host's values
             let generation = shared.generation.load(Ordering::Acquire);
             if gui.ready && generation != gui.generation {
                 gui.generation = generation;
@@ -416,7 +361,6 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                             }
                             gui.known[i] = plain(p);
                         }
-                        // the planned text follows the new words
                         shared.words_changed.store(true, Ordering::Release);
                     }
                     Message::Words { text } => {
@@ -485,7 +429,6 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 return;
             }
             gui.end_gestures(&setter, false);
-            // the host's changes (automation, MIDI mapping, its own controls), every other frame
             if gui.frame % 2 == 0 {
                 let mut changed = Map::new();
                 for i in 0..gui.params.len() {
@@ -501,7 +444,6 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 if !changed.is_empty() {
                     page.send_json(json!({ "type": "params", "values": changed }));
                 }
-                // the text: said or not (and its syllables)
                 let said = params.text.value();
                 let words = params.words.read().map(|w| w.clone()).unwrap_or_default();
                 if gui.text_shown.as_ref() != Some(&(said, words.clone())) {
@@ -510,7 +452,6 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                     gui.text_shown = Some((said, words));
                 }
             }
-            // LEARN: a note was played; it is the reset note now (the page hears it as a host change)
             let learned = shared.learned.swap(-1, Ordering::AcqRel);
             if learned >= 0
                 && let Some((_, p)) = gui.param("text_reset_note")
@@ -522,7 +463,6 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 }
                 page.send_json(json!({ "type": "learned", "note": learned }));
             }
-            // the mouth, as the audio thread last left it
             let seq = shared.ui_seq.load(Ordering::Acquire);
             if seq != gui.ui_seq {
                 gui.ui_seq = seq;

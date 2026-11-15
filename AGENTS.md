@@ -36,6 +36,12 @@ This is not a Node app. Bun runs only the local server and the e2e checks.
 
 ## Rules
 
+- **No comments in code.** Only a short label separating sections of a long file
+  (`// ---- sequencer`, `/* knobs */`). Explanations, reasons, history, measurements and
+  instructions go in names, tests, the design documents or the commit. `crates/chimera/` and
+  `plugin/vendor/` are third-party and keep theirs. Check:
+  `grep -rnE '^\s*(//|/\*)' crates/suu crates/suu-wasm plugin/src plugin/fx plugin/synth plugin/xtask plugin/tests web tools | grep -vE '// -{3}|/\* [a-zA-Z -]+ \*/'`
+  prints nothing.
 - **The engine's contract** (`docs/rust-engine.md`): transcendental math only through
   `chimera::math`, no allocation while rendering, output independent of block size. `cargo test`
   enforces each.

@@ -1,12 +1,4 @@
-// Suu's AudioWorklet: one wasm instance, mono in → mono out (copied to both channels).
-// From the page: {type:"param", id, v} · {type:"dict", bytes} · {type:"text", bytes}
-//   · {type:"step", i, on, note, tie, vowel, accent, len} · {type:"seq", len, div, gate}
-//   · {type:"play", on} · {type:"retrigger"} · {type:"profile", areas: Float32Array, wrap}
-//   · {type:"mod", target, depth, rate, sync, shape, smooth}
-// To the page: ready · dict · text {syllables} · applied {id} · ui {ui} (see Suu::ui_state)
-//   · snapshot {values: Float32Array(32) | null} (after {type:"snapshot"})
-
-const FRAME_EVERY = 1 / 30; // s
+const FRAME_EVERY = 1 / 30;
 
 class SuuProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -103,7 +95,6 @@ class SuuProcessor extends AudioWorkletProcessor {
       this.untilFrame += FRAME_EVERY;
       const len = this.x.suu_ui_update(this.h);
       const now = new Float32Array(this.x.memory.buffer, this.x.suu_ui(this.h), len);
-      // an unchanged frame (a still or silent mouth) is not sent: the page would redraw for it
       const last = this.lastUi;
       if (!last || last.length !== len || now.some((v, i) => v !== last[i])) {
         this.lastUi = now.slice();

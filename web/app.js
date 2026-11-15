@@ -1,21 +1,13 @@
-// Suu web app: the page around the worklet. Engine parameter ids match crates/suu-wasm.
-// The same page is the plug-in's window (App/plugin): there it has no audio of its own, and its
-// state is tied to the host's parameters (see "plug-in" at the end).
-
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const css = getComputedStyle(document.documentElement);
-const colors = new Map(); // the palette is fixed: read each token once
+const colors = new Map();
 const color = (n) => colors.get(n) ?? (colors.set(n, css.getPropertyValue(n).trim()), colors.get(n));
-// redraw only when something changed: new engine state, a resize, or an edit
 let dirty = true;
 
-// in the plug-in's window: the bridge the webview provides
 const inPlugin = typeof window.sendToPlugin === "function";
-// the plug-in bridge's state (see "plug-in" at the end): the host's last values, and so on
 const plugin = { ready: false, quiet: false, host: {}, words: null, horn: "", ui: "", frame: 0, typing: false };
 let ctx, node, srcNode, fileBuf, micStream, analyser, fx = {};
-// the engine, compiled once: for the audio worklet, and for drawing the mouth before audio starts
 const wasmModule = inPlugin ? null : WebAssembly.compileStreaming(fetch("suu.wasm"));
 function post(m, transfer) {
   if (inPlugin) return pluginPost(m);
@@ -26,19 +18,15 @@ function send(id, v) {
 }
 const bpm = () => clamp(+$("bpm").value || 100, 30, 300);
 
-// note values for tempo sync, in beats
 const DIVS = [["1/128", 1 / 32], ["1/64T", 1 / 24], ["1/64", 1 / 16], ["1/32T", 1 / 12], ["1/32", 0.125], ["1/16T", 1 / 6], ["1/16", 0.25], ["1/16.", 0.375], ["1/8T", 1 / 3], ["1/8", 0.5], ["1/8.", 0.75], ["1/4T", 2 / 3], ["1/4", 1], ["1/4.", 1.5], ["1/2", 2], ["1/2.", 3], ["1/1", 4], ["2/1", 8], ["4/1", 16]];
 const divBeats = (n) => DIVS.find((d) => d[0] === n)[1];
 
 // ---------------------------------------------------------------- knobs
-// key, label, min, max, default, format, curve, target (engine id or "space"), anatomical [lo, hi]
 const pct = (v) => Math.round(v * 100) + "%";
 const times = (v) => "×" + v.toFixed(2);
 const dbOff = (v) => (v <= -59.95 ? "off" : (v > 0 ? "+" : "") + v.toFixed(1) + " dB");
 const secsFmt = (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s");
-// the ADSR's: shorter, for its smaller knobs
 const shortSecs = (v) => (v < 0.01 ? (v * 1000).toFixed(1) + "ms" : v < 1 ? (v * 1000).toFixed(0) + "ms" : v.toFixed(v < 10 ? 2 : 1) + "s");
-// whole values only
 const INT = new Set(["coarse"]);
 const KNOBS = {
   "k-mouth": [
@@ -52,18 +40,15 @@ const KNOBS = {
     ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
   ],
-  // the pitch: its glide, transposed, and (from the input) taken only once it has lasted
   "k-pitch": [
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
     ["coarse", "TUNE", -48, 48, 0, (v) => (Math.round(v) > 0 ? "+" : "") + Math.round(v) + " st", null, 53],
     ["steady", "STEADY", 0, 4, 0, (v) => (v < 0.0005 ? "off" : shortSecs(v)), "sq", 54],
   ],
-  // ENV gate: the input's level opens the sound at THRESH and closes HANG after it falls below
   "k-gate": [
     ["envThresh", "THRESH", -80, 0, -40, (v) => v.toFixed(0) + " dB", null, 40],
     ["envRelease", "HANG", 0.005, 4, 0.15, secsFmt, "log", 41],
   ],
-  // the ADSR of what the gate opens
   "k-env": [
     ["attack", "A", 0.001, 10, 0.005, shortSecs, "log", 45],
     ["decay", "D", 0.001, 10, 0.2, shortSecs, "log", 47],
@@ -88,7 +73,6 @@ const KNOBS = {
     ["out", "OUTPUT", -40, 20, 0, (v) => v.toFixed(1) + " dB", null, 17],
   ],
 };
-// what each knob does, for its tooltip
 const KNOB_TIPS = {
   size: "Size\nThe mouth's size: small is bright and high, large dark and low.",
   osc: "Osc\nThe oscillator's level into the mouth. At 0 dB as loud as Folds at 100%.",
@@ -118,8 +102,6 @@ const KNOB_TIPS = {
   steady: "Steady\nWith PITCH IN: a new pitch is taken only once the input has stayed on it this long, so quick changes pass by. Vibrato and slides within a note follow at once. ♪: a note value.",
   out: "Output\nOutput level.",
 };
-// time knobs that can lock to the tempo: the division they start from, and the engine id that
-// takes the synced length in beats (none: the page converts it to seconds itself)
 const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 }, steady: { div: "1/16", id: 55 } };
 
 const state = {};
@@ -128,7 +110,6 @@ const toNorm = (c, v) =>
   c.curve === "log" ? Math.log(v / c.min) / Math.log(c.max / c.min) : c.curve === "sq" ? Math.sqrt((v - c.min) / (c.max - c.min)) : (v - c.min) / (c.max - c.min);
 const fromNorm = (c, n) => (c.curve === "log" ? c.min * Math.pow(c.max / c.min, n) : c.curve === "sq" ? c.min + n * n * (c.max - c.min) : c.min + n * (c.max - c.min));
 
-/** A knob's value in its own units: the knob's, or the synced division's length in seconds. */
 function eff(key) {
   const c = controls.get(key);
   return c.sync ? clamp((divBeats(c.sync) * 60) / bpm(), 0.01, 2) : state[key];
@@ -148,7 +129,6 @@ function update(key, v, final = true) {
   c.cell.dataset.tip = (KNOB_TIPS[key] ?? c.label) + (c.anat ? ` The anatomy spans ${c.fmt(c.anat[0])} … ${c.fmt(c.anat[1])}; beyond is allowed.` : "");
   if (c.target === "space") setSpace();
   else if (c.target === 18) {
-    // a new mouth crossfades in; while dragging, build at most one every 80 ms
     const now = performance.now();
     if (final || now - sizeSent > 80) {
       send(18, v);
@@ -211,7 +191,6 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
     input.after(box);
     cell.append(btn);
     if (key === "glide") {
-      // which way the pitch glides: both, only up, only down (the other way it jumps)
       const dir = document.createElement("button");
       dir.id = "glidedir";
       dir.className = "sync dir";
@@ -242,7 +221,7 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
   }
   update(key, def);
 }
-let glideDir = 0; // 0 both ways, 1 up only, 2 down only
+let glideDir = 0;
 function setGlideDir(d) {
   glideDir = d;
   send(35, d);
@@ -257,7 +236,6 @@ for (const [parent, list] of Object.entries(KNOBS)) for (const k of list) knob(p
 setGlideDir(0);
 
 // ---------------------------------------------------------------- Motion
-// target index (engine), label, engine param id of its base, range, default base, format, log
 const MOTION = [
   [0, "VOWEL X", 7, -0.3, 1.3, 0.5, (v) => (v < 0.15 ? "front" : v > 0.85 ? "back" : pct(v))],
   [1, "VOWEL Y", 8, -0.3, 1.3, 0.6, (v) => (v < 0.15 ? "close" : v > 0.85 ? "open" : pct(v))],
@@ -265,7 +243,6 @@ const MOTION = [
   [3, "NASAL", 10, 0, 1.5, 0, pct],
   [4, "INJECT", 11, 0, 1, 0, (v) => (v < 0.02 ? "throat" : v > 0.98 ? "lips" : pct(v))],
   [5, "DAMPING", 12, 0.1, 20, 1, times, true],
-  // the drawn horn (HORN view): blend, slide along the tract, widen
   [6, "MORPH", 25, 0, 1, 0, (v) => (v < 0.005 ? "mouth" : v > 0.995 ? "horn" : pct(v))],
   [7, "SHIFT", 26, -0.5, 0.5, 0, (v) => (Math.abs(v) < 0.005 ? "0" : (v > 0 ? "lips " : "throat ") + pct(Math.abs(v)))],
   [8, "OPEN", 27, 0.25, 4, 1, times, true],
@@ -297,7 +274,6 @@ function sendMod(r) {
   const env = r.shape === 5;
   post({ type: "mod", target: r.t, depth: r.depth, rate: r.rate, sync: r.sync ? divBeats(r.sync) : 0, shape: r.shape, smooth: r.smooth });
   r.smoothBox.textContent = Math.round(r.smooth * 100) + "%";
-  // only shapes with jumps (saw, square, random) have something to smooth
   r.smoothBox.classList.toggle("idle", ![2, 3, 4].includes(r.shape));
   r.el.classList.toggle("active", r.depth !== 0);
   r.el.classList.toggle("env", env);
@@ -342,7 +318,6 @@ for (const [t, label, param, lo, hi, def, fmt, log] of MOTION) {
     r.depth = 0;
     sendMod(r);
   };
-  // rate: drag on a log scale, 0.02 … 20 Hz
   dragValue(r.rateVal, () => Math.log(r.rate), (lv) => {
     r.rate = clamp(Math.exp(lv), 0.02, 20);
     sendMod(r);
@@ -393,10 +368,9 @@ function fit(canvas) {
 }
 const FONT = (px, dpr) => `${px * dpr}px Hershey, 'SFMono-Regular', monospace`;
 
-/** A lens with rounded ends: the mouth's opening and the lips' outline (superellipse). */
 function lens(c, cx, cy, w, hTop, hBot, round, more = false) {
-  const n = 2 + 2.5 * round; // 2 = pointed corners like a lens … 4.5 = an O
-  if (!more) c.beginPath(); // more: add to the current path (a ring, filled even-odd)
+  const n = 2 + 2.5 * round;
+  if (!more) c.beginPath();
   for (let i = 0; i <= 64; i++) {
     const a = (i / 64) * 2 * Math.PI;
     const ca = Math.cos(a), sa = Math.sin(a);
@@ -409,34 +383,24 @@ function lens(c, cx, cy, w, hTop, hBot, round, more = false) {
 }
 
 // ---------------------------------------------------------------- the horn (HORN view)
-// The drawn area function: HORN_POINTS areas (cm², adult scale), glottis → lips. Its start
-// matches the engine's: narrow at the glottis, a throat, a wide bell.
 const HORN_POINTS = 32, HORN_MAX = 20, UI_AREAS = 48;
 const defaultHorn = () => Float32Array.from({ length: HORN_POINTS }, (_, i) => {
   const u = i / (HORN_POINTS - 1);
   return 0.6 + 1.5 * Math.exp(-(((u - 0.3) / 0.12) ** 2)) + 9 * u ** 3;
 });
 let horn = defaultHorn(), view = "pad";
-// a horn built from a wave is one period (points at i/n), and Shift wraps it around
 let hornWrap = false;
-const hornWave = { shape: -1, cycles: 1, depth: 0.6 }; // shape −1: drawn by hand
+const hornWave = { shape: -1, cycles: 1, depth: 0.6 };
 function sendHorn() {
   dirty = true;
   post({ type: "profile", areas: horn.slice(), wrap: hornWrap });
 }
 const hornU = (i) => i / (hornWrap ? HORN_POINTS : HORN_POINTS - 1);
-/** The horn from a wave: a 3 cm² tube rippled `depth` (1 = closing at the troughs). */
-// RND: one value per cycle, drawn anew only when RND is chosen or the cycles change
 let rndSteps = [];
-// SNAP: one period of the source's waveform (32 values, −1..1), taken by the camera button
 let snapVals = [];
-// DRAWN (shape −1): the hand-drawn horn as one period, its mean area and each point's swing in
-// units of mean × depth, so Depth scales what was drawn and Cycles repeats it, as for a wave
 let drawn = { mean: 3, w: new Array(HORN_POINTS).fill(0) };
-/** The horn as shown becomes the drawn shape (one cycle; at the present depth, so it looks the
- *  same until Depth or Cycles move). */
 function captureDrawn() {
-  if (hornWave.depth === 0) hornWave.depth = 1; // a shape drawn at 0 could not be scaled back
+  if (hornWave.depth === 0) hornWave.depth = 1;
   const mean = horn.reduce((a, b) => a + b, 0) / horn.length;
   drawn = { mean, w: Array.from(horn, (a) => (mean > 0 ? Math.round(((a - mean) / (mean * hornWave.depth)) * 1e4) / 1e4 : 0)) };
   hornWave.cycles = 1;
@@ -444,7 +408,6 @@ function captureDrawn() {
 function buildWave(newRandom = false) {
   const { shape, cycles, depth } = hornWave;
   if (shape < 0) {
-    // the drawn shape, repeated and scaled (it keeps its own wrapping)
     horn = Float32Array.from({ length: HORN_POINTS }, (_, i) => {
       const f = ((cycles * i) / HORN_POINTS) % 1;
       return clamp(drawn.mean * (1 + depth * drawn.w[Math.floor(f * HORN_POINTS)]), 0, HORN_MAX);
@@ -475,16 +438,13 @@ function resetHorn() {
   showHornWave();
   sendHorn();
 }
-/** Drawing or building a horn with MORPH at 0 would be silent: bring the horn in fully. */
 function bringHornIn() {
   if (rows[6] && rows[6].base === 0) setBase(rows[6], 1);
 }
 $("horn-reset").onclick = resetHorn;
 $("horn-shape").onchange = () => {
   hornWave.shape = +$("horn-shape").value;
-  // back to "—": the horn as it is now becomes the drawn shape
   if (hornWave.shape < 0) captureDrawn();
-  // SNAP without a snapshot yet: take one now
   if (hornWave.shape === 5 && !snapVals.length) return post({ type: "snapshot" });
   if (hornWave.shape >= 0) buildWave(true);
   showHornWave();
@@ -520,7 +480,6 @@ dragValue($("horn-depth"), () => hornWave.depth, (v) => {
 }, 1 / 150);
 captureDrawn();
 showHornWave();
-/** The horn's frame on the canvas: x for u (0 glottis … 1 lips), half-height in px for an area. */
 function hornFrame(w, h) {
   const x0 = w * 0.07, x1 = w * 0.93, cy = h * 0.5;
   const perCm = (h * 0.44) / Math.sqrt(HORN_MAX / Math.PI);
@@ -528,7 +487,6 @@ function hornFrame(w, h) {
 }
 function drawHorn(c, w, h, dpr) {
   const f = hornFrame(w, h);
-  // the axis, and the ends named
   c.strokeStyle = color("--line");
   c.lineWidth = dpr;
   c.setLineDash([3 * dpr, 4 * dpr]);
@@ -544,7 +502,6 @@ function drawHorn(c, w, h, dpr) {
   c.fillText("GLOTTIS", f.x0, 14 * dpr);
   c.textAlign = "right";
   c.fillText("LIPS", f.x1, 14 * dpr);
-  // the live tract: a horn in the lips' rose, glowing with the sound
   if (ui && ui.length >= 23 + UI_AREAS) {
     const areas = ui.subarray(23, 23 + UI_AREAS);
     const lit = clamp(ui[16] * 4, 0, 1);
@@ -568,7 +525,6 @@ function drawHorn(c, w, h, dpr) {
     c.stroke();
     c.shadowBlur = 0;
   }
-  // the drawn horn (what MORPH blends toward), as an editable outline
   c.strokeStyle = color("--ink");
   c.globalAlpha = 0.7;
   c.lineWidth = 1.2 * dpr;
@@ -579,7 +535,6 @@ function drawHorn(c, w, h, dpr) {
       const x = f.x(hornU(i)), y = f.cy + side * f.r(a);
       i ? c.lineTo(x, y) : c.moveTo(x, y);
     });
-    // a wave is one period: it closes on its first value at the lips' end
     if (hornWrap) c.lineTo(f.x(1), f.cy + side * f.r(horn[0]));
     c.stroke();
   }
@@ -593,12 +548,9 @@ function hornAt(e) {
   const f = hornFrame(mouthEl.width, mouthEl.height);
   const x = (e.clientX - r.left) * dpr, y = (e.clientY - r.top) * dpr;
   const u = clamp((x - f.x0) / (f.x1 - f.x0), 0, 1);
-  // nearest point; at the lips' end a wave's last point (wrapping to the first sent the stroke
-  // to the glottis' end)
   const i = hornWrap ? Math.min(HORN_POINTS - 1, Math.round(u * HORN_POINTS)) : Math.round(u * (HORN_POINTS - 1));
   const cm = Math.abs(y - f.cy) / f.perCm;
   const a = clamp(Math.PI * cm * cm, 0, HORN_MAX);
-  // fill every point between the last one and this, so a fast stroke leaves no gaps
   const from = hornLast < 0 ? i : hornLast;
   const a0 = hornLast < 0 ? a : horn[from];
   const n = Math.abs(i - from);
@@ -616,7 +568,6 @@ function setView(v) {
   $("view-horn").setAttribute("aria-pressed", String(v === "horn"));
   mouthEl.style.cursor = v === "horn" ? "cell" : "";
   $("horn-bar").hidden = v !== "horn";
-  // a view of the mouth, not the words: the text panel closes
   $("text-panel").hidden = true;
   $("text-toggle").setAttribute("aria-expanded", "false");
 }
@@ -628,7 +579,6 @@ function drawMouth() {
   const [w, h, dpr] = fit(mouthEl);
   c.clearRect(0, 0, w, h);
   if (view === "horn") return drawHorn(c, w, h, dpr);
-  // the pad: inner box = the four corner vowels, the border beyond extrapolates
   const x0 = toPad(0) * w, x1 = toPad(1) * w, y0 = toPad(0) * h, y1 = toPad(1) * h;
   c.strokeStyle = color("--line");
   c.lineWidth = dpr;
@@ -645,13 +595,12 @@ function drawMouth() {
   const bx = ui ? ui[6] : base[0], by = ui ? ui[7] : base[1];
   const ex = ui ? ui[0] : bx, ey = ui ? ui[1] : by;
 
-  // the mouth, front view, from the engine's lips, jaw, tongue and velum
   if (ui) {
     const [lipAp, lipWidth, lipProt, jaw, , tbY, velum, lipArea, env] = ui.slice(8, 17);
-    const unit = Math.min(w, h) / 9; // px per cm
+    const unit = Math.min(w, h) / 9;
     const cx = w / 2, cy = h * 0.5;
-    const width = 4.6 * (0.78 + 0.45 * lipWidth) * (1 - 0.38 * clamp(lipProt, 0, 1)); // cm
-    const open = clamp((4 * Math.max(0, lipArea)) / (Math.PI * width), 0, 4); // cm, from the lips' area
+    const width = 4.6 * (0.78 + 0.45 * lipWidth) * (1 - 0.38 * clamp(lipProt, 0, 1));
+    const open = clamp((4 * Math.max(0, lipArea)) / (Math.PI * width), 0, 4);
     const round = clamp(lipProt, 0, 1);
     const thick = 0.75 + 0.5 * round;
     const lit = clamp(env * 4, 0, 1);
@@ -662,7 +611,6 @@ function drawMouth() {
     const mouth = (more = false) => lens(c, cx, cy, width * unit, (open / 2) * unit, (open / 2) * unit, round, more);
     const top = cy - (open / 2 + thick) * unit, bottom = cy + (open / 2 + thick * 1.1) * unit;
     c.lineJoin = "round";
-    // the lips: a ring of soft rose, fuller in the middle of each lip, glowing with the sound
     const body = c.createLinearGradient(0, top, 0, bottom);
     body.addColorStop(0, rose(0.1 + 0.08 * lit));
     body.addColorStop(0.3, rose(0.28 + 0.12 * lit));
@@ -680,7 +628,6 @@ function drawMouth() {
     outer();
     c.stroke();
     if (open > 0.02) {
-      // inside: a deep wine dark, the teeth in faint bone, the tongue in rose
       c.shadowBlur = 0;
       mouth();
       c.fillStyle = "#14060b";
@@ -716,7 +663,6 @@ function drawMouth() {
       c.quadraticCurveTo(cx, cy + 0.12 * unit, cx + (width / 2) * unit, cy);
       c.stroke();
     }
-    // sheen: a soft, edgeless light on each lip (no lines), brighter with the sound
     c.save();
     c.shadowBlur = 0;
     outer();
@@ -738,7 +684,6 @@ function drawMouth() {
     sheen(cy + (open / 2 + thick * 0.5) * unit, width * 0.32 * unit, thick * 0.45 * unit, 0.13 + 0.07 * lit);
     sheen(cy - (open / 2 + thick * 0.55) * unit, width * 0.26 * unit, thick * 0.35 * unit, 0.06 + 0.04 * lit);
     c.restore();
-    // nostrils light up as the velum opens
     const nas = clamp((velum + 0.1) / 0.6, 0, 1);
     c.shadowColor = lips;
     c.shadowBlur = (4 + 14 * nas) * dpr;
@@ -754,7 +699,6 @@ function drawMouth() {
     c.shadowBlur = 0;
   }
 
-  // the pad's points: the base (where you set it) and the moving value (Motion)
   const px = toPad(bx) * w, py = toPad(by) * h, qx = toPad(ex) * w, qy = toPad(ey) * h;
   const beyond = bx < 0 || bx > 1 || by < 0 || by > 1;
   c.globalAlpha = textOn ? 0.4 : 1;
@@ -789,8 +733,6 @@ function padAt(e) {
   setBase(rows[0], x);
   setBase(rows[1], y);
 }
-// a stroke is only one that began on the mouth: a button held down elsewhere (a menu, the Depth
-// field) and moved over it drew a spike where the pointer was
 let stroke = false;
 mouthEl.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
@@ -798,7 +740,6 @@ mouthEl.addEventListener("pointerdown", (e) => {
   mouthEl.setPointerCapture(e.pointerId);
   if (view === "horn") {
     bringHornIn();
-    // a hand-drawn change: no longer the wave as built (it still wraps if it was one)
     hornWave.shape = -1;
     showHornWave();
     hornLast = -1;
@@ -808,7 +749,6 @@ mouthEl.addEventListener("pointerdown", (e) => {
 mouthEl.addEventListener("pointermove", (e) => {
   if (stroke && e.buttons & 1) view === "horn" ? hornAt(e) : padAt(e);
 });
-// a stroke's end: what is drawn now is the shape Depth and Cycles work on
 function endStroke() {
   if (!stroke) return;
   stroke = false;
@@ -833,11 +773,9 @@ function frameLoop() {
   dirty = false;
   drawMouth();
   if (ui) {
-    // live markers on the Motion rows
     for (const r of rows) {
-      const live = ui[r.t < 6 ? r.t : 14 + r.t]; // the horn's three come after the first 20 values
+      const live = ui[r.t < 6 ? r.t : 14 + r.t];
       const a = baseNorm(r, r.base) * 100, b = clamp(baseNorm(r, live), 0, 1) * 100;
-      // only what changed: a style change recalculates styles, 30 times a second
       const key = `${r.depth === 0} ${b} ${a}`;
       if (key === r.shown) continue;
       r.shown = key;
@@ -873,7 +811,7 @@ async function start() {
   analyser.fftSize = 2048;
   fx.master.connect(analyser);
   analyser.connect(ctx.destination);
-  window.__suu = { ctx, analyser }; // for automated checks
+  window.__suu = { ctx, analyser };
   pushAll();
   setOsc(oscWave);
   await setInput(inputKind);
@@ -882,10 +820,8 @@ async function start() {
   const bytes = new Uint8Array(await new Response(gz.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
   post({ type: "dict", bytes }, [bytes.buffer]);
 }
-// a browser starts audio only after a gesture: the first click, touch or key anywhere starts it
 for (const ev of ["pointerdown", "keydown"]) addEventListener(ev, () => start(), { capture: true, once: true });
 let statusTimer = 0;
-/** A short message in the bar that fades after a few seconds. */
 function status(t, keep = false) {
   const el = $("status");
   el.textContent = t;
@@ -945,7 +881,6 @@ function pushAll() {
 function buildSpace() {
   const m = (fx.master = ctx.createGain());
   node.connect(m);
-  // ping-pong delay: L → R → (feedback, darkened) → L
   const dl = ctx.createDelay(2), dr = ctx.createDelay(2);
   const fb = ctx.createGain(), tone = ctx.createBiquadFilter();
   tone.type = "lowpass";
@@ -961,7 +896,6 @@ function buildSpace() {
   dr.connect(merge, 0, 1);
   merge.connect(dmix);
   dmix.connect(m);
-  // reverb: a generated stereo impulse, decaying noise that darkens as it fades
   const conv = ctx.createConvolver();
   const rmix = ctx.createGain();
   node.connect(conv);
@@ -988,8 +922,6 @@ function makeIR(len) {
 }
 
 function setSpace() {
-  // not before the graph is built: the first click starts the audio and may change a setting
-  // in the same moment (pushAll sends the settings once it is)
   if (!ctx || !fx.dl) return;
   const on = spaceOn;
   const t = ctx.currentTime;
@@ -1009,8 +941,6 @@ $("spaceon").onclick = () => {
 };
 
 // ---------------------------------------------------------------- sources
-// The oscillator's wave (0 off) and the input (a file or the mic, or none) sound together, each
-// at its level (OSC and INPUT); keys, hold and the sequencer gate both.
 let oscWave = "2", inputKind = null, fileName = "", autoHold = false;
 function setOsc(w) {
   oscWave = w;
@@ -1018,8 +948,6 @@ function setOsc(w) {
   send(0, +w);
 }
 async function setInput(kind) {
-  // an input turned on opens hold, so it sounds at once (keys then say the text over it); turned
-  // off, a hold this turned on goes off again
   if (kind && !inputKind && !held) {
     setHold(true);
     autoHold = true;
@@ -1061,7 +989,6 @@ document.querySelectorAll("[data-osc]").forEach((b) => {
 });
 document.querySelectorAll("[data-in]").forEach((b) => {
   b.onclick = async () => {
-    // FILE with no file yet asks for one; a pressed input turns off
     if (b.dataset.in === "file" && !fileBuf) return $("file").click();
     await start();
     setInput(inputKind === b.dataset.in ? null : b.dataset.in);
@@ -1082,11 +1009,9 @@ async function loadFile(f) {
 }
 $("file").onchange = (e) => {
   const f = e.target.files[0];
-  // cleared, so choosing the same file again loads it again
   e.target.value = "";
   if (f) loadFile(f);
 };
-// the folder next to FILE always asks for a file (FILE itself turns a loaded one on and off)
 $("pickfile").onclick = () => $("file").click();
 addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => {
@@ -1099,23 +1024,19 @@ addEventListener("drop", (e) => {
 const KEYS = "awsedftgyhujk";
 const NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
 let octave = 0, held = false, lastNote = 45;
-const down = new Map(); // key index → midi
+const down = new Map();
 const noteName = (m) => NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 function note(midi) {
   lastNote = clamp(midi, 12, 108);
   send(1, lastNote);
   showRoot();
 }
-// the root: a note of the octave from the list, the octave by − and + (or Z and X); in a host
-// it is set here rather than by MIDI
 function showRoot() {
-  // PITCH from the input: the pitch it is at (the root, until one is found)
   const t = pitchFrom && ui && ui.length > 23 + UI_AREAS ? ui[23 + UI_AREAS] : 0;
   const m = t > 0 ? Math.round(t) : lastNote;
   $("notename").value = String(((m % 12) + 12) % 12);
   $("rootoct").textContent = String(Math.floor(m / 12) - 1);
 }
-// PITCH: 0 the note, 1 the input's pitch, 2 the input's snapped to semitones
 let pitchFrom = 0;
 function setPitchFrom(v) {
   pitchFrom = v;
@@ -1125,7 +1046,6 @@ function setPitchFrom(v) {
   showRoot();
 }
 $("pitchfrom").onchange = () => setPitchFrom(+$("pitchfrom").value);
-// RETRIG / LEGATO: whether a note while the sound is open starts the ADSR again
 let legato = false;
 function setLegato(on) {
   legato = on;
@@ -1134,8 +1054,6 @@ function setLegato(on) {
   send(52, on ? 1 : 0);
 }
 $("legato").onclick = () => setLegato(!legato);
-// the input's pitch: SCALE (the pitch classes IN ♮ snaps to, bit 0 = C) and JUMP (the widest
-// move, 0 = any; a wider one folded by octaves, or skipped)
 let scale = 0xfff, jump = 0, jumpFold = true;
 const SCALES = { all: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], maj: [0, 2, 4, 5, 7, 9, 11], min: [0, 2, 3, 5, 7, 8, 10], penta: [0, 2, 4, 7, 9], minpenta: [0, 3, 5, 7, 10] };
 NAMES.forEach((n, i) => {
@@ -1151,7 +1069,6 @@ function setScale(mask) {
   send(58, scale);
 }
 for (const b of document.querySelectorAll("[data-preset]")) {
-  // from the root's pitch class
   b.onclick = () => setScale(SCALES[b.dataset.preset].reduce((m, k) => m | (1 << ((k + lastNote) % 12)), 0));
 }
 function setJump(st, fold) {
@@ -1183,7 +1100,6 @@ $("pitch-more").onclick = (e) => {
 addEventListener("pointerdown", (e) => {
   if (!$("pitch-panel").hidden && !$("pitch-panel").contains(e.target) && e.target !== $("pitch-more")) showPitchPanel(false);
 });
-// GRID: the mouth's shape and the pitch change only on this note value (null: free)
 let grid = null;
 $("grid").add(new Option("FREE", ""));
 for (const [n] of DIVS) $("grid").add(new Option(n, n));
@@ -1208,7 +1124,6 @@ $("gridbreath").ondblclick = () => setGridMore(1, gridSmooth);
 $("gridsmooth").ondblclick = () => setGridMore(gridBreath, 0);
 setGridMore(1, 0);
 $("grid").onchange = () => setGrid($("grid").value);
-// HQ: the airway at full rate (off: a lean one, much lighter; a change rebuilds the mouth)
 let hq = true;
 function setHq(on) {
   hq = on;
@@ -1216,7 +1131,6 @@ function setHq(on) {
   send(56, on ? 1 : 0);
 }
 $("hq").onclick = () => setHq(!hq);
-// VOWEL IN: the input's vowel places the pad
 let vowelIn = false;
 function setVowelIn(on) {
   vowelIn = on;
@@ -1231,7 +1145,7 @@ NAMES.forEach((n, i) => $("notename").add(new Option(n, String(i))));
 showRoot();
 $("notename").onchange = () => note(12 * Math.floor(lastNote / 12) + +$("notename").value);
 function gate() {
-  if (inPlugin) return; // the host's MIDI and the GATE parameter open the sound
+  if (inPlugin) return;
   send(2, down.size || held ? 1 : 0);
 }
 function shiftOctave(d) {
@@ -1239,10 +1153,7 @@ function shiftOctave(d) {
   note(lastNote + 12 * d);
   for (const [i, m] of down) down.set(i, m + 12 * d);
 }
-// a list is not typing: its keys are still the notes (see the keydown below)
 const typing = (e) => e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "number");
-/** Every key up: on blur, a hidden tab, Escape, or Cmd released (macOS sends no keyup for keys
- *  released while Cmd is down, which left notes sounding). */
 function allKeysUp() {
   if (!down.size) return;
   down.clear();
@@ -1250,11 +1161,9 @@ function allKeysUp() {
 }
 addEventListener("keydown", async (e) => {
   if (e.key === "Escape") return allKeysUp();
-  if (inPlugin) return; // keys belong to the host (its computer keyboard, its shortcuts)
+  if (inPlugin) return;
   if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   const key = e.key.toLowerCase();
-  // on a focused list, the keys the page plays do not pick from it (a note key picked the
-  // option of its letter; the keys played nothing while the list kept the focus)
   if (e.target.tagName === "SELECT" && (KEYS.includes(key) || key === "z" || key === "x" || e.code === "Space")) e.preventDefault();
   if (e.code === "Space") {
     e.preventDefault();
@@ -1270,15 +1179,12 @@ addEventListener("keydown", async (e) => {
   }
   const i = KEYS.indexOf(key);
   if (i < 0 || e.repeat) return;
-  // the key is down before any await: a keyup during the first start (audio still loading)
-  // must find it, or the note stays on
   const midi = 48 + 12 * octave + i;
   const legato = down.size > 0;
   down.set(i, midi);
   await start();
-  if (!down.has(i)) return; // released while starting
+  if (!down.has(i)) return;
   note(midi);
-  // a key while the gate is already open (another key, or hold) is still a new note for the text
   if (legato || held) post({ type: "retrigger" });
   gate();
 });
@@ -1287,12 +1193,10 @@ addEventListener("keyup", (e) => {
   const i = KEYS.indexOf(e.key.toLowerCase());
   if (i < 0 || !down.has(i)) return;
   down.delete(i);
-  if (down.size) note([...down.values()].pop()); // back to the key still held
+  if (down.size) note([...down.values()].pop());
   gate();
 });
 addEventListener("blur", allKeysUp);
-// a list's menu takes the keys while it is open: a held key's keyup never came, and the note
-// stayed on. Opening one lets go of the keys; a pick gives the focus back to the page.
 addEventListener("pointerdown", (e) => e.target.tagName === "SELECT" && allKeysUp(), true);
 addEventListener("change", (e) => e.target.tagName === "SELECT" && e.target.blur(), true);
 document.addEventListener("visibilitychange", () => document.hidden && allKeysUp());
@@ -1303,7 +1207,6 @@ function setHold(on) {
   if (on && envOn) setEnv(false);
   gate();
 }
-// ENV: the input's own level opens the sound (HOLD and ENV exclude each other; keys always open)
 let envOn = false;
 function setEnv(on) {
   envOn = on;
@@ -1330,7 +1233,7 @@ $("bpm").onchange = () => {
 };
 
 // ---------------------------------------------------------------- sequencer
-const VOWELS = ["·", "ɑ", "e", "i", "o", "u"]; // index 0 = leave the mouth (−1)
+const VOWELS = ["·", "ɑ", "e", "i", "o", "u"];
 const steps = [
   [1, 0, 0, 0], [0, 0, 0, -1], [1, 12, 0, 4], [1, 0, 0, 2], [1, 0, 1, 0], [1, 7, 0, 3], [0, 0, 0, -1], [1, 10, 0, 1],
   [1, 0, 0, 0], [0, 0, 0, -1], [1, 12, 0, 4], [1, 0, 0, 2], [1, 3, 0, 3], [1, 5, 0, 0], [1, 7, 0, 1], [0, 0, 0, -1],
@@ -1342,7 +1245,7 @@ function sendStep(i) {
   const s = steps[i];
   post({ type: "step", i, on: s.on, note: s.note, tie: s.tie, vowel: s.vowel, accent: s.accent, len: s.len });
 }
-let seqGate = 1; // × every step's length
+let seqGate = 1;
 function sendSeq() {
   post({ type: "seq", len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: seqGate });
   $("seqgate").textContent = Math.round(seqGate * 100) + "%";
@@ -1387,14 +1290,11 @@ for (let i = 0; i < 16; i++) {
     sendStep(i);
     renderSteps();
   });
-  // length: drag across the bar
   lenEl.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
     lenEl.setPointerCapture(e.pointerId);
     const set = (ev) => {
       const r = lenEl.getBoundingClientRect();
-      // the bar shows the length after the global gate, so the cursor sets that
-      // (at a gate of 0 the bar is empty: the cursor then sets the step's own length)
       const at = clamp((ev.clientX - r.left) / r.width, 0, 1) / (seqGate > 0 ? seqGate : 1);
       steps[i].len = clamp(Math.round(at * 20) / 20, 0.05, 1);
       sendStep(i);
@@ -1442,8 +1342,6 @@ for (let i = 0; i < 16; i++) {
 }
 sendSeq();
 
-// play and stop as drawn icons of one size (the ▶ and ■ characters came from different fallback
-// fonts: unequal, and they changed the label's size)
 const ICON_PLAY = '<svg class="glyph" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg>';
 const ICON_STOP = '<svg class="glyph" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.75" y="1.75" width="6.5" height="6.5" rx="0.5" fill="currentColor"/></svg>';
 function playLabel(el, on, word) {
@@ -1474,8 +1372,6 @@ for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
 intField($("seqlen"), 1, 16);
 intField($("bpm"), 30, 300);
 
-// A whole-number field: what is typed is shown as it is used (rounded, within lo … hi), and the
-// wheel steps it by 1 (a trackpad's small deltas add up to a step). Both go through `onchange`.
 function intField(el, lo, hi) {
   const set = (v) => {
     const n = String(clamp(Math.round(v), lo, hi));
@@ -1487,7 +1383,7 @@ function intField(el, lo, hi) {
     if (el.readOnly || el.disabled) return;
     e.preventDefault();
     const d = e.deltaMode === 0 ? e.deltaY / 40 : Math.sign(e.deltaY);
-    if (d * acc < 0) acc = 0; // turned the other way: start afresh
+    if (d * acc < 0) acc = 0;
     acc += d;
     const n = Math.trunc(acc);
     if (!n) return;
@@ -1495,22 +1391,16 @@ function intField(el, lo, hi) {
     const before = el.value;
     set((+el.value || lo) - n);
     if (el.value !== before) el.dispatchEvent(new Event("change"));
-    else acc = 0; // at the end: nothing left over to spend on the way back
+    else acc = 0;
   }, { passive: false });
 }
 
 // ---------------------------------------------------------------- text
-// What moves the text on (note or its own clock), what it says at a time (syllable or word),
-// how (held or said through, and on the clock how long a held one lasts), where it starts (free
-// or with the sequence), how often (over and over or once a pass) and how fast it is spoken.
-// grid: the text's (null free, "GRID" GRID's, or a note value of its own)
-// resetNote: a MIDI note that starts the text over (-1 none), restartPlay: over when the host plays
 const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1, grid: null, resetNote: -1, restartPlay: false };
 $("textresetoff").onclick = () => {
   tx.resetNote = -1;
   sendText(false);
 };
-// LEARN: the next note played becomes the reset note (the plug-in sets it and says "learned")
 let learning = false;
 function setLearning(on) {
   learning = on;
@@ -1547,13 +1437,12 @@ $("text-form").onsubmit = async (e) => {
   e.preventDefault();
   await start();
   sing($("text").value);
-  $("text").blur(); // so the keys play again
+  $("text").blur();
 };
 $("singtext").onclick = async () => {
   await start();
   sing(textOn ? "" : $("text").value);
 };
-// while it sings, typing applies the text once it pauses; Enter sings, Escape hands the keys back
 let typingTimer = 0;
 $("text").addEventListener("input", () => {
   clearTimeout(typingTimer);
@@ -1562,8 +1451,6 @@ $("text").addEventListener("input", () => {
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("text").blur();
 });
-/** Send the text settings and show them; `final`: say the text again (it is planned ahead, so a
- *  change of unit, rate, length or speed is heard only then). */
 function sendText(final = true) {
   send(31, tx.step);
   send(32, tx.unit);
@@ -1577,7 +1464,6 @@ function sendText(final = true) {
   send(38, tx.gate);
   send(63, tx.grid === "GRID" ? -1 : tx.grid ? divBeats(tx.grid) : 0);
   $("textgrid").value = tx.grid ?? "";
-  // (its MIDI number: hosts name the octaves differently, so a name could mislead)
   $("textreset").textContent = tx.resetNote < 0 ? "off" : String(tx.resetNote);
   $("textresetoff").hidden = tx.resetNote < 0;
   $("textplay").setAttribute("aria-pressed", String(tx.restartPlay));
@@ -1632,7 +1518,6 @@ $("textlen").ondblclick = () => {
   tx.len = 1;
   sendText();
 };
-// speaking speed ×0.25 … ×4 (log)
 dragValue($("speech"), () => Math.log(tx.speech), (lv, final) => {
   tx.speech = Math.round(clamp(Math.exp(lv), 0.25, 4) * 100) / 100;
   sendText(final);
@@ -1641,7 +1526,6 @@ $("speech").ondblclick = () => {
   tx.speech = 1;
   sendText();
 };
-// how much of each part is heard (the sound is cut after it; nothing to plan again)
 dragValue($("textgate"), () => tx.gate, (v) => {
   tx.gate = Math.round(clamp(v, 0.05, 1) * 100) / 100;
   sendText(false);
@@ -1653,7 +1537,6 @@ $("textgate").ondblclick = () => {
 sendText(false);
 
 // ---------------------------------------------------------------- focus
-// a focus ring only while moving by keys: Tab turns it on, any pointer turns it off
 addEventListener("keydown", (e) => e.key === "Tab" && (document.documentElement.dataset.nav = "keys"), true);
 addEventListener("pointerdown", () => delete document.documentElement.dataset.nav, true);
 
@@ -1672,11 +1555,6 @@ addEventListener("pointerdown", (e) => {
 addEventListener("keydown", (e) => e.key === "Escape" && showInfo(false));
 
 // ---------------------------------------------------------------- saved state: autosave, A/B, files
-// One JSON state holds every setting. The web app keeps it (two slots, A and B) in this browser's
-// storage, saved every second; SAVE / OPEN write and read it as a file (a preset). The plug-in
-// will keep the same JSON in the host's saved state instead, never in shared browser storage.
-// Reading is tolerant: a missing field takes its default, an unknown one is ignored, numbers are
-// clamped, and a wrong structure refuses the whole state before anything changes.
 const STATE_VERSION = 1;
 const MOTION_NAMES = ["vowelX", "vowelY", "round", "nasal", "inject", "damping", "morph", "shift", "open"];
 
@@ -1716,7 +1594,6 @@ function getState() {
 
 const DEFAULTS = getState();
 
-/** A complete, clamped state from `raw` and the defaults; throws on a wrong structure. */
 function readState(raw) {
   const obj = (x, what) => {
     if (x === undefined) return {};
@@ -1786,7 +1663,6 @@ function readState(raw) {
   const shape = Math.round(num(hw.shape, d.hornWave.shape, -1, 5));
   const dr = obj(hw.drawn, "hornWave.drawn");
   if (dr.w !== undefined && !Array.isArray(dr.w)) throw new Error("hornWave.drawn.w is not a list");
-  // missing (an older state): taken from the horn when applied
   const drawnOk = Array.isArray(dr.w) && dr.w.length === HORN_POINTS;
   out.hornWave = {
     shape: shape === 5 && !snap.length ? -1 : shape,
@@ -1795,7 +1671,6 @@ function readState(raw) {
     snap,
     drawn: drawnOk ? { mean: num(dr.mean, 3, 0, HORN_MAX), w: dr.w.map((v) => num(v, 0, -50, 50)) } : null,
   };
-  // an older state's one mode becomes the three it stood for (loop, gate, one-shot)
   const old = [[1, 0, 0], [0, 0, 0], [0, 1, 1]][text.mode] ?? null;
   const pick = (v, dv, n) => (Number.isInteger(v) && v >= 0 && v < n ? v : dv);
   out.text = {
@@ -1817,7 +1692,6 @@ function readState(raw) {
   return out;
 }
 
-/** Put a state read by `readState` on every control (and into the engine, if it runs). */
 function applyState(st) {
   $("bpm").value = st.bpm;
   send(19, bpm());
@@ -1874,7 +1748,6 @@ function applyState(st) {
   if (textOn) sing($("text").value);
 }
 
-// browser storage: the plug-in replaces this with the host's state
 const store = {
   key: "suu.session.v1",
   load() {
@@ -1920,14 +1793,12 @@ for (const k of ["A", "B"]) {
     if (slots.active === k) return;
     save();
     slots.active = k;
-    // a slot used for the first time starts as a copy of the other
     if (slots[k]) load(slots[k], k);
     showSlots();
     save();
   };
 }
 $("init").onclick = () => {
-  // in the plug-in: the host's own defaults (the effect's and the instrument's differ)
   if (inPlugin) return sendToPlugin({ type: "reset" });
   applyState(DEFAULTS);
   save();
@@ -1978,14 +1849,11 @@ $("presetfile").onchange = (e) => {
 }
 
 // ---------------------------------------------------------------- the mouth before audio starts
-// The front view is drawn from the engine's state, which arrives once audio runs. Before that, a
-// silent engine on this thread (the same wasm) takes the saved mouth, lets the articulators
-// settle, and hands over one frame to draw.
 (async () => {
-  if (inPlugin) return; // the plug-in sends the mouth as it is
+  if (inPlugin) return;
   try {
     const { exports: x } = await WebAssembly.instantiate(await wasmModule, {});
-    if (ui) return; // audio already started
+    if (ui) return;
     const h = x.suu_new(48000);
     for (const r of rows) x.suu_set(h, r.param, r.base);
     x.suu_set(h, 18, state.size);
@@ -1994,7 +1862,7 @@ $("presetfile").onchange = (e) => {
     new Uint8Array(x.memory.buffer, p, bytes.length).set(bytes);
     x.suu_set_profile(h, p, horn.length, hornWrap ? 1 : 0);
     x.suu_free(p, bytes.length);
-    for (let i = 0; i < 150; i++) x.suu_process(h, 128); // 0.4 s: the articulators reach the vowel
+    for (let i = 0; i < 150; i++) x.suu_process(h, 128);
     const len = x.suu_ui_update(h);
     if (!ui) {
       ui = new Float32Array(x.memory.buffer, x.suu_ui(h), len).slice();
@@ -2004,8 +1872,6 @@ $("presetfile").onchange = (e) => {
 })();
 
 // ---------------------------------------------------------------- tooltips
-// Every control says what it does, briefly, after a moment's hover; the ? in the bar turns them
-// off or on (remembered in this browser). Native titles can't be turned off, so they become tips.
 const TIPS = {
   '[data-osc="2"]': "Supersaw\nFive detuned saws: the built-in synth, played by keys and steps.",
   '[data-osc="1"]': "Saw\nOne saw: bright, every harmonic.",
@@ -2084,7 +1950,6 @@ cells.forEach((c) => {
   c.note.dataset.tip = "Step\nDrag up or down: its note. Click: on or off. Shift-click: tie to the next. Double-click: the root.";
   c.vowel.dataset.tip = "Vowel\nClick: the vowel this step moves the mouth to (· leaves it).";
 });
-/** The mouth's tip follows the view. */
 function mouthTip() {
   mouthEl.dataset.tip = view === "horn" ? "Horn\nThe tract, throat to lips, as it sounds now. Drag to draw; double-click: the original." : "Vowel pad\nDrag: front to back, close to open. Past the dashed box goes beyond the vowels.";
 }
@@ -2114,7 +1979,6 @@ function showTip(el) {
   tipEl.append(b);
   if (rest.length) tipEl.append(rest.join(" "));
   tipEl.hidden = false;
-  // below the control, kept inside the window (above it if there is no room)
   const r = el.getBoundingClientRect(), t = tipEl.getBoundingClientRect();
   let x = clamp(r.left + r.width / 2 - t.width / 2, 6, innerWidth - t.width - 6);
   let y = r.bottom + 6;
@@ -2144,13 +2008,7 @@ $("help-toggle").onclick = () => setTips(!tipsOn);
 setTips(tipsOn);
 
 // ---------------------------------------------------------------- plug-in
-// In the plug-in's window every setting is a host parameter (App/plugin/src/params.rs; the IDs
-// never change). PMAP ties each to its place in this page's state: each frame the state is
-// compared with the host's last values and a changed one is sent (`set`, plain units); the host's
-// changes (automation, MIDI mapping) come back as `params` and are put on the controls without
-// being sent back. The words, the drawn horn and the page's own extras (the horn's wave, the
-// octave) are kept in the host's saved state; keys go to the plug-in as notes.
-const PDIVS = [null, ...DIVS.map((d) => d[0])]; // a sync parameter's values: off, then DIVS
+const PDIVS = [null, ...DIVS.map((d) => d[0])];
 const divIndex = (name) => Math.max(0, PDIVS.indexOf(name ?? null));
 const knobVal = (k) => (typeof k === "object" ? k.v : k);
 const PMAP = [];
@@ -2208,7 +2066,6 @@ const PMAP = [];
   text("speech", "speech");
   text("text_reset_note", "resetNote", "int");
   text("text_restart_play", "restartPlay", "bool");
-  // (GRID's first: off, the text's own value then applies)
   add("text_grid_main", (st) => +(st.text.grid === "GRID"), (st, v) => {
     if (v > 0.5) st.text.grid = "GRID";
     else if (st.text.grid === "GRID") st.text.grid = null;
@@ -2229,9 +2086,7 @@ const PMAP = [];
     add(`step_accent_${n}`, (st) => +s(st).accent, (st, v) => (s(st).accent = v > 0.5));
     add(`step_len_${n}`, (st) => s(st).len, (st, v) => (s(st).len = v));
   }
-  // GATE: ENV 0, HOLD 1, MIDI 2 (ENV is in the page's state, HOLD is not)
   add("gate", (st) => (st.envGate ? 0 : held ? 1 : 2), (st, v) => (st.envGate = Math.round(v) === 0));
-  // not in the page's state: the sequencer playing
   add("seq", () => +playing, null);
 }
 
@@ -2239,7 +2094,6 @@ function hornKey(st) {
   return JSON.stringify([st.horn, st.hornWrap]);
 }
 
-/** Put the host's `values` on `st` and every control, sending nothing back. */
 function applyHost(st, values) {
   for (const m of PMAP) if (m.set && m.id in values) m.set(st, values[m.id]);
   plugin.quiet = true;
@@ -2250,17 +2104,13 @@ function applyHost(st, values) {
   } finally {
     plugin.quiet = false;
   }
-  // what the page now shows counts as the host's: nothing echoes back
   const now = getState();
   for (const m of PMAP) plugin.host[m.id] = m.get(now);
   plugin.horn = hornKey(now);
 }
 
-/** Each frame: a setting changed on the page goes to the host. */
 const textField = (el) => el?.tagName === "INPUT" && (el.type === "text" || el.type === "number") && !el.readOnly;
 function pluginSync() {
-  // keys go on to the host, except while a text field has the focus (the words, a typed value);
-  // read every frame, so a field removed while focused cannot leave the keys held back
   const typing = textField(document.activeElement);
   if (typing !== plugin.typing) {
     plugin.typing = typing;
@@ -2284,14 +2134,12 @@ function pluginSync() {
     plugin.horn = hk;
     sendToPlugin({ type: "horn", areas: st.horn, wrap: st.hornWrap });
   }
-  // the page's own extras, about once a second
   if (++plugin.frame % 60 === 0) {
     const json = JSON.stringify(st);
     if (json !== plugin.ui) sendToPlugin({ type: "ui", json: (plugin.ui = json) });
   }
 }
 
-/** What the page would have told the worklet. Settings go by `pluginSync`; text and snapshots here. */
 function pluginPost(m) {
   if (plugin.quiet) return;
   if (m.type === "text") {
@@ -2302,19 +2150,13 @@ function pluginPost(m) {
 }
 
 if (inPlugin) {
-  window.__suuPlugin = { ids: PMAP.map((m) => m.id) }; // for automated checks
+  window.__suuPlugin = { ids: PMAP.map((m) => m.id) };
   document.body.classList.add("in-plugin");
   $("bpm").readOnly = true;
   TIPS["#bpm"] = "Tempo\nThe host's.";
   $("bpm").dataset.tip = TIPS["#bpm"];
-  // keys are the host's (Live's computer keyboard, its shortcuts): a key the page handles, or
-  // whose default it prevents, does not reach the host. So nothing but a text field keeps the
-  // focus (Space would press the button last clicked, a letter pick from a list); a list lets
-  // go of it once picked from.
   addEventListener("focusin", (e) => !textField(e.target) && e.target.tagName !== "SELECT" && e.target.blur?.(), true);
   addEventListener("change", (e) => e.target.tagName === "SELECT" && e.target.blur(), true);
-  // a control let go: the plug-in gives the keys back to the host at once (held by the webview,
-  // they reached it late and unevenly; a list hands them back once picked from)
   addEventListener("pointerup", (e) => !textField(e.target) && e.target.tagName !== "SELECT" && sendToPlugin({ type: "keys" }), true);
   addEventListener("change", (e) => e.target.tagName === "SELECT" && sendToPlugin({ type: "keys" }), true);
   TIPS["#rootoct"] = "Octave\nThe root's octave: − and + change it.";
@@ -2344,7 +2186,6 @@ if (inPlugin) {
       applyHost(getState(), m.values);
     } else if (m.type === "ui") {
       if (Math.abs(+$("bpm").value - m.bpm) > 0.005) $("bpm").value = Math.round(m.bpm * 100) / 100;
-      // as the worklet sends it (the drawing takes subarrays)
       onWorklet({ type: "ui", ui: Float32Array.from(m.ui) });
     } else if (m.type === "text") {
       plugin.words = m.words;
@@ -2365,7 +2206,6 @@ if (inPlugin) {
       if (load(raw, m.name ?? "the preset")) status(`${m.name ?? "preset"} opened`);
     }
   };
-  // a grip in the corner resizes the window
   const grip = document.createElement("div");
   grip.className = "plugin-grip";
   document.body.append(grip);

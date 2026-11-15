@@ -1,12 +1,9 @@
-//! The plug-in without a host: notes, the worker's mouths and text plans, and block size.
-
 use nih_plug::prelude::*;
 use suu_plugin::params::SuuParams;
 use suu_plugin::{SuuFx, SuuSynth};
 
 const FS: f64 = 48000.0;
 
-/// Move an event to `timing`.
 fn at(e: NoteEvent<()>, timing: u32) -> NoteEvent<()> {
     match e {
         NoteEvent::NoteOn { voice_id, channel, note, velocity, .. } => NoteEvent::NoteOn { timing, voice_id, channel, note, velocity },
@@ -27,13 +24,10 @@ fn rms(x: &[f32]) -> f32 {
     (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
 }
 
-/// Render `total` samples in blocks of `block`, with `events` at absolute sample times, the
-/// input from `input`; returns the output.
 fn run<K: suu_plugin::Kind>(p: &mut suu_plugin::SuuPlugin<K>, total: usize, block: usize, events: &[NoteEvent<()>], input: impl Fn(usize) -> f32) -> Vec<f32> {
     run_t(p, total, block, events, input, false)
 }
 
-/// `run` with the host's transport `playing` or not.
 fn run_t<K: suu_plugin::Kind>(p: &mut suu_plugin::SuuPlugin<K>, total: usize, block: usize, events: &[NoteEvent<()>], input: impl Fn(usize) -> f32, playing: bool) -> Vec<f32> {
     let mut out = Vec::with_capacity(total);
     let mut at = 0;
@@ -75,13 +69,10 @@ fn effect_passes_the_track_without_notes() {
     assert!(rms(&out[24000..]) > 0.01, "the effect does not pass the track: {}", rms(&out[24000..]));
 }
 
-/// The result does not depend on the host's block size (no text or size change: those arrive
-/// from the worker whenever it is done).
 #[test]
 fn output_is_independent_of_block_size() {
     let events = [on(3000, 57), on(9001, 60), off(15000, 60), off(20000, 57), on(26000, 50), off(40000, 50)];
     let render = |block: usize| {
-        // Motion on the vowel, so the mouth moves while the notes come and go
         let mut params = SuuParams::new(true);
         params.vowel_x.depth = FloatParam::new("Vowel X Depth", 0.5, FloatRange::Linear { min: -1.0, max: 1.0 });
         let mut p = SuuSynth::with_params(params);
@@ -96,7 +87,6 @@ fn output_is_independent_of_block_size() {
     }
 }
 
-/// A size change and the text come from the worker and are put in place while it plays.
 #[test]
 fn worker_builds_mouth_and_plans_text() {
     let mut params = SuuParams::new(true);
@@ -104,7 +94,6 @@ fn worker_builds_mouth_and_plans_text() {
     params.text = BoolParam::new("Text", true);
     let mut p = SuuSynth::with_params(params);
     assert!(p.setup(FS, 256));
-    // setup builds the mouth at its size; the text comes from the worker
     assert!((p.core().unwrap().size() - 1.6).abs() < 1e-3);
     for _ in 0..300 {
         run(&mut p, 2560, 256, &[], |_| 0.0);
@@ -116,11 +105,9 @@ fn worker_builds_mouth_and_plans_text() {
     assert_eq!(p.core().unwrap().syllables(), 7, "the default words' syllables");
 }
 
-/// A size change while it plays goes through the worker and crossfades in.
 #[test]
 fn size_change_comes_from_the_worker() {
     let mut params = SuuParams::new(true);
-    // the knob's value differs from the one the core was made with: a change to make
     params.size = FloatParam::new("Size", 2.0, FloatRange::Linear { min: 0.4, max: 4.0 });
     let mut p = SuuSynth::with_params(params);
     assert!(p.setup_at_size(FS, 256, 1.0));
@@ -138,8 +125,6 @@ fn size_change_comes_from_the_worker() {
     assert!(jump < 0.2, "a jump of {jump}");
 }
 
-/// PLAY runs the sequencer whether or not the host's transport plays (the owner pressed PLAY in
-/// a stopped Live and heard nothing).
 #[test]
 fn sequencer_plays_without_the_transport() {
     let mut params = SuuParams::new(true);
@@ -149,26 +134,21 @@ fn sequencer_plays_without_the_transport() {
     let out = run(&mut p, 48000, 256, &[], |_| 0.0);
     assert!(p.core().unwrap().playing());
     assert!(rms(&out[12000..]) > 0.01, "silent: {}", rms(&out[12000..]));
-    // the transport starting starts the pattern over: step 0 again
     run_t(&mut p, 6000, 256, &[], |_| 0.0, false);
     run_t(&mut p, 256, 256, &[], |_| 0.0, true);
     assert_eq!(p.core().unwrap().seq_state().0, 0);
 }
 
-/// Notes back to back (one ends where the next starts) are separate notes: each starts the ADSR
-/// and says the next part of the text (they ran together as one until a gap let the gate close).
 #[test]
 fn notes_back_to_back_are_separate() {
     for legato in [false, true] {
         let mut params = SuuParams::new(true);
         params.legato = BoolParam::new("Legato", legato);
-        // a 20 ms attack to the top, then down to 30 % in 50 ms: a new note rises above the last's end
         params.attack = FloatParam::new("Attack", 0.02, FloatRange::Linear { min: 0.001, max: 10.0 });
         params.decay = FloatParam::new("Decay", 0.05, FloatRange::Linear { min: 0.001, max: 10.0 });
         params.sustain = FloatParam::new("Sustain", 0.3, FloatRange::Linear { min: 0.0, max: 1.0 });
         let mut p = SuuSynth::with_params(params);
         assert!(p.setup(FS, 512));
-        // four notes of 0.2 s, each starting where the last ends (off and on at the same sample)
         let mut events = Vec::new();
         for i in 0..4u32 {
             let t = 4800 + i * 9600;
@@ -178,7 +158,6 @@ fn notes_back_to_back_are_separate() {
             events.push(on(t, 55 + i as u8));
         }
         events.push(off(4800 + 4 * 9600, 58));
-        // the ADSR's level at the end of each 64-sample block
         let mut level = Vec::new();
         let mut at = 0usize;
         while at < 48000 {
@@ -187,8 +166,6 @@ fn notes_back_to_back_are_separate() {
             level.push(p.core().unwrap().adsr_level());
             at += 64;
         }
-        // before each note: at sustain (30 %); within its first 40 ms: back at the top (before the
-        // fix it stayed at sustain: the notes ran together)
         for i in 1..4usize {
             let t = (4800 + i * 9600) / 64;
             let before = level[t - 1];
@@ -198,20 +175,15 @@ fn notes_back_to_back_are_separate() {
     }
 }
 
-/// The effect under ENV: after a MIDI note ends and the track goes on, the last note's pitch
-/// stays (it went back to the root). (A changed root takes over again: `sync`; a parameter
-/// cannot be changed from here.)
 #[test]
 fn the_last_note_stays_after_its_release() {
     let mut p = SuuFx::default();
     assert!(p.setup(FS, 512));
-    // the track sounds throughout (ENV open); a note from 0.1 to 0.3 s
     let tone = |i: usize| 0.3 * ((i as f32) * 2.0 * std::f32::consts::PI * 110.0 / 48000.0).sin();
     run(&mut p, 24000, 256, &[on(4800, 64), off(14400, 64)], tone);
     assert_eq!(p.core().unwrap().params().note, 64.0, "the last note stays after its release");
 }
 
-/// A reset note in the clip starts the text over and does not sound; other notes go on saying it.
 #[test]
 fn a_reset_note_starts_the_text_over() {
     let mut params = SuuParams::new(true);
@@ -227,14 +199,11 @@ fn a_reset_note_starts_the_text_over() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(p.core().unwrap().syllables() > 3);
-    // three notes say parts 0, 1, 2; then the reset note (C1), which does not sound; the next
-    // note says part 0
     let mut ev = Vec::new();
     for i in 0..3u32 {
         ev.push(on(2400 + i * 9600, 57));
         ev.push(off(2400 + i * 9600 + 7200, 57));
     }
-    // (in the quiet once the last part has ended: about 0.35 s after its note)
     ev.push(on(52000, 24));
     ev.push(off(54000, 24));
     let out = run(&mut p, 57600, 64, &ev, |_| 0.0);
@@ -244,15 +213,10 @@ fn a_reset_note_starts_the_text_over() {
     assert_eq!(p.core().unwrap().text_part(), 0, "the next note says the first part");
 }
 
-/// The same note again before its last note-off (a Note Length or an arpeggiator before the
-/// plug-in, notes longer than the taps): it sounds until its own note-off. The first note's
-/// note-off closed the gate (the key was kept once), so a repeated note was cut short, or did
-/// not sound at all when it came just before that note-off.
 #[test]
 fn a_repeated_note_lasts_until_its_own_note_off() {
     let mut p = SuuSynth::default();
     assert!(p.setup(FS, 512));
-    // 55 at 0.1 s, 55 again at 0.25 s, the first one's off at 0.35 s, the second's at 0.5 s
     let events = [on(4800, 55), on(12000, 55), off(16800, 55), off(24000, 55)];
     let mut open = Vec::new();
     let mut at = 0usize;
@@ -265,6 +229,5 @@ fn a_repeated_note_lasts_until_its_own_note_off() {
     let level = |t: usize| open.iter().find(|(a, _)| *a >= t).unwrap().1;
     assert!(level(20000) > 0.5, "the repeated note still sounds after the first one's note-off: {}", level(20000));
     assert!(level(23000) > 0.5, "until its own note-off: {}", level(23000));
-    // the release (80 ms) done 125 ms after it
     assert!(level(30000) < 0.01, "and ends there: {}", level(30000));
 }

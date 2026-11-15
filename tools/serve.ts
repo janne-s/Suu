@@ -1,4 +1,3 @@
-// Local static server for the Suu page (web/): `bun run web` (builds first), then open the printed URL.
 const root = import.meta.dir + "/../web";
 const types: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".gz": "application/octet-stream" };
 const server = Bun.serve({

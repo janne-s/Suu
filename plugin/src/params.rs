@@ -1,19 +1,9 @@
-//! Every control as a host parameter, so that all of them can be automated, MIDI-mapped and
-//! saved by the host. The IDs (`#[id]`, the nested prefixes and the step suffixes `_1` … `_16`)
-//! are what hosts store automation and state under: they must never change. A changed meaning
-//! takes a new ID. The list is in `Doc/design/2026-11-12-suu-efekti.md`.
-//!
-//! Not parameters (no host can automate a string or a drawn curve): the words and the drawn
-//! horn. They are persisted fields in the host's saved state.
-
 use nih_plug::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 use suu::{GlideDir, Mod, STEPS, Shape, Source, Step, TextSay, TextStep, TextUnit};
 
-/// The words the text says (web app default), when the state has none.
 pub const DEFAULT_WORDS: &str = "wow yeah oh yeah now wah wow";
-/// The longest text kept (as in the web app).
 pub const MAX_WORDS: usize = 400;
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
@@ -28,8 +18,6 @@ pub enum Wave {
     Square,
 }
 
-/// What opens the sound (MIDI notes always do too): the input's own level (ENV), always (HOLD),
-/// or MIDI notes only.
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum GateMode {
     #[id = "env"]
@@ -43,7 +31,6 @@ pub enum GateMode {
     Midi,
 }
 
-/// What JUMP does with a reading too far from the pitch taken.
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum JumpMode {
     #[id = "fold"]
@@ -54,10 +41,8 @@ pub enum JumpMode {
     Skip,
 }
 
-/// The pitch classes, for the scale's parameters.
 pub const PITCH_CLASSES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
-/// Where the pitch comes from (`suu::PitchFrom`).
 #[derive(Enum, Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PitchMode {
     #[id = "note"]
@@ -71,7 +56,6 @@ pub enum PitchMode {
     InputSnap,
 }
 
-/// A note value for tempo sync, or free running.
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum Sync {
     #[id = "off"]
@@ -136,7 +120,6 @@ pub enum Sync {
 }
 
 impl Sync {
-    /// Length in beats (quarter notes); 0 = free running.
     pub fn beats(self) -> f64 {
         match self {
             Sync::Off => 0.0,
@@ -175,10 +158,8 @@ pub enum ModShape {
     Square,
     #[id = "random"]
     Random,
-    /// the source's envelope
     #[id = "envelope"]
     Envelope,
-    /// the ADSR
     #[id = "adsr"]
     #[name = "ADSR"]
     Adsr,
@@ -196,10 +177,8 @@ pub enum Glide {
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum TextStepP {
-    /// each note says the next unit
     #[id = "note"]
     Note,
-    /// the text's own clock
     #[id = "clock"]
     Clock,
 }
@@ -220,7 +199,6 @@ pub enum TextSayP {
     Shot,
 }
 
-/// Sequencer steps per beat, by their note value.
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum SeqRate {
     #[id = "1/4"]
@@ -256,7 +234,6 @@ impl SeqRate {
     }
 }
 
-/// A step's vowel (`suu::STEP_VOWELS`), or none (the mouth stays where it is).
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum StepVowel {
     #[id = "none"]
@@ -279,8 +256,6 @@ pub enum StepVowel {
     U,
 }
 
-/// The drawn horn's areas (`suu::HORN_POINTS`, glottis → lips; empty = the built-in horn) and
-/// whether its shift wraps around. Read tolerantly: missing fields take these defaults.
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(default)]
 pub struct HornState {
@@ -304,7 +279,6 @@ fn hz(p: FloatParam, off_below: f32) -> FloatParam {
     p.with_unit(" Hz").with_value_to_string(Arc::new(move |v| if v < off_below { "off".into() } else if v < 10.0 { format!("{v:.2}") } else { format!("{v:.0}") }))
 }
 
-/// A time in seconds on a log-like scale, shown in ms below a second.
 fn seconds(name: &str, default: f32, min: f32, max: f32, centre: f32) -> FloatParam {
     FloatParam::new(name, default, log_range(min, max, centre))
         .with_unit(" s")
@@ -320,13 +294,11 @@ trait FromCentre {
 }
 
 impl FromCentre for FloatRange {
-    /// The skew that puts `centre` at the middle of the knob (geometric mean: a log knob).
     fn skew_factor_from_centre(min: f32, max: f32, centre: f32) -> f32 {
         (0.5f32).ln() / ((centre - min) / (max - min)).ln()
     }
 }
 
-/// One Motion target: where it rests and how its LFO moves it.
 #[derive(Params)]
 pub struct MotionParams {
     #[id = "base"]
@@ -343,7 +315,6 @@ pub struct MotionParams {
     pub smooth: FloatParam,
 }
 
-/// (name, min, max, default, log scale): the Motion targets in `suu::MOD_TARGETS` order.
 const MOTION: [(&str, f32, f32, f32, bool); suu::N_MOD] = [
     ("Vowel X", -0.3, 1.3, 0.5, false),
     ("Vowel Y", -0.3, 1.3, 0.6, false),
@@ -386,14 +357,12 @@ impl MotionParams {
     }
 }
 
-/// One pitch class of the scale (ids `scale_1` C … `scale_12` B).
 #[derive(Params)]
 pub struct ScaleParam {
     #[id = "scale"]
     pub on: BoolParam,
 }
 
-/// One sequencer step.
 #[derive(Params)]
 pub struct StepParams {
     #[id = "step_on"]
@@ -446,12 +415,10 @@ impl StepParams {
 
 #[derive(Params)]
 pub struct SuuParams {
-    /// the words the text says
     #[persist = "words"]
     pub words: Arc<RwLock<String>>,
     #[persist = "horn"]
     pub horn: Arc<RwLock<HornState>>,
-    /// the window's own extras (the web app's state as JSON: the horn's wave, the octave …)
     #[persist = "ui"]
     pub ui: Arc<RwLock<String>>,
 
@@ -474,7 +441,6 @@ pub struct SuuParams {
     pub env_release: FloatParam,
     #[id = "env_release_sync"]
     pub env_release_sync: EnumParam<Sync>,
-    /// the ADSR of what the gate opens
     #[id = "attack"]
     pub attack: FloatParam,
     #[id = "attack_sync"]
@@ -489,39 +455,26 @@ pub struct SuuParams {
     pub release: FloatParam,
     #[id = "release_sync"]
     pub release_sync: EnumParam<Sync>,
-    /// a note while the sound is open goes on with the envelope (else it starts it again)
     #[id = "legato"]
     pub legato: BoolParam,
-    /// the input's vowel places the pad
     #[id = "vowel_in"]
     pub vowel_in: BoolParam,
-    /// the pitch when no key is held, and the sequence's root
     #[id = "root"]
     pub root: IntParam,
-    /// the note (root, MIDI) or the input's tracked pitch
     #[id = "pitch"]
     pub pitch: EnumParam<PitchMode>,
-    /// semitones on the sounding pitch
     #[id = "coarse"]
     pub coarse: IntParam,
-    /// how long a new input pitch must last to be taken
     #[id = "steady"]
     pub steady: FloatParam,
     #[id = "steady_sync"]
     pub steady_sync: EnumParam<Sync>,
-    /// the airway at full rate and resolution (off: a lean one, much lighter; a change rebuilds
-    /// the mouth)
     #[id = "hq"]
     pub hq: BoolParam,
-    /// the mouth's shape and the pitch change only on this grid (off: free)
     #[id = "grid"]
     pub grid: EnumParam<Sync>,
-    /// the text's grid (off: free), or GRID's; how far its breath and voicing follow it; and how
-    /// smoothly every move goes between lines (both grids)
-    /// a MIDI note that starts the text over (−1: none); it does not sound
     #[id = "text_reset_note"]
     pub text_reset_note: IntParam,
-    /// the text starts over when the host's transport starts
     #[id = "text_restart_play"]
     pub text_restart_play: BoolParam,
     #[id = "text_grid"]
@@ -532,10 +485,8 @@ pub struct SuuParams {
     pub grid_breath: FloatParam,
     #[id = "grid_smooth"]
     pub grid_smooth: FloatParam,
-    /// SCALE (PITCH IN ♮): the pitch classes C … B the input snaps to
     #[nested(array, group = "Scale")]
     pub scale: [ScaleParam; 12],
-    /// JUMP: the widest move of the input's pitch (0: any), and what a wider one does
     #[id = "jump"]
     pub jump: IntParam,
     #[id = "jump_mode"]
@@ -629,8 +580,6 @@ pub struct SuuParams {
 }
 
 impl SuuParams {
-    /// `synth`: the instrument's defaults (the oscillator sounds, notes open it, the sidechain is
-    /// off); otherwise the effect's (the track passes through, the oscillator is off).
     pub fn new(synth: bool) -> Self {
         let pattern = suu::default_pattern();
         SuuParams {
@@ -666,7 +615,6 @@ impl SuuParams {
             hq: BoolParam::new("HQ", true),
             grid: EnumParam::new("Grid", Sync::Off),
             text_reset_note: IntParam::new("Text Reset Note", -1, IntRange::Linear { min: -1, max: 127 })
-                // its MIDI number: hosts name the octaves differently (Live calls 60 C3)
                 .with_value_to_string(Arc::new(|v| if v < 0 { "Off".into() } else { v.to_string() }))
                 .with_string_to_value(Arc::new(|s| if s.trim().eq_ignore_ascii_case("off") { Some(-1) } else { s.trim().parse().ok() })),
             text_restart_play: BoolParam::new("Text Restarts On Play", false),
@@ -729,7 +677,6 @@ impl SuuParams {
         [&self.vowel_x, &self.vowel_y, &self.round, &self.nasal, &self.inject, &self.damping, &self.morph, &self.shift, &self.open]
     }
 
-    /// The core's parameters from the host's, with the playing note, gate and tempo.
     pub fn to_core(&self, note: f64, gate: bool, bpm: f64) -> suu::Params {
         let m = self.motions();
         suu::Params {

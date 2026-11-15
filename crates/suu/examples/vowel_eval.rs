@@ -1,8 +1,3 @@
-//! How well VOWEL = IN places sung vowels: `cargo run --release -p suu --example vowel_eval
-//! <dir>...`, each directory holding `*_a.wav` … `*_u.wav` (16-bit PCM mono, as VocalSet's
-//! scales). Over the voiced frames, the share whose pad point is nearest its own step vowel
-//! (ɑ e i o u), and the mean point per vowel. With VOWEL_DUMP=<file>, each frame's vowel index
-//! and F1, F2 (Hz) are written there too, one per line (for fitting `pad_of`).
 use suu::{Params, STEP_VOWELS, Suu};
 
 const PAD: [(f64, f64); 5] = [(1.0, 1.0), (0.0, 0.5), (0.0, 0.0), (1.0, 0.5), (1.0, 0.0)];
@@ -48,7 +43,7 @@ fn main() {
                 s.process(blk, &mut out[..blk.len()]);
                 let (pad, voiced) = s.input_vowel();
                 if !voiced || pad == last {
-                    continue; // only frames newly analysed
+                    continue;
                 }
                 last = pad;
                 let Some((px, py)) = pad else { continue };

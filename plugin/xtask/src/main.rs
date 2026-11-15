@@ -1,8 +1,3 @@
-//! `cargo xtask bundle -p suu_fx -p suu_synth [--release]`: builds and bundles VST3 and CLAP.
-//!
-//! nih_plug_xtask's own entry point moves to the topmost directory with a `Cargo.toml`, which
-//! here is the repository's workspace, not this one; so this calls its build and bundle steps directly
-//! from the plug-in's workspace.
 use std::path::Path;
 
 fn main() -> nih_plug_xtask::Result<()> {

@@ -1,14 +1,10 @@
-/* Suu: a blue-grey vector instrument. Surfaces, not outlines: sections are raised panels
-   separated by gaps, wells and fields are pressed in with soft inner shadows. Blue-grey is
-   structure, cyan is what you play, amber is time and sound. Only the mouth itself is drawn in the
-   lips' rose. One window; only the views stretch. */
 @font-face { font-family: "Hershey"; src: url("fonts/AVHersheySimplexLight.otf") format("opentype"); font-weight: 100 400; font-display: swap; }
 @font-face { font-family: "Hershey"; src: url("fonts/AVHersheySimplexMedium.otf") format("opentype"); font-weight: 401 900; font-display: swap; }
 :root {
   color-scheme: dark;
   --bg: #040608;
   --panel: #0d1217;
-  --panel-top: #121a21; /* a panel's lit upper edge */
+  --panel-top: #121a21;
   --well: #06090c;
   --field: #141b22;
   --field-hi: #1b242d;
@@ -17,28 +13,28 @@
   --struct: #4f6b7d;
   --struct-rgb: 79, 107, 125;
   --ink: #c3d1db;
-  --dim: #93a8b4;    /* secondary text: 6.6-8.1:1 on every surface (WCAG AA) */
-  --label: #aabfc8;  /* control names: 8.6-10.5:1 */
-  --title: #b4cbd8;  /* section titles, bright blue-grey with a soft glow: 10+:1 */
-  --off: #62788a;    /* unset marks (·, ◆ off): 3.6-4.3:1 */
+  --dim: #93a8b4;
+  --label: #aabfc8;
+  --title: #b4cbd8;
+  --off: #62788a;
   --beam: #8fd8ff;
   --beam-rgb: 143, 216, 255;
   --beam-line: #2f6f8f;
   --sound: #ff9d3c;
   --sound-rgb: 255, 157, 60;
-  --lips: #ff6f91;   /* the mouth drawing only */
+  --lips: #ff6f91;
   --lips-rgb: 255, 111, 145;
   --led-off: #1d1710;
   --warn: #ff4b2b;
   --glow: 0 0 6px rgba(var(--beam-rgb), 0.45);
   --raise: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 1px 3px rgba(0, 0, 0, 0.5);
   --press: inset 0 1px 4px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.015);
-  --fh: 24px; /* every field, button and box is this tall */
+  --fh: 24px;
   font: 12px 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
-/* an instrument, not a document: dragging over it selects nothing (only text fields and the credits) */
+
 body { margin: 0; background: var(--bg); color: var(--ink); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; -webkit-user-select: none; user-select: none; }
 input[type=text], input:not([type]), .popover p { -webkit-user-select: text; user-select: text; }
 body::before {
@@ -51,7 +47,7 @@ a { color: var(--beam); text-decoration: none; }
 a:hover { text-decoration: underline; }
 [hidden] { display: none !important; }
 
-/* buttons and fields: one height, no outlines; state shows as cyan text and glow */
+/* buttons and fields */
 button {
   height: var(--fh); padding: 0 9px; border: 0; border-radius: 3px; cursor: pointer; white-space: nowrap;
   background: var(--field); color: var(--ink); box-shadow: var(--raise); font-size: 11px;
@@ -70,7 +66,7 @@ select.field { cursor: pointer; color: var(--beam); }
 .field.drag { cursor: ns-resize; user-select: none; touch-action: none; }
 .field.on { color: var(--beam); text-shadow: var(--glow); }
 :focus, :focus-visible { outline: none; }
-/* focus shows only while moving by keys (Tab), as a faint ring; never after a click */
+/* focus */
 [data-nav=keys] :is(button, .field, a, input, select):focus { outline: 1px solid rgba(var(--beam-rgb), 0.35); outline-offset: 0; }
 .labeled { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--label); }
 .seg { display: inline-flex; gap: 2px; }
@@ -82,7 +78,7 @@ select.field { cursor: pointer; color: var(--beam); }
 .panel { background: linear-gradient(180deg, var(--panel-top) 0, var(--panel) 46px); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
 .bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: linear-gradient(180deg, var(--panel-top), var(--panel)); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
 h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500; letter-spacing: 6px; text-shadow: 0 0 8px rgba(var(--beam-rgb), 0.6); }
-/* only the status line gives way; at narrow widths the bar's group names go */
+/* bar */
 .bar > :not(#status) { flex-shrink: 0; }
 @media (max-width: 1180px) { .bar { gap: 6px; } .bar .tlabel { display: none; } .bar button:not(.square) { padding: 0 6px; } }
 @media (max-width: 1100px) { .bar { gap: 4px; } h1 { margin-right: 4px; letter-spacing: 3px; } }
@@ -91,7 +87,7 @@ h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500;
 .keys { display: inline-flex; align-items: center; gap: 2px; }
 #notename { width: 40px; color: var(--beam); }
 #rootoct { width: 22px; color: var(--beam); }
-/* PITCH from the input: the note fields show the tracked pitch */
+/* pitch */
 .keys.tracking #notename, .keys.tracking #rootoct { color: var(--dim); }
 #pitchfrom { width: 52px; }
 
@@ -100,7 +96,7 @@ h1 { margin: 0 8px 0 2px; color: var(--beam); font-size: 21px; font-weight: 500;
 .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; }
 .panel-title > div { display: flex; gap: 8px; }
 h2 { font-size: 12px; font-weight: 500; margin: 0; white-space: nowrap; color: var(--title); letter-spacing: 3px; text-shadow: 0 0 7px rgba(var(--beam-rgb), 0.35); display: flex; align-items: center; }
-/* a small lit mark before each section title, so the eye finds where a section starts */
+/* section titles */
 .panel-title h2::before, .stage h2::before {
   content: ''; width: 3px; height: 11px; margin-right: 8px; border-radius: 2px; background: var(--beam); box-shadow: 0 0 6px var(--beam), 0 0 12px rgba(var(--beam-rgb), 0.4);
 }
@@ -114,7 +110,7 @@ button.icon svg { display: block; margin: auto; }
 #text { flex: 1; width: auto; text-align: left; padding: 0 8px; }
 #singtext { width: 72px; }
 .tgroup { display: inline-flex; align-items: center; gap: 6px; }
-/* the text panel: one titled row per question; a group's name and its controls stay together */
+/* text */
 .text-panel { gap: 0; }
 .text-panel form { margin-bottom: 6px; }
 .text-row { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid rgba(255, 255, 255, 0.04); }
@@ -125,7 +121,7 @@ button.icon svg { display: block; margin: auto; }
 #textreset { min-width: 36px; text-align: center; }
 .tlabel { font-family: "Hershey", sans-serif; letter-spacing: 1px; font-size: 11px; color: var(--label); }
 
-/* Motion: name · base · depth · rate (♪) · shape; every value box the same size */
+/* Motion */
 .motion-head, .motion-row { display: grid; grid-template-columns: 70px minmax(60px, 1fr) 64px 90px 64px 56px; gap: 8px; align-items: center; padding: 0 10px; }
 .motion-row .smooth { width: 56px; }
 .motion-row .smooth.idle { color: var(--off); }
@@ -147,7 +143,7 @@ button.icon svg { display: block; margin: auto; }
 .rate button { width: var(--fh); padding: 0; font-family: inherit; letter-spacing: 0; }
 .motion-row.env .rate { visibility: hidden; }
 
-/* sequencer: a step is note (with its length bar and accent) over a vowel half */
+/* sequencer */
 .sequencer { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; padding: 8px 10px; }
 .seq-controls { display: grid; grid-template-columns: auto auto; gap: 4px 10px; align-content: start; justify-items: end; }
 #play { width: 100%; }
@@ -165,16 +161,14 @@ button.icon svg { display: block; margin: auto; }
 .step.off-len { opacity: 0.28; }
 .step .vowel { height: 38px; border-radius: 3px; background: var(--well); box-shadow: var(--press); display: grid; place-items: center; font-size: 17px; color: var(--off); cursor: pointer; }
 .step .vowel.set { color: var(--ink); }
-/* the running step: a point of light under it, as on old drum machines */
+
 .step .led { justify-self: center; align-self: end; width: 5px; height: 5px; border-radius: 50%; background: var(--led-off); box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6); }
 .step.now .led { background: var(--sound); box-shadow: 0 0 4px var(--sound), 0 0 10px rgba(var(--sound-rgb), 0.55); }
 
 /* knobs */
-/* the knobs: one row of boxes, one per stage, each as wide as its knobs (--n); every knob the
-   same size, shrinking only when the window is narrow */
+
 .stages { display: flex; flex-wrap: wrap; gap: 6px; }
-/* a knob is at least 40 px wide: where the boxes do not fit in one row (the web app's SPACE on a
-   narrow screen), they go to a second */
+
 .stage { flex: var(--n) 1 0; min-width: calc(var(--n) * 40px + 8px); padding: 4px 4px 6px; background: linear-gradient(180deg, var(--panel-top) 0, var(--panel) 30px); border-radius: 5px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 2px 8px rgba(0, 0, 0, 0.6); }
 .stage h2 { padding: 2px 4px 0; display: flex; align-items: center; min-height: 16px; }
 .stage h2 > :first-of-type { margin-left: auto; }
@@ -193,7 +187,7 @@ button.icon svg { display: block; margin: auto; }
 .knob input[type=range]::-moz-range-track { background: transparent; }
 .knob output { font-size: 10px; letter-spacing: 0; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; }
 .knob.beyond output { color: var(--sound); }
-/* a knob's sync (♪) and glide's direction sit in its top right corner */
+
 .knob .sync { position: absolute; z-index: 1; top: 14px; right: 0; width: 13px; height: 13px; padding: 0; font-size: 9px; font-family: inherit; letter-spacing: 0; }
 .knob .dir { top: 29px; }
 .knob .syncbox { width: 100%; height: 36px; margin: 0; padding: 0; font-size: 10px; }
@@ -205,7 +199,7 @@ button.icon svg { display: block; margin: auto; }
 }
 .popover h2 { margin: 8px 0 4px; color: var(--beam); }
 .popover h2 .sub { margin-left: 6px; color: var(--dim); font-size: 9px; letter-spacing: 0.5px; }
-/* the input's scale and jump: under PITCH's list */
+
 .pitch-pop { right: auto; width: 312px; }
 .pitch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
 #scale-notes { display: grid; grid-template-columns: repeat(12, 1fr); gap: 2px; }
@@ -228,11 +222,11 @@ button.icon svg { display: block; margin: auto; }
 }
 @media (prefers-reduced-motion: reduce) { body::before { display: none; } }
 
-/* tooltips (the ? in the bar turns them on or off): a name, then what it does */
+/* tooltips */
 .tip { position: fixed; z-index: 40; max-width: 280px; padding: 7px 9px; border-radius: 4px; pointer-events: none; background: var(--panel); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.7), var(--raise); color: var(--ink); font-size: 11px; line-height: 1.45; }
 .tip b { display: block; margin-bottom: 2px; color: var(--beam); font-family: "Hershey", sans-serif; font-weight: 500; letter-spacing: 1px; }
 
-/* in the plug-in: what the host does instead (its input, its storage, its effects) is hidden */
+/* plug-in */
 .in-plugin .web-only { display: none !important; }
 body:not(.in-plugin) .plugin-only { display: none !important; }
 .in-plugin #bpm { color: var(--dim); }
@@ -241,5 +235,5 @@ body:not(.in-plugin) .plugin-only { display: none !important; }
   background: linear-gradient(135deg, transparent 50%, var(--dim) 50%, var(--dim) 58%, transparent 58%, transparent 72%, var(--dim) 72%, var(--dim) 80%, transparent 80%);
 }
 
-/* play and stop icons: one size, on the label's centre line */
+/* icons */
 .glyph { width: 9px; height: 9px; margin-right: 6px; vertical-align: -1px; flex: none; }

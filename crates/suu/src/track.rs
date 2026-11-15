@@ -1,42 +1,26 @@
-//! The input's pitch, for PITCH = INPUT: YIN (de Cheveigné & Kawahara 2002, as in
-//! `chimera::analysis::pitch`) on the input, low-passed and decimated to about 12 kHz, without
-//! allocation after construction. Analysed on the control grid, so the result does not depend
-//! on the host's block size.
-
 use chimera::math::{PI, cos, js_max, log2, sin};
 
-/// The decimated rate aimed at (Hz): the decimation is the nearest whole factor.
 const TARGET_FS: f64 = 12_000.0;
-/// The pitch range searched (Hz).
 const MIN_F0: f64 = 40.0;
 const MAX_F0: f64 = 1_000.0;
-/// The low-pass before decimation (Hz): above the highest f0, below most of the formants that
-/// pull YIN an octave up.
 const LP_HZ: f64 = 2_000.0;
-/// The largest lag at any rate (`TARGET_FS` · 4/3 / `MIN_F0`, rounded up).
 const MAX_LAG: usize = 400;
-/// Aperiodicity at or below which a frame is voiced.
 const THRESHOLD: f64 = 0.2;
-/// The input's RMS below which nothing is tracked (−50 dBFS).
 const FLOOR_RMS: f64 = 0.003_162;
 
 pub struct PitchTracker {
     down: usize,
     phase: usize,
     fsd: f64,
-    /// low-pass biquad (RBJ, Butterworth Q): b0, b1, b2, a1, a2 and its state
     c: [f64; 5],
     z: [f64; 2],
     max_lag: usize,
     min_lag: usize,
-    /// the last `2 · max_lag` decimated samples, a ring
     ring: Vec<f64>,
     w: usize,
     frame: Vec<f64>,
     cmnd: Vec<f64>,
-    /// the last voiced pitch (MIDI), held through unvoiced frames
     note: Option<f64>,
-    /// the last frame analysed was voiced
     voiced: bool,
 }
 
@@ -55,10 +39,8 @@ impl PitchTracker {
         PitchTracker { down, phase: 0, fsd, c, z: [0.0; 2], max_lag, min_lag, ring: vec![0.0; n], w: 0, frame: vec![0.0; n], cmnd: vec![0.0; max_lag + 1], note: None, voiced: false }
     }
 
-    /// One input sample (as it comes, before INPUT's gain).
     #[inline]
     pub fn push(&mut self, x: f64) {
-        // transposed direct form II
         let c = &self.c;
         let y = c[0] * x + self.z[0];
         self.z[0] = c[1] * x - c[3] * y + self.z[1];
@@ -71,7 +53,6 @@ impl PitchTracker {
         }
     }
 
-    /// Analyse the latest frame: the pitch if it is voiced, else the last one held.
     pub fn analyse(&mut self) -> Option<f64> {
         let n = self.ring.len();
         let mut energy = 0.0;
@@ -109,7 +90,7 @@ impl PitchTracker {
             tau += 1;
         }
         if tau > max_lag {
-            return self.note; // unvoiced: hold the last pitch
+            return self.note;
         }
         let mut tau_f = tau as f64;
         if tau > 1 && tau < max_lag {

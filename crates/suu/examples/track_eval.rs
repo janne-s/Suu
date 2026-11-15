@@ -1,7 +1,3 @@
-//! How well PITCH = INPUT follows a sung line: `cargo run --release -p suu --example track_eval
-//! <mono float WAV> <f0 file: time, Hz per line (0 unvoiced)>...`. For the frames the reference
-//! calls voiced, prints the share within 50 cents of it, within 100, an octave off, and the
-//! median error.
 use suu::{Params, PitchFrom, Suu};
 
 fn wav(path: &str) -> (f64, Vec<f32>) {

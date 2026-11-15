@@ -1,13 +1,3 @@
-//! Suu as a plug-in, in two builds from one core: **Suu** (an effect: the track's sound through
-//! the mouth, MIDI from another track) and **Suu Synth** (an instrument: the oscillator through
-//! the mouth, a sidechain as the input). Every control is a host parameter (`params`).
-//!
-//! Threads: the audio thread owns the `Suu`. What allocates (building a mouth of a new size,
-//! planning text, dropping the old ones) runs on a worker per instance, which polls its queue so
-//! the audio thread never wakes it (no system call there). Results come back over a bounded
-//! queue and are put in place without allocating; each carries the generation of the `Suu` it
-//! was made for, and one made for an older `Suu` (the state was reloaded) is thrown away.
-
 use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 use nih_plug::prelude::*;
 use std::marker::PhantomData;
@@ -22,8 +12,6 @@ use params::{GateMode, MAX_WORDS, SuuParams};
 
 use chimera::phonetics::english::EnglishG2P;
 
-/// The pronouncing dictionary (CMUdict, licence in `data/CMUDICT-LICENSE.txt`), shared by
-/// every instance and loaded on first use, on a worker.
 static CMUDICT_GZ: &[u8] = include_bytes!("../../data/cmudict.txt.gz");
 static G2P: OnceLock<EnglishG2P> = OnceLock::new();
 
@@ -39,30 +27,20 @@ pub(crate) fn g2p() -> &'static EnglishG2P {
     })
 }
 
-/// The length of `Suu::ui_state`'s frame.
 const UI_LEN: usize = 24 + suu::UI_AREAS;
-/// How often the audio thread leaves the window a frame of the mouth (s).
 const UI_EVERY: f64 = 1.0 / 30.0;
 
-/// What the audio thread and the window share, without locks: the mouth's last frame and the
-/// tempo (atomics), the drawn horn (a bounded queue), a source snapshot on request.
 pub struct Shared {
     ui: [AtomicU32; UI_LEN],
     ui_len: AtomicUsize,
-    /// counts frames written, so the window sends each once
     ui_seq: AtomicU64,
     bpm: AtomicU64,
-    /// counts cores made (`setup`): a new one means a reloaded state
     generation: AtomicU64,
     horn: (Sender<([f64; suu::HORN_POINTS], bool)>, Receiver<([f64; suu::HORN_POINTS], bool)>),
-    /// the words changed: plan the text again
     words_changed: AtomicBool,
-    /// back to the built-in horn
     horn_reset: AtomicBool,
-    /// 0 idle, 1 asked for, 2 ready, 3 ready but silent
     snap_state: AtomicU8,
     snap: [AtomicU32; suu::HORN_POINTS],
-    /// LEARN (the text's reset note): the next note played becomes it (the window sets it)
     learn: AtomicBool,
     learned: AtomicI32,
 }
@@ -87,7 +65,6 @@ impl Default for Shared {
 }
 
 const QUEUE: usize = 8;
-/// How often the worker looks at its queue.
 const POLL: Duration = Duration::from_millis(4);
 const DEFAULT_BPM: f64 = 120.0;
 
@@ -97,7 +74,6 @@ enum Job {
     Drop(Junk),
 }
 
-/// Something the audio thread is done with, to be freed on the worker (held only to be dropped).
 #[allow(dead_code)]
 enum Junk {
     Mouth(Mouth),
@@ -130,21 +106,18 @@ fn worker(jobs: Receiver<Job>, done: Sender<Done>, words: Arc<RwLock<String>>) {
                 continue;
             }
         };
-        // the audio thread drains this every block; wait if it is (briefly) full
         if done.send(result).is_err() {
             return;
         }
     }
 }
 
-/// What differs between the two builds.
 pub trait Kind: 'static + Send + Sync {
     const SYNTH: bool;
     const NAME: &'static str;
     const CLAP_ID: &'static str;
     const DESCRIPTION: &'static str;
     const CLAP_FEATURES: &'static [ClapFeature];
-    /// Never change: hosts know the plug-in by it.
     const VST3_CLASS_ID: [u8; 16];
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory];
     const LAYOUTS: &'static [AudioIOLayout];
@@ -191,14 +164,10 @@ impl Kind for Synth {
 pub type SuuFx = SuuPlugin<Fx>;
 pub type SuuSynth = SuuPlugin<Synth>;
 
-/// Held keys, last first (monophonic, last-note priority). Fixed size: no allocation.
 struct Keys {
     notes: [u8; 128],
     channels: [u8; 128],
     len: usize,
-    /// note-ons not yet ended, per note: the same note again before its note-off (a Note Length
-    /// or an arpeggiator before the plug-in) is held until its own note-off; the first one's
-    /// closed the gate under it
     count: [u8; 128],
 }
 
@@ -206,7 +175,6 @@ impl Keys {
     fn new() -> Self {
         Keys { notes: [0; 128], channels: [0; 128], len: 0, count: [0; 128] }
     }
-    /// A note-off: the note is let go when every note-on of it has ended.
     fn remove(&mut self, note: u8) {
         let c = &mut self.count[note as usize & 127];
         *c = c.saturating_sub(1);
@@ -214,7 +182,6 @@ impl Keys {
             self.drop_note(note);
         }
     }
-    /// A choke: the note is let go at once, however often it was played.
     fn choke(&mut self, note: u8) {
         self.count[note as usize & 127] = 0;
         self.drop_note(note);
@@ -227,7 +194,6 @@ impl Keys {
         }
     }
     fn press(&mut self, note: u8, channel: u8) {
-        // on top again (the newest key sounds)
         self.drop_note(note);
         let c = &mut self.count[note as usize & 127];
         *c = c.saturating_add(1);
@@ -245,7 +211,6 @@ impl Keys {
 pub struct SuuPlugin<K: Kind> {
     params: Arc<SuuParams>,
     shared: Arc<Shared>,
-    /// the mouth's frame for the window (capacity reserved: no allocation), and samples to the next
     frame: Vec<f32>,
     frame_in: f64,
     fs: f64,
@@ -253,26 +218,20 @@ pub struct SuuPlugin<K: Kind> {
     generation: u64,
     jobs: Option<Sender<Job>>,
     done: Option<Receiver<Done>>,
-    /// mono input and output, sized to the host's largest block
     input: Vec<f32>,
     output: Vec<f32>,
     keys: Keys,
-    /// the last key played (its pitch stays after the release, until the root changes), and the
-    /// root it was played over
     last_key: Option<(u8, u8)>,
     last_root: i32,
-    /// pitch bend per channel, −1 … 1
     bend: [f32; 16],
     size_job: bool,
     text_job: bool,
-    /// whether the text was last planned on (None: plan it)
     planned_text: Option<bool>,
     mouth: Option<Mouth>,
     junk: Option<Junk>,
     mods: [Mod; N_MOD],
     steps: [Step; STEPS],
     seq: (usize, f64, f64),
-    /// the host's transport was playing (last block)
     transport_was: bool,
     _kind: PhantomData<K>,
 }
@@ -310,12 +269,9 @@ impl<K: Kind> Default for SuuPlugin<K> {
 }
 
 impl<K: Kind> SuuPlugin<K> {
-    /// The sounding note (with bend) and whether the sound is open.
     fn note_and_gate(&self) -> (f64, bool) {
         let p = &self.params;
         let mode = p.gate.value();
-        // with no key, the last key's pitch stays (its release, and the input going on under ENV
-        // or HOLD), until the root is changed
         let key = self.keys.top().or(self.last_key);
         let (note, bend) = match key {
             Some((n, ch)) => (n as f64, self.bend[ch as usize & 15]),
@@ -324,7 +280,6 @@ impl<K: Kind> SuuPlugin<K> {
         (note + bend as f64 * p.bend_range.value() as f64, mode == GateMode::Hold || self.keys.len > 0)
     }
 
-    /// Hand something to the worker to free; kept (and retried) if its queue is full.
     fn discard(&mut self, junk: Junk) {
         let Some(jobs) = &self.jobs else { return };
         if let Err(e) = jobs.try_send(Job::Drop(junk)) {
@@ -333,7 +288,6 @@ impl<K: Kind> SuuPlugin<K> {
         }
     }
 
-    /// Results from the worker, and old things back to it.
     fn exchange(&mut self) {
         if let Some(j) = self.junk.take() {
             self.discard(j);
@@ -371,10 +325,7 @@ impl<K: Kind> SuuPlugin<K> {
         }
     }
 
-    /// Bring the core in line with the host's parameters (only what changed), and ask the
-    /// worker for a new mouth or text plan when they are due.
     fn sync(&mut self, bpm: f64, playing: bool) {
-        // a changed root takes over from the last key
         let root = self.params.root.value();
         if root != self.last_root {
             if self.last_root != i32::MIN {
@@ -408,8 +359,6 @@ impl<K: Kind> SuuPlugin<K> {
             self.seq = seq;
             suu.set_seq(seq.0, seq.1, seq.2);
         }
-        // PLAY runs the sequencer at the host's tempo, transport or not; the transport starting
-        // starts the pattern over, so it lines up with the song's start
         let run = p.seq.value();
         let started = playing && !self.transport_was;
         self.transport_was = playing;
@@ -427,9 +376,7 @@ impl<K: Kind> SuuPlugin<K> {
         }
         let Some(jobs) = &self.jobs else { return };
         let size = p.size.value() as f64;
-        // a new size, or HQ switched: a new mouth (HQ is already in the core's parameters)
         if !self.size_job && self.mouth.is_none() && (size != suu.size() || p.hq.value() != suu.hq()) {
-            // (the seed is plain values: a full queue just drops it, and it is asked for again)
             if jobs.try_send(Job::Size { generation: self.generation, seed: suu.mouth_seed(size) }).is_ok() {
                 self.size_job = true;
             }
@@ -443,9 +390,6 @@ impl<K: Kind> SuuPlugin<K> {
         }
     }
 
-    /// One block of `n` samples from `self.input` into `self.output`, with the block's note
-    /// events (in time order), split at them so the result does not depend on the host's block
-    /// size.
     #[doc(hidden)]
     pub fn render(&mut self, n: usize, bpm: f64, playing: bool, mut events: impl FnMut() -> Option<NoteEvent<()>>) {
         self.exchange();
@@ -473,14 +417,11 @@ impl<K: Kind> SuuPlugin<K> {
         }
     }
 
-    /// A plug-in with these parameters (the tests' way to set them: a host sets them through
-    /// its wrapper).
     #[doc(hidden)]
     pub fn with_params(params: SuuParams) -> Self {
         SuuPlugin { params: Arc::new(params), ..Self::default() }
     }
 
-    /// The mono input and output buffers (for the tests).
     #[doc(hidden)]
     pub fn io(&mut self) -> (&mut [f32], &[f32]) {
         (&mut self.input, &self.output)
@@ -496,14 +437,11 @@ impl<K: Kind> SuuPlugin<K> {
         &self.params
     }
 
-    /// Make a new core for rate `fs` and blocks up to `max_block` (from `initialize`; also the
-    /// tests' way in). Allocates.
     #[doc(hidden)]
     pub fn setup(&mut self, fs: f64, max_block: usize) -> bool {
         self.setup_at_size(fs, max_block, self.params.size.value() as f64)
     }
 
-    /// `setup` with the mouth made at `size` (a test starts from another size than the knob's).
     #[doc(hidden)]
     pub fn setup_at_size(&mut self, fs: f64, max_block: usize, size: f64) -> bool {
         let n = max_block.max(1);
@@ -521,7 +459,6 @@ impl<K: Kind> SuuPlugin<K> {
             }
             (self.jobs, self.done) = (Some(jobs_tx), Some(done_rx));
         }
-        // a new core (a new rate, or a reloaded state): results for the old one are dropped
         self.generation += 1;
         let mut s = Box::new(Suu::new(fs));
         let p = &self.params;
@@ -531,7 +468,6 @@ impl<K: Kind> SuuPlugin<K> {
         {
             s.set_profile(&h.areas, h.wrap);
         }
-        // everything else follows in the first block's `sync`
         self.mods = [Mod::default(); N_MOD];
         self.steps = suu::default_pattern();
         self.seq = (16, 4.0, 1.0);
@@ -544,8 +480,6 @@ impl<K: Kind> SuuPlugin<K> {
         true
     }
 
-    /// What the window left for the audio thread (the horn, a snapshot asked for, new
-    /// words), and the mouth's frame for it every `UI_EVERY`. No allocation, no lock.
     fn window_exchange(&mut self, n: usize, bpm: f64) {
         let shared = self.shared.clone();
         if shared.words_changed.swap(false, Ordering::AcqRel) {
@@ -581,7 +515,6 @@ impl<K: Kind> SuuPlugin<K> {
     }
 
     fn note_event(&mut self, event: NoteEvent<()>) {
-        // LEARN: the next note played becomes the reset note, whatever the host calls it
         if let NoteEvent::NoteOn { note, velocity, .. } = event
             && velocity > 0.0
             && self.shared.learn.swap(false, Ordering::AcqRel)
@@ -589,7 +522,6 @@ impl<K: Kind> SuuPlugin<K> {
             self.shared.learned.store(note as i32, Ordering::Release);
             return;
         }
-        // the text's reset note: starts the text over, and does not sound
         let reset = self.params.text_reset_note.value();
         if reset >= 0 {
             match event {
@@ -613,11 +545,8 @@ impl<K: Kind> SuuPlugin<K> {
                 self.last_key = Some((note, channel));
                 if let Some(suu) = self.suu.as_mut() {
                     if !held {
-                        // no other key held: a new note, even straight after the last one (back
-                        // to back, the gate never closed between them and they ran together)
                         suu.note_start();
                     } else if sounding {
-                        // a key over another (legato on the keys): a new note for the text
                         suu.retrigger();
                     }
                 }
@@ -677,7 +606,6 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
         let bpm = transport.tempo.unwrap_or(DEFAULT_BPM);
         let playing = transport.playing;
 
-        // the input, mono: the track (effect) or the sidechain (instrument)
         let source: &[&mut [f32]] = if K::SYNTH { aux.inputs.first().map_or(&[], |b| b.as_slice_immutable()) } else { buffer.as_slice_immutable() };
         if source.is_empty() {
             self.input[..n].fill(0.0);
@@ -688,7 +616,6 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
             }
         }
 
-        // GRID's lines and Motion's synced cycles follow the song's position while it plays
         let song = if playing { transport.pos_beats() } else { None };
         if let Some(suu) = self.suu.as_mut() {
             suu.set_song_position(song);

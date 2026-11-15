@@ -1,7 +1,3 @@
-//! The web app's view of Suu: one handle per AudioWorklet, fixed in/out buffers the worklet
-//! writes and reads through the wasm memory, parameters by index (see `PARAMS`), and text and
-//! the dictionary passed as UTF-8 in buffers from `suu_alloc`.
-
 use suu::{GlideDir, MAX_BLOCK, Mod, Params, PitchFrom, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
 
 pub struct Handle {
@@ -12,22 +8,6 @@ pub struct Handle {
     snap: [f32; suu::HORN_POINTS],
 }
 
-/// Parameter indices, in this order (the web app's `PARAMS` list mirrors it).
-/// 0 source (the oscillator: 0 off, 1 saw, 2 supersaw, 3 square), 1 note, 2 gate, 3 drive_db, 4 tilt_hz,
-/// 5 breath, 6 follow, 7 vowel_x, 8 vowel_y, 9 round, 10 nasal, 11 inject, 12 damping, 13 folds,
-/// 14 sub_hz, 15 sub_level, 16 mix, 17 out_db, 18 size (rebuilds the airway), 19 bpm,
-/// 20 glide_s, 21 glide_sync (beats, 0 = free), 22 text_rate_hz, 23 text_sync (beats, 0 = free),
-/// 24 reson, 25 morph, 26 shift, 27 open (the drawn horn), 28 text_seq (0/1), 29 speech,
-/// 30 text_once (0/1), 31 text_step (0 note, 1 clock), 32 text_unit (0 syllable, 1 word),
-/// 33 text_say (0 hold, 1 shot), 34 text_len, 35 glide_dir (0 both, 1 up, 2 down), 36 osc_db, 37 input_db, 38 text_gate,
-/// 39 env_gate (0/1), 40 env_thresh_db, 41 env_release_s, 42 env_release_sync (beats, 0 = free),
-/// 43 pitch_from (0 note, 1 input, 2 input snapped to semitones), 44 vowel_in (0/1),
-/// 45 attack_s, 46 attack_sync, 47 decay_s, 48 decay_sync, 49 sustain, 50 release_s,
-/// 51 release_sync (beats, 0 = free), 52 legato (0/1), 53 coarse (semitones), 54 steady_s,
-/// 55 steady_sync (beats, 0 = free), 56 hq (0/1; rebuilds the mouth), 57 grid (beats, 0 = free),
-/// 58 scale (pitch classes, bit 0 = C … bit 11 = B), 59 jump (semitones, 0 = any), 60 jump_fold (0/1),
-/// 61 grid_breath (the text's, 0 … 1), 62 grid_smooth (0 … 1), 63 text_grid (beats; 0 = free,
-/// < 0 = GRID's)
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
         0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
@@ -127,7 +107,6 @@ pub extern "C" fn suu_output(h: *mut Handle) -> *mut f32 {
     unsafe { (*h).output.as_mut_ptr() }
 }
 
-/// Process `n` (≤ MAX_BLOCK) samples from the input buffer into the output buffer.
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_process(h: *mut Handle, n: usize) {
     let h = unsafe { &mut *h };
@@ -145,7 +124,6 @@ pub extern "C" fn suu_set(h: *mut Handle, id: u32, v: f64) {
     let mut p = h.suu.params();
     set(&mut p, id, v);
     h.suu.set_params(p);
-    // HQ builds a new mouth, as a size does
     if h.suu.hq() != p.hq {
         let size = h.suu.size();
         h.suu.set_size(size);
@@ -162,8 +140,6 @@ pub extern "C" fn suu_load_dict(h: *mut Handle, ptr: *const u8, len: usize) {
     h.suu.load_dict(text(ptr, len));
 }
 
-/// Say `text` as the text parameters (28-34, 22, 23) say; returns the syllable count (0 = the
-/// pad). Call again after changing the unit, the clock's rate or length, the tempo or the speed.
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize) -> u32 {
     let h = unsafe { &mut *h };
@@ -173,7 +149,6 @@ pub extern "C" fn suu_set_text(h: *mut Handle, ptr: *const u8, len: usize) -> u3
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_set_profile(h: *mut Handle, ptr: *const u8, n: usize, wrap: u32) {
     let h = unsafe { &mut *h };
-    // little-endian f32s from a byte buffer (suu_alloc does not align for f32)
     let src = unsafe { std::slice::from_raw_parts(ptr, 4 * n) };
     let mut a = [0.0f64; suu::HORN_POINTS];
     for (d, b) in a.iter_mut().zip(src.chunks_exact(4)) {
@@ -188,7 +163,6 @@ pub extern "C" fn suu_set_step(h: *mut Handle, i: u32, on: u32, note: i32, tie: 
     h.suu.set_step(i as usize, Step { on: on != 0, note, tie: tie != 0, vowel, accent: accent != 0, len });
 }
 
-/// pattern length, steps per beat, global gate (× every step's length)
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_set_seq(h: *mut Handle, len: u32, div: f64, gate: f64) {
     let h = unsafe { &mut *h };
@@ -205,9 +179,6 @@ pub extern "C" fn suu_retrigger(h: *mut Handle) {
     unsafe { (*h).suu.retrigger() };
 }
 
-/// Motion for target `t` (see `suu::MOD_TARGETS`); shape 0 sine, 1 triangle, 2 saw, 3 square,
-/// 4 random, 5 envelope; `sync` beats per cycle (0 = free at `rate_hz`); `smooth` 0 sharp … 1
-/// smooth (see `suu::Mod`).
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, sync: f64, shape: u32, smooth: f64) {
     let h = unsafe { &mut *h };
@@ -215,8 +186,6 @@ pub extern "C" fn suu_set_mod(h: *mut Handle, t: u32, depth: f64, rate_hz: f64, 
     h.suu.set_mod(t as usize, Mod { depth, rate_hz, sync, shape, smooth });
 }
 
-/// One period of the source's waveform (`suu::HORN_POINTS` values, −1..1) into a buffer at
-/// the returned pointer, or null when the source is silent.
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_snapshot(h: *mut Handle) -> *const f32 {
     let h = unsafe { &mut *h };
@@ -230,7 +199,6 @@ pub extern "C" fn suu_snapshot(h: *mut Handle) -> *const f32 {
     h.snap.as_ptr()
 }
 
-/// Fill the UI buffer (see `Suu::ui_state`) and return its length; `suu_ui` points at it.
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_ui_update(h: *mut Handle) -> u32 {
     let h = unsafe { &mut *h };
@@ -243,7 +211,6 @@ pub extern "C" fn suu_ui(h: *mut Handle) -> *const f32 {
     unsafe { (*h).frame.as_ptr() }
 }
 
-/// 0 step, 1 gate (0/1), 2 sounding note, 3 playing (0/1), 4 the input's tracked pitch (NaN: none)
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_state(h: *mut Handle, what: u32) -> f64 {
     let h = unsafe { &*h };

@@ -1,10 +1,3 @@
-/**
- * The Suu page as the plug-in's window, in headless Chrome: the webview's bridge is stood in for
- * (`sendToPlugin` records, `onPluginMessage` is called as the plug-in would), and the check is that
- * every host parameter is reached by the page, the host's changes land on the controls without
- * being sent back, keys go on to the host (held back only while typing), and the web-only parts are hidden.
- * Usage: bun run web (in another shell), then bun tools/e2e-plugin.ts [url]
- */
 import { chromium } from "playwright-core";
 import { readFileSync } from "node:fs";
 const url = process.argv[2] ?? "http://127.0.0.1:5318/";
@@ -15,7 +8,7 @@ const ok = (name: string, cond: boolean, extra = "") => {
   console.log(`${cond ? "PASS" : "FAIL"} ${name} ${extra}`);
 };
 const browser = await chromium.launch({ headless: true, channel: "chrome" });
-const page = await browser.newPage({ viewport: { width: 1280, height: 640 } }); // the window's first size
+const page = await browser.newPage({ viewport: { width: 1280, height: 640 } });
 const errors: string[] = [];
 page.on("pageerror", (e) => errors.push(e.message));
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
@@ -34,18 +27,14 @@ ok("no audio of its own", await page.evaluate(() => !(window as any).__suu));
 await tell({ type: "init", synth: true, values: {}, words: "wow wow", horn: null, hornWrap: false, ui: null });
 await frames();
 await sent();
-// every host parameter has its place on the page (the text's on/off and the bend range are the
-// plug-in's: SING and MIDI)
 const mapped: string[] = await page.evaluate(() => (window as any).__suuPlugin.ids);
 const unreached = ids.filter((id) => !mapped.includes(id) && id !== "text" && id !== "bend_range");
 ok("every parameter has a place on the page", unreached.length === 0, unreached.join(" "));
 const unknown = mapped.filter((id) => !ids.includes(id));
 ok("no unknown parameter IDs", unknown.length === 0, unknown.join(" "));
-// a change to every mapped parameter is sent once, and only that
 await tell({ type: "params", values: Object.fromEntries(mapped.map((id) => [id, 0])) });
 await frames();
 ok("nothing echoed after a full update", !(await sent()).some((m) => m.type === "set"));
-// the host's values: on the controls, nothing sent back
 await tell({ type: "params", values: { wave: 0, gate: 1, vowel_x_base: 1.2, seq_rate: 3, step_vowel_3: 0, glide_sync: 7, glide: 0.5, size: 2, root: 57, text_sync: 0, text_rate: 4 } });
 await frames();
 s = await sent();
@@ -55,7 +44,6 @@ ok("GATE HOLD shown", (await page.getAttribute("#hold", "aria-pressed")) === "tr
 ok("sequencer rate shown", (await page.inputValue("#rate")) === "8");
 ok("root note shown", (await page.inputValue("#notename")) === "9" && (await page.textContent("#rootoct")) === "3");
 ok("size shown", (await page.textContent('output[for="size"]'))?.includes("2.00") ?? false, (await page.textContent('output[for="size"]')) ?? "");
-// the page's changes go to the host
 await page.click('[data-osc="1"]');
 await page.click("#hold");
 await frames();
@@ -66,7 +54,6 @@ await page.click("#envgate");
 await frames();
 s = await sent();
 ok("ENV sent as GATE ENV", s.some((m) => m.type === "set" && m.id === "gate" && m.value === 0));
-// the ADSR, legato, the input's vowel and pitch: host → page, page → host
 await tell({ type: "params", values: { legato: 1, vowel_in: 1, attack: 0.5, attack_sync: 0, pitch: 2, vowel_y_shape: 6, hq: 0, grid: 7, coarse: -12 } });
 await frames();
 s = await sent();
@@ -125,7 +112,6 @@ await page.click("#octup");
 await frames();
 s = await sent();
 ok("+ moves the root an octave (D4)", s.some((m) => m.type === "set" && m.id === "root" && m.value === 62) && (await page.textContent("#rootoct")) === "4");
-// keys belong to the host: the page plays nothing and moves nothing
 await page.keyboard.down("d");
 await page.keyboard.up("d");
 await page.keyboard.press("x");
@@ -133,7 +119,6 @@ await page.keyboard.press(" ");
 await frames();
 s = await sent();
 ok("keys send no notes, no octave, no play", !s.some((m) => m.type === "key" || (m.type === "set" && (m.id === "root" || m.id === "sequencer"))));
-// and they reach the host: no control keeps the focus, and no key's default is prevented
 await page.click("#octup");
 await page.click("#legato");
 ok("a clicked button lets go of the focus", (await page.evaluate(() => document.activeElement === document.body)));
@@ -149,10 +134,7 @@ ok("a key's default is not prevented", await page.evaluate(() => {
 await page.click("#legato");
 await frames();
 await sent();
-// text and INIT
 await page.click("#text-toggle");
-// a control let go gives the keys back to the host at once (held by the webview after a click,
-// they reached Live late and unevenly); a click into a text field does not
 s = await sent();
 ok("letting go of a button gives the keys back", s.some((m) => m.type === "keys"));
 await page.click("#text");
@@ -161,7 +143,6 @@ ok("a click into a text field keeps them", !s.some((m) => m.type === "keys"), JS
 await page.evaluate(() => (document.activeElement as HTMLElement).blur());
 await frames();
 await sent();
-// while typing in a field the keys stay in the window
 await page.focus("#text");
 await frames();
 s = await sent();
@@ -178,18 +159,15 @@ ok("the plug-in's reply shows the text on", (await page.textContent("#singtext")
 await page.click("#init");
 s = await sent();
 ok("INIT asks the plug-in for its defaults", s.some((m) => m.type === "reset"));
-// the mouth from the plug-in
 await tell({ type: "ui", ui: Array.from({ length: 71 }, (_, i) => (i > 22 ? 3 : 0.5)), bpm: 128 });
 await frames();
 ok("the host's tempo shown", (await page.inputValue("#bpm")) === "128");
-// both views draw from the plug-in's frames (they come as plain arrays)
 await page.click("#view-horn");
 await frames();
 await tell({ type: "ui", ui: Array.from({ length: 71 }, (_, i) => (i > 22 ? 4 : 0.5)), bpm: 128 });
 await frames();
 ok("the HORN view draws from the plug-in's frame", errors.length === 0, errors.join(" | "));
 await page.click("#view-pad");
-// PLAY and STOP: the same icon size and label size, and PLAY reaches the host
 const box = () => page.evaluate(() => {
   const b = document.getElementById("play")!, g = b.querySelector("svg")!.getBoundingClientRect(), t = b.querySelector("span")!;
   return [Math.round(g.width), Math.round(g.height), getComputedStyle(t).fontSize, Math.round(b.getBoundingClientRect().height)].join(",");
@@ -201,7 +179,6 @@ ok("PLAY and STOP look the same size", (await box()) === before, `${before} vs $
 ok("PLAY reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq" && m.value === 1));
 await page.screenshot({ path: (process.argv[3] ?? "out/suu-plugin.png").replace(".png", "-seq.png"), clip: { x: 0, y: 410, width: 260, height: 70 } });
 await page.click("#play");
-// hidden in the plug-in
 for (const sel of ['[data-in="file"]', "#slotA", "#spaceon", "#peak"]) ok(`${sel} hidden`, !(await page.isVisible(sel)));
 const scroll = await page.evaluate(() => [document.documentElement.scrollWidth > innerWidth, document.documentElement.scrollHeight > innerHeight]);
 ok("the window's first size, 1280x640, is one window", !scroll[0] && !scroll[1], JSON.stringify(scroll));

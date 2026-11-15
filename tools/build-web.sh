@@ -1,5 +1,4 @@
 #!/bin/sh
-# Build Suu's wasm and copy it, the pronouncing dictionary and the fonts next to the page (web/).
 set -e
 cd "$(dirname "$0")/.."
 cargo build -p suu-wasm --release --target wasm32-unknown-unknown

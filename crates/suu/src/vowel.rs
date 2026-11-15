@@ -1,24 +1,12 @@
-//! The input's vowel, for VOWEL = IN: the first two formants by LPC (autocorrelation,
-//! Levinson–Durbin, roots by Durand–Kerner, as in `chimera::analysis::lpc`) on the input,
-//! low-passed and decimated to about 8 kHz, mapped onto the pad. No allocation after
-//! construction; analysed on the control grid.
-
 use chimera::math::{PI, atan2, cos, exp, hypot, js_max, ln, sin};
 
 const TARGET_FS: f64 = 8_000.0;
 const LP_HZ: f64 = 3_400.0;
-/// The analysis frame (s).
 const FRAME_S: f64 = 0.03;
 const MAX_FRAME: usize = 512;
-/// LPC order: two poles per kHz up to 5.5 kHz, and two for the source's tilt.
 const ORDER: usize = 10;
-/// A formant wider than this is not one (Hz).
 const MAX_BW: f64 = 500.0;
 
-/// The pad's corners as formants (Hz, F1 and F2): i (0, 0), u (1, 0), æ (0, 1), ɑ (1, 1).
-/// Fitted to sung vowels: the medians of VocalSet's training singers (15; straight scales, as
-/// this tracker measures them), with æ placed so that e and o, halfway down the pad's sides,
-/// land on theirs (`examples/vowel_eval.rs`; the test singers are kept out).
 const F_I: (f64, f64) = (363.0, 1878.0);
 const F_U: (f64, f64) = (374.0, 906.0);
 const F_AE: (f64, f64) = (756.0, 1321.0);
@@ -34,10 +22,8 @@ pub struct VowelTracker {
     w: usize,
     frame: Vec<f64>,
     window: Vec<f64>,
-    /// the last roots, the next search's start (deterministic: the same input, the same roots)
     re: [f64; ORDER],
     im: [f64; ORDER],
-    /// the last vowel found (pad x, y), and its F1 and F2 (Hz)
     pad: Option<(f64, f64)>,
     formants: (f64, f64),
 }
@@ -79,11 +65,8 @@ impl VowelTracker {
         }
     }
 
-    /// Analyse the latest frame (call only on voiced input): the vowel if two formants were
-    /// found, else the last one held.
     pub fn analyse(&mut self) -> Option<(f64, f64)> {
         let n = self.ring.len();
-        // pre-emphasis and a Hamming window
         let mut prev = self.ring[self.w % n];
         for i in 0..n {
             let v = self.ring[(self.w + i) % n];
@@ -96,14 +79,12 @@ impl VowelTracker {
             for i in k..n {
                 s += self.frame[i] * self.frame[i - k];
             }
-            // a mild lag window, for numerical robustness
             let g = 2.0 * PI * 40.0 * k as f64 / self.fsd;
             *rk = s * exp(-0.5 * g * g);
         }
         if r[0] <= 1e-12 {
             return self.pad;
         }
-        // Levinson–Durbin
         let mut a = [0.0; ORDER + 1];
         a[0] = 1.0;
         let mut err = r[0] * (1.0 + 1e-9);
@@ -130,7 +111,6 @@ impl VowelTracker {
                 return self.pad;
             }
         }
-        // the formants: roots in the upper half plane, narrow enough, lowest two in range
         let (mut f1, mut f2) = (f64::INFINITY, f64::INFINITY);
         for i in 0..ORDER {
             if self.im[i] <= 0.0 {
@@ -155,7 +135,6 @@ impl VowelTracker {
         self.pad
     }
 
-    /// Durand–Kerner from the last roots; false if it did not settle.
     fn roots(&mut self, a: &[f64; ORDER + 1]) -> bool {
         let (re, im) = (&mut self.re, &mut self.im);
         for _ in 0..200 {
@@ -189,22 +168,18 @@ impl VowelTracker {
                 return true;
             }
         }
-        true // close enough for formants
+        true
     }
 
     pub fn pad(&self) -> Option<(f64, f64)> {
         self.pad
     }
 
-    /// The last vowel's F1 and F2 (Hz; 0 before one is found).
     pub fn formants(&self) -> (f64, f64) {
         self.formants
     }
 }
 
-/// F1 and F2 (Hz) onto the pad: the inverse of the bilinear map from the pad's corners, on
-/// log frequency (y mostly from F1, x from F2; three rounds of fixed point); a little beyond
-/// the corners is allowed.
 pub fn pad_of(f1: f64, f2: f64) -> (f64, f64) {
     let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t.clamp(0.0, 1.0);
     let (l1, l2) = (ln(f1), ln(f2));
@@ -232,7 +207,6 @@ mod tests {
         }
     }
 
-    /// A pulse train through two resonances: the vowel lands near its corner.
     #[test]
     fn finds_two_formants() {
         let fs = 48_000.0;
@@ -245,7 +219,7 @@ mod tests {
             let (r1, r2) = (res(f1, 80.0), res(f2, 100.0));
             let (mut y1, mut y2) = ([0.0f64; 2], [0.0f64; 2]);
             for i in 0..(0.2 * fs) as usize {
-                let x = if i % 400 == 0 { 1.0 } else { 0.0 }; // 120 Hz
+                let x = if i % 400 == 0 { 1.0 } else { 0.0 };
                 let a = x + r1.0 * y1[0] + r1.1 * y1[1];
                 y1 = [a, y1[0]];
                 let b = a + r2.0 * y2[0] + r2.1 * y2[1];

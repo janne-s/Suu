@@ -1,8 +1,3 @@
-//! Suu's cost per scenario: `cargo run --release -p suu --example bench [seconds] [filter]`.
-//! Renders each scenario at 48 kHz in 128-sample blocks, five times, and prints for the fastest
-//! run the share of one core (real time = 100 %), the p50, p99 and largest block time as a share
-//! of the block's period, and a hash of the output (an "identical" change keeps every hash; see
-//! `Doc/review-standard.md`). A filter runs only the scenarios whose name contains it.
 use std::time::Instant;
 use suu::{HORN_POINTS, Mod, Params, PitchFrom, STEPS, Shape, Source, Step, Suu, TextStep};
 
@@ -31,7 +26,6 @@ fn main() {
     let dict = "WOW  W AW1\nYEAH  Y AE1\nOH  OW1\nNOW  N AW1\n";
     let gate = Params { gate: true, ..Params::default() };
     type Setup = Box<dyn Fn(&mut Suu)>;
-    // (name, setup, the input is a saw rather than noise)
     let scenarios: Vec<(&str, Setup, bool)> = vec![
         ("idle (no note)", Box::new(|_s: &mut Suu| {}), false),
         ("held supersaw (os 2)", Box::new(move |s: &mut Suu| s.set_params(gate)), false),
@@ -86,7 +80,6 @@ fn main() {
             let mut out = vec![0f32; n];
             let mut times = Vec::with_capacity(n / 128 + 1);
             for (i, (o, x)) in out.chunks_mut(128).zip(input.chunks(128)).enumerate() {
-                // SIZE automated: a new mouth every 20 blocks (53 ms), crossfading in
                 if resize && i % 20 == 0 {
                     s.set_size(0.8 + 0.4 * ((i / 20) % 2) as f64);
                 }
@@ -94,7 +87,6 @@ fn main() {
                 s.process(x, o);
                 times.push(b.elapsed().as_secs_f64());
             }
-            // process alone (a rebuilt mouth is made on the plug-in's worker thread)
             let el: f64 = times.iter().sum();
             if el < best {
                 best = el;
