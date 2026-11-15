@@ -7,7 +7,7 @@ progress.
 
 See it live: [**https://janne-s.github.io/Suu/**](https://janne-s.github.io/Suu/)
 
-![Suu interface](web-suu/assets/screenshot.jpg)
+![Suu interface](web/assets/screenshot.jpg)
 
 ## How it works
 
@@ -63,34 +63,49 @@ browser with A/B and Init. Save and Open write and read preset files.
 
 ## Run
 
-Rust with the `wasm32-unknown-unknown` target, and Bun.
+Rust with the `wasm32-unknown-unknown` target, and Bun (only for the local
+server and the browser checks; the page itself has no build step).
 
 ```sh
 bun install
-bun run suu        # http://127.0.0.1:5318/
+bun run web            # http://127.0.0.1:5318/
+bun run build:plugin   # VST3 and CLAP in plugin/target/bundled/
 ```
 
 ## Tests
 
 ```sh
-bun run test       # cargo test --workspace and bun tests
-bun tools/suu-e2e.ts   # headless Chrome, with bun run suu running
+bun run test       # the engine, the core and the plug-in (cargo test)
+bun run e2e        # headless Chrome, with bun run web running
 ```
+
+## Layout
+
+| Folder | What |
+|---|---|
+| `crates/chimera/` | CHIMERA's vocal-tract engine |
+| `crates/suu/` | Suu's core: the driven airway, oscillator, Motion, text, sequencer |
+| `crates/suu-wasm/` | the core's interface for the web page |
+| `plugin/` | the VST3/CLAP effect and instrument |
+| `web/` | the page, which is also the plug-in's window |
+| `data/` | pronouncing dictionary and fonts, with their licenses |
+| `tools/` | web build, local server, browser checks |
 
 ## Limits
 
-English text only. Mono. Tested in Chrome and Safari. No plug-in yet.
+English text only. Mono. Tested in Chrome and Safari. The plug-in builds and
+runs in Ableton Live but is not released yet.
 
 ## Credits
 
 Built on [CHIMERA](https://github.com/jamesondh/chimera-vocal-synth) by Jameson
-Hodge, not affiliated. Suu adds the driven airway and the effect core
-(`crates/suu`, `crates/suu-wasm`, `web-suu/`). CHIMERA's own voice app and
-docs remain in `src/` and `docs/`. See [AGENTS.md](AGENTS.md) for the engine's
-rules.
+Hodge, not affiliated. Suu keeps CHIMERA's engine (`crates/chimera/`) and its
+history, and adds the driven airway, the effect core, the web page and the
+plug-in. CHIMERA's own voice app is not part of Suu; it remains in the original
+repository. See [AGENTS.md](AGENTS.md) for the engine's rules.
 
 ## License
 
 Suu by Janne Särkelä; CHIMERA by Jameson Hodge. [MIT](LICENSE). The CMU
 Pronouncing Dictionary and the AVHershey fonts keep their own licenses
-([public/data/](public/data/), [public/fonts/](public/fonts/)).
+([data/](data/), [data/fonts/](data/fonts/)).

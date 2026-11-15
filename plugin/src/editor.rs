@@ -1,4 +1,4 @@
-//! The plug-in's window: the web app's page (`web-suu/`) in a webview, its controls tied to the
+//! The plug-in's window: the web app's page (`web/`) in a webview, its controls tied to the
 //! host's parameters.
 //!
 //! The page keeps its own state; in a plug-in it sends a parameter's new value (`set`, by
@@ -44,11 +44,11 @@ const SMALLEST_WINDOW: (u32, u32) = (1024, 640);
 const GESTURE_IDLE: Duration = Duration::from_millis(300);
 const LOG_FILE: &str = "suu-plugin.log";
 
-static PAGE: &[u8] = include_bytes!("../../web-suu/index.html");
-static APP: &[u8] = include_bytes!("../../web-suu/app.js");
-static STYLE: &[u8] = include_bytes!("../../web-suu/style.css");
-static FONT_LIGHT: &[u8] = include_bytes!("../../public/fonts/AVHersheySimplexLight.otf");
-static FONT_MEDIUM: &[u8] = include_bytes!("../../public/fonts/AVHersheySimplexMedium.otf");
+static PAGE: &[u8] = include_bytes!("../../web/index.html");
+static APP: &[u8] = include_bytes!("../../web/app.js");
+static STYLE: &[u8] = include_bytes!("../../web/style.css");
+static FONT_LIGHT: &[u8] = include_bytes!("../../data/fonts/AVHersheySimplexLight.otf");
+static FONT_MEDIUM: &[u8] = include_bytes!("../../data/fonts/AVHersheySimplexMedium.otf");
 
 fn served(path: &str) -> Option<(&'static [u8], &'static str)> {
     Some(match path.trim_start_matches('/') {

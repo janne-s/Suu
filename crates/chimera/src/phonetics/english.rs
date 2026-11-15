@@ -115,7 +115,7 @@ impl EnglishG2P {
         self.dict.is_some()
     }
 
-    /// The dictionary as text ("word\tPHONES" lines, i.e. `public/data/cmudict.txt.gz` gunzipped).
+    /// The dictionary as text ("word\tPHONES" lines, i.e. `data/cmudict.txt.gz` gunzipped).
     pub fn load_dict(&mut self, text: &str) {
         let mut m = HashMap::new();
         for line in text.split('\n') {

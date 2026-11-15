@@ -22,9 +22,9 @@ use params::{GateMode, MAX_WORDS, SuuParams};
 
 use chimera::phonetics::english::EnglishG2P;
 
-/// The pronouncing dictionary (CMUdict, licence in `public/data/CMUDICT-LICENSE.txt`), shared by
+/// The pronouncing dictionary (CMUdict, licence in `data/CMUDICT-LICENSE.txt`), shared by
 /// every instance and loaded on first use, on a worker.
-static CMUDICT_GZ: &[u8] = include_bytes!("../../public/data/cmudict.txt.gz");
+static CMUDICT_GZ: &[u8] = include_bytes!("../../data/cmudict.txt.gz");
 static G2P: OnceLock<EnglishG2P> = OnceLock::new();
 
 pub(crate) fn g2p() -> &'static EnglishG2P {

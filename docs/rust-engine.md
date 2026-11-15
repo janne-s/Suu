@@ -2,6 +2,10 @@
 
 *Design, 2026-11-05. Written before the port; the "Status" section at the end records what shipped.*
 
+*Suu keeps this as the engine's contract. The TypeScript app, `crates/chimera-wasm`,
+`crates/chimera-cli` and the `src/` and `tools/` paths it names are CHIMERA's and are no longer in
+this tree; they remain in the history before the commit that made this repository Suu.*
+
 ## Why
 
 1. **JDAW.** JDAW (`~/jdaw/VISION.md`) is a native Rust engine with a web UI. CHIMERA joins it as a

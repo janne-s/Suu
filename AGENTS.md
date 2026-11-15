@@ -1,13 +1,15 @@
-# CHIMERA
+# Suu
 
-A physical-modeling voice synthesizer: a Rust engine (wasm in an AudioWorklet, native for tests
-and the CLI) under a React UI. See the README.
+A talking filter: any sound through CHIMERA's physically modelled vocal tract. One Rust core
+serves the web app (wasm in an AudioWorklet) and the VST3/CLAP plug-in (nih-plug, with the same
+page in a webview). See the README.
 
 ## Working here
 
 - Do what was asked, the simplest way. Side work nobody asked for (experiments, tooling, paid
   runs) is a proposal with its cost. If the work grows well past the estimate, stop and say so.
 - Before repeating or reversing earlier work, read its history (`git log -- <path>`, `git log -S`).
+  CHIMERA's own history is kept in this repository.
 - Commit small, with a short, clear subject line and no long body (the owner's preference);
   measurements and reasoning go in the design document.
 - Keep each fixed bug's reproduction as a test.
@@ -16,35 +18,41 @@ and the CLI) under a React UI. See the README.
 
 ## Map
 
-- `crates/chimera/`: the engine (no I/O). `crates/chimera-wasm/`: the browser's C ABI.
-  `crates/chimera-cli/`: `chimera render | compare csd | diagnose | calibrate`.
-- `src/wasm/`: the UI's facade over the engine. `src/worklet/`: the AudioWorklet. `src/ui/`: React
-  and the canvas renderers.
-- `tests/`: bun tests on the wasm build. `tools/`: e2e, layout lint, spectrogram, speech judge.
-- `docs/`: architecture, the engine contract (`rust-engine.md`), the UI look, the singer judge,
-  and the hill-climb rules.
+- `crates/chimera/`: CHIMERA's engine (airway, anatomy, phonetics, sources, creatures), by
+  Jameson Hodge. No I/O. Suu uses it as a library; keep changes to it opt-in.
+- `crates/suu/`: Suu's core: the driven airway, the oscillator, Motion, text, the sequencer.
+- `crates/suu-wasm/`: the C ABI the web page's worklet calls.
+- `plugin/`: the plug-in, its own Cargo workspace. `src/` is shared, `fx/` is the effect,
+  `synth/` the instrument, `xtask/` bundles them, `vendor/wry-0.35.2/` is a patched dependency.
+- `web/`: the page (`index.html`, `app.js`, `style.css`, `worklet.js`, `assets/`). The plug-in
+  embeds the same files with `include_bytes!`, so the page serves both.
+- `data/`: the CMU Pronouncing Dictionary and the AVHershey fonts, with their licences. The
+  engine's tests, the web build and the plug-in read them from here.
+- `tools/`: `build-web.sh` (wasm, dictionary and fonts next to the page), `serve.ts` (local
+  server), `e2e-web.ts` and `e2e-plugin.ts` (headless Chrome).
+- `docs/rust-engine.md`: the engine's contract, from CHIMERA's port to Rust.
+
+This is not a Node app. Bun runs only the local server and the e2e checks.
 
 ## Rules
 
 - **The engine's contract** (`docs/rust-engine.md`): transcendental math only through
   `chimera::math`, no allocation while rendering, output independent of block size. `cargo test`
   enforces each.
-- **Any change to the sound or the plans fails the golden tests, by design.** Re-bless with
-  `CHIMERA_BLESS=1 cargo test --workspace --no-fail-fast`, run twice. Human-voice audio, plans
-  (including the beat sounds' gestures and the beat player), the tract geometry and the human
-  airway's transfer functions re-bless; see `crates/chimera/tests/golden/README.md` for the rest.
-- **`*.generated.json` tables are regenerated (`chimera calibrate`, `tools/gen-*`), never edited.**
-  Vowel calibration isn't bit-reproducible, so rerun it only when the formants should move.
-- **`src/wasm/chimera.wasm` is a gitignored build product.** After a Rust change, `bun test tests`
-  alone tests the old engine: use `bun run test`. Don't share a cargo `target/` between checkouts.
-- **Gesture records are defined twice**, in `crates/chimera-wasm/src/lib.rs` and
-  `src/wasm/wire.ts`. Change both and bump `LAYOUT_VERSION`.
-- **The wasm loads before the UI.** A module that calls the engine at import must not be reachable
-  from `src/main.tsx`'s static imports. Check: `bun tools/e2e.ts` against `bun run preview`.
-- **DOM content flows in `.screen-body`, never absolutely positioned.** Check: `bun run lint:layout`.
-- **Nothing copyrighted goes in git.** `public/shows/` is gitignored; never ship CSD audio or
-  anything derived from it.
-- **Voice tuning follows `docs/hill-climb/README.md`** and never edits its judges.
+- **CHIMERA's existing render path stays bit-exact.** A change to the engine's sound fails the
+  golden tests by design. Re-bless only a deliberate change, with
+  `CHIMERA_BLESS=1 cargo test --workspace --no-fail-fast`, run twice. See
+  `crates/chimera/tests/golden/README.md`.
+- **`*.generated.json` tables are never edited.** Their generators (`chimera calibrate`,
+  `tools/gen-*`) are in CHIMERA's history, before the commit that made this repository Suu.
+- **Parameter IDs are permanent.** Hosts save automation under them. `plugin/tests/param_ids.txt`
+  holds them; adding one means appending it (`SUU_BLESS_IDS=1`), removing or renaming one fails.
+- **The page is shared.** A change in `web/` changes the plug-in's window too: check both e2e
+  runs. Web-only extras (Space, clip export) must stay hidden in the plug-in.
+- **Plug-in state comes only from the host.** Never from browser storage, which is shared across
+  instances and projects.
+- **Nothing copyrighted goes in git**: no third-party recordings, scores or anything derived
+  from them.
 
 ## Checks
 
@@ -52,5 +60,6 @@ and the CLI) under a React UI. See the README.
 |---|---|
 | anything | `bun run test` and `bun run typecheck` |
 | `crates/chimera/` sound | re-bless goldens (above); `cargo run --release -q -p chimera --example bench` against the previous commit |
-| `crates/chimera-wasm/`, `src/wasm/`, `src/worklet/`, `src/main.tsx` | `bun run build && bun run preview`, then `bun tools/e2e.ts` |
-| `src/ui/`, `src/show/`, CSS | `bun run lint:layout` |
+| `crates/suu/` sound or speed | `cargo run --release -q -p suu --example bench` against the previous commit |
+| `crates/suu-wasm/`, `web/` | `bun run web`, then `bun run e2e` |
+| `plugin/` | `bun run build:plugin`, then pluginval (and auval for AU) |

@@ -18,12 +18,12 @@ jobs:
       - name: Verify the Suu core
         run: cargo test -p suu --release
       - name: Build the page (wasm, dictionary, fonts)
-        run: sh web-suu/build.sh
+        run: sh tools/build-web.sh
       - name: Package the site
         run: |
           mkdir _site
-          cp -R web-suu/. _site/
-          rm -f _site/build.sh _site/serve.ts _site/.gitignore
+          cp -R web/. _site/
+          rm -f _site/.gitignore
           cp LICENSE _site/LICENSE
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

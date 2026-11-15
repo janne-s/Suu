@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::io::Read;
 
 fn dict_text() -> String {
-    let path = format!("{}/../../public/data/cmudict.txt.gz", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/../../data/cmudict.txt.gz", env!("CARGO_MANIFEST_DIR"));
     let gz = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut text = String::new();
     flate2::read::GzDecoder::new(&gz[..]).read_to_string(&mut text).unwrap();
