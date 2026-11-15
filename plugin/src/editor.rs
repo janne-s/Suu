@@ -178,6 +178,8 @@ struct Gui {
     frame: u64,
     /// since when the webview has held the keys with no text field focused (macOS)
     keys_held: Option<Instant>,
+    /// a change of the keys' view is waiting on the main queue
+    keys_pending: Arc<AtomicBool>,
 }
 
 /// After a click the webview held the keys (it is the first responder then) and handed the ones
@@ -189,13 +191,17 @@ const KEYS_BACK: Duration = Duration::from_millis(300);
 /// (baseview: unused keys go up the responder chain). Only from the webview, never from a view of
 /// the host's. `now`: the page says a control was let go; otherwise after `KEYS_BACK`, the time
 /// the page has to say that a click went into a text field.
+///
+/// The change is made on the main queue's next turn, never here: this runs in baseview's frame
+/// callback, which holds its window handler, and the view becoming first responder calls that
+/// handler again (a second borrow: a panic that cannot unwind, and Live went down with it).
 #[cfg(target_os = "macos")]
-fn keys_to_host(window: &impl HasRawWindowHandle, held: &mut Option<Instant>, now: bool) {
+fn keys_to_host(window: &impl HasRawWindowHandle, held: &mut Option<Instant>, now: bool, pending: &Arc<AtomicBool>) {
     use objc::runtime::{BOOL, NO, Object, YES};
     use objc::{class, msg_send, sel, sel_impl};
     let raw_window_handle_05::RawWindowHandle::AppKit(handle) = window.raw_window_handle() else { return };
     let view = handle.ns_view as *mut Object;
-    if view.is_null() {
+    if view.is_null() || pending.load(Ordering::Acquire) {
         return;
     }
     unsafe {
@@ -216,10 +222,53 @@ fn keys_to_host(window: &impl HasRawWindowHandle, held: &mut Option<Instant>, no
         }
         let since = *held.get_or_insert_with(Instant::now);
         if now || since.elapsed() >= KEYS_BACK {
-            let _: BOOL = msg_send![win, makeFirstResponder: view];
             *held = None;
+            pending.store(true, Ordering::Release);
+            // kept alive until the call has run
+            let _: *mut Object = msg_send![view, retain];
+            let _: *mut Object = msg_send![win, retain];
+            let job = Box::new(KeysBack { view, win, pending: pending.clone() });
+            dispatch_async_f(&_dispatch_main_q, Box::into_raw(job).cast(), keys_back);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+struct KeysBack {
+    view: *mut objc::runtime::Object,
+    win: *mut objc::runtime::Object,
+    pending: Arc<AtomicBool>,
+}
+
+/// On the main queue, outside baseview's callbacks: the view takes the keys if it is still in
+/// the same window (a closed editor's view has left it: nothing is done then).
+#[cfg(target_os = "macos")]
+extern "C" fn keys_back(job: *mut std::ffi::c_void) {
+    use objc::runtime::{BOOL, Object};
+    use objc::{msg_send, sel, sel_impl};
+    let job = unsafe { Box::from_raw(job.cast::<KeysBack>()) };
+    unsafe {
+        let now_in: *mut Object = msg_send![job.view, window];
+        if now_in == job.win {
+            let _: BOOL = msg_send![job.win, makeFirstResponder: job.view];
+        }
+        let () = msg_send![job.view, release];
+        let () = msg_send![job.win, release];
+    }
+    job.pending.store(false, Ordering::Release);
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct DispatchQueue {
+    _private: [u8; 0],
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// the main queue (`dispatch_get_main_queue()` is this, as a macro)
+    static _dispatch_main_q: DispatchQueue;
+    fn dispatch_async_f(queue: *const DispatchQueue, context: *mut std::ffi::c_void, work: extern "C" fn(*mut std::ffi::c_void));
 }
 
 fn plain(p: ParamPtr) -> f32 {
@@ -299,6 +348,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
         dialog: None,
         frame: 0,
         keys_held: None,
+        keys_pending: Arc::new(AtomicBool::new(false)),
     });
     let typing = Arc::new(AtomicBool::new(false));
     let typing_keys = typing.clone();
@@ -492,7 +542,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
             }
             #[cfg(target_os = "macos")]
             if !typing.load(Ordering::Relaxed) {
-                keys_to_host(window, &mut gui.keys_held, keys_now);
+                keys_to_host(window, &mut gui.keys_held, keys_now, &gui.keys_pending);
             }
         });
     Some(Box::new(editor))
