@@ -303,6 +303,25 @@ for (const [w, h] of [[1440, 900], [1280, 720], [1024, 640]]) {
   ok(`${w}x${h} one window`, !scroll[0] && !scroll[1], JSON.stringify(scroll));
   await page.screenshot({ path: `${out}/3-${w}.png` });
 }
+{
+  const first = await ctx.newPage();
+  first.on("pageerror", (e) => errors.push(e.message));
+  await first.goto(url, { waitUntil: "networkidle" });
+  await first.click("#play");
+  await first.waitForTimeout(1500);
+  ok("PLAY as the first gesture runs the sequencer", (await first.locator(".step.now").count()) === 1);
+  await first.setViewportSize({ width: 390, height: 844 });
+  await first.waitForTimeout(200);
+  const shown = () => first.locator(".motion-head").isVisible();
+  const wide = () => first.evaluate(() => document.documentElement.scrollWidth);
+  ok("phone: Motion folds to its title row", !(await shown()) && (await first.isVisible("#grid")));
+  ok("phone: no sideways scroll", (await wide()) <= 390, String(await wide()));
+  await first.click("#motion-fold");
+  ok("phone: its title opens it", await shown());
+  ok("phone: no sideways scroll with Motion open", (await wide()) <= 390, String(await wide()));
+  await first.screenshot({ path: `${out}/6-phone.png`, fullPage: true });
+  await first.close();
+}
 ok("no console errors", errors.length === 0, errors.join(" | "));
 await browser.close();
 process.exit(failed ? 1 : 0);

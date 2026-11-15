@@ -353,6 +353,19 @@ $("motion-reset").onclick = () => {
   }
 };
 
+const narrow = matchMedia("(max-width: 900px)");
+function showFold() {
+  const open = !narrow.matches || !$("motion-panel").classList.contains("folded");
+  $("motion-fold").setAttribute("aria-expanded", String(open));
+  $("motion-fold").tabIndex = narrow.matches ? 0 : -1;
+}
+$("motion-fold").onclick = () => {
+  $("motion-panel").classList.toggle("folded");
+  showFold();
+};
+narrow.addEventListener("change", showFold);
+showFold();
+
 // ---------------------------------------------------------------- the mouth (also the vowel pad)
 const PAD_LO = -0.3, PAD_HI = 1.3;
 const toPad = (u) => (u - PAD_LO) / (PAD_HI - PAD_LO);
@@ -799,8 +812,33 @@ function frameLoop() {
 requestAnimationFrame(frameLoop);
 
 // ---------------------------------------------------------------- audio graph
-async function start() {
-  if (ctx || inPlugin) return;
+let booting = null;
+function start() {
+  if (inPlugin) return Promise.resolve();
+  wakeAudio();
+  return (booting ??= boot());
+}
+let silentLoop = null;
+function silentWav() {
+  const n = 4800, b = new DataView(new ArrayBuffer(44 + 2 * n));
+  const text = (o, s) => [...s].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+  text(0, "RIFF"); b.setUint32(4, 36 + 2 * n, true); text(8, "WAVEfmt ");
+  b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
+  b.setUint32(24, 48000, true); b.setUint32(28, 96000, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true);
+  text(36, "data"); b.setUint32(40, 2 * n, true);
+  return URL.createObjectURL(new Blob([b], { type: "audio/wav" }));
+}
+function wakeAudio() {
+  if (navigator.audioSession) navigator.audioSession.type = "playback";
+  else if (!silentLoop && /iPhone|iPad|iPod/.test(navigator.userAgent)) {
+    silentLoop = new Audio(silentWav());
+    silentLoop.loop = true;
+    silentLoop.setAttribute("playsinline", "");
+    silentLoop.play().catch(() => (silentLoop = null));
+  }
+  if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+}
+async function boot() {
   status("loading…", true);
   ctx = new AudioContext({ latencyHint: "interactive" });
   const [mod] = await Promise.all([wasmModule, ctx.audioWorklet.addModule("worklet.js")]);
@@ -820,7 +858,7 @@ async function start() {
   const bytes = new Uint8Array(await new Response(gz.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
   post({ type: "dict", bytes }, [bytes.buffer]);
 }
-for (const ev of ["pointerdown", "keydown"]) addEventListener(ev, () => start(), { capture: true, once: true });
+for (const ev of ["pointerdown", "pointerup", "touchend", "click", "keydown"]) addEventListener(ev, () => start(), { capture: true });
 let statusTimer = 0;
 function status(t, keep = false) {
   const el = $("status");
@@ -876,6 +914,7 @@ function pushAll() {
   setSpace();
   steps.forEach((_, i) => sendStep(i));
   sendSeq();
+  post({ type: "play", on: playing });
 }
 
 function buildSpace() {
@@ -1937,6 +1976,7 @@ const TIPS = {
   '[data-tonce="1"]': "Once\nOnce per pass of the sequence (or once per Sing).",
   "#speech": "Speed\nHow fast it's spoken: the consonants and moves between sounds. Double-click: ×1.",
   "#textgate": "Gate\nHow much of each part you hear: the sound is cut after this share of a tick (clock) or of its spoken length (notes). Double-click: 100%.",
+  "#motion-fold": "Motion\nShow or hide the rows.",
   "#motion-reset": "Reset\nEvery depth back to 0.",
   "#play": "Play (Space)\nStart or stop the sequencer.",
   "#rate": "Rate\nThe steps' note value.",
