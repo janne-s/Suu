@@ -38,5 +38,6 @@ cargo run --release -p suu --example bench   # compare with the previous commit
   hidden in the plug-in.
 - Plug-in state comes only from the host, never from browser storage.
 - Keep each fixed bug's reproduction as a test.
+- Suu is GPL-3.0-or-later. `crates/chimera/` stays MIT and keeps its `LICENSE`.
 - No copyrighted recordings or scores in git.
 - Commit messages are one short subject line.

@@ -106,6 +106,11 @@ repository. See [AGENTS.md](AGENTS.md) for the engine's rules.
 
 ## License
 
-Suu by Janne Särkelä; CHIMERA by Jameson Hodge. [MIT](LICENSE). The CMU
-Pronouncing Dictionary and the AVHershey fonts keep their own licenses
-([data/](data/), [data/fonts/](data/fonts/)).
+Copyright © 2026 Janne Särkelä. Suu is free software under the
+[GNU General Public License v3.0 or later](LICENSE): you may use, change and
+share it, also commercially, as long as what you share stays under the same
+license with its source.
+
+CHIMERA's engine (`crates/chimera/`) is © 2026 Jameson Hodge under the
+[MIT License](crates/chimera/LICENSE). The CMU Pronouncing Dictionary and the
+AVHershey fonts keep their own licenses ([data/](data/), [data/fonts/](data/fonts/)).

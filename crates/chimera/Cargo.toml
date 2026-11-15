@@ -3,7 +3,7 @@ name = "chimera"
 description = "CHIMERA physical-modelling voice engine: airway acoustics, anatomy, phonetics, creatures"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 
 [dependencies]
 libm = "=0.2.16"

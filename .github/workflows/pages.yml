@@ -25,6 +25,7 @@ jobs:
           cp -R web/. _site/
           rm -f _site/.gitignore
           cp LICENSE _site/LICENSE
+          cp crates/chimera/LICENSE _site/LICENSE-CHIMERA
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
