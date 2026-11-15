@@ -19,22 +19,33 @@ purpose.
 
 ## Mouth
 
-- **Vowel pad** — Drag the mouth: left to right front to back, top to bottom
-  close to open. The edge beyond the corner vowels extrapolates.
-- **Horn** — The tract from the side, glottis to lips, as it sounds now.
-  Drag to draw your own, build it from a **Wave** (cycles and depth), or take
-  one period of the sound with the camera; ↺ restores the original. **Morph** blends the horn in, **Shift** slides it
-  along the tract (a wave wraps, so it can travel through), **Open** widens it.
-- **Text** — Type words, and choose how they are said. **Step**: each note says
-  the next one, or the text's own **Clock** (rate or ♪). **Unit**: a syllable or
-  a word at a time. **Say**: **Hold** keeps the vowel while the note lasts (on
-  the clock, for **Len** of a tick; 100% joins them), **Shot** says it through.
-  **Start**: **Free**, or **Seq** to start over with the sequence. **Repeat**:
-  **Loop**, or **1×** once a pass. **Speed** sets how fast it is spoken, from
-  ×0.25 to ×4; **Gate** how much of each part is heard.
-- **Motion** — Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift and
-  Open, each with Depth, Rate or ♪, a shape (sine, triangle, saw, square,
-  random, envelope) and Smooth, from sharp jumps to gliding ones.
+- **Vowel pad**: drag the mouth.
+  - Left to right: front to back. Top to bottom: close to open.
+  - The edge beyond the corner vowels extrapolates.
+- **Horn**: the tract from the side, glottis to lips, as it sounds now.
+  - Drag to draw your own, build it from a **Wave** (cycles and depth), or
+    take one period of the sound with the camera. ↺ restores the original.
+  - **Morph** blends the horn in.
+  - **Shift** slides it along the tract. A wave wraps, so it can travel
+    through.
+  - **Open** widens it.
+- **Text**: type words, and choose how they are said.
+  - **Step**: each note says the next part, or the text's own **Clock** does
+    (a rate, or ♪ for a note value).
+  - **Unit**: a syllable or a word at a time.
+  - **Say**: **Hold** keeps the vowel while the note lasts, **Shot** says the
+    part through.
+  - **Len**: on the Clock, how much of each tick Hold keeps the vowel. At
+    100% the parts join.
+  - **Start**: **Free**, or **Seq** to start over with the sequence.
+  - **Repeat**: **Loop**, or **1×** once a pass.
+  - **Speed**: how fast it is spoken, from ×0.25 to ×4.
+  - **Gate**: how much of each part is heard.
+- **Motion**: moves Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift
+  and Open. Each has:
+  - **Depth**, and **Rate** or ♪.
+  - A shape: sine, triangle, saw, square, random, envelope or ADSR.
+  - **Smooth**, from sharp jumps to gliding ones.
 
 ## Sequencer
 
