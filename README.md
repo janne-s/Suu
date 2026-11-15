@@ -43,7 +43,11 @@ purpose.
   - **Start**: **Free**, or **Seq** to start over with the sequence.
   - **Repeat**: **Loop**, or **1×** once a pass.
   - **Speed**: how fast it is spoken, from ×0.25 to ×4.
-  - **Gate**: how much of each part is heard.
+  - **Gate**: how much of each part is heard. **Fit**: the text bounds the
+    note, so each note lasts only as long as its syllable or word; on the
+    Clock the gaps between parts fall silent.
+  - **Round**: fades each part in and out like a grain. At 0% the sound
+    stays on.
 - **Motion**: moves Vowel X/Y, Round, Nasal, Inject, Damping, Morph, Shift
   and Open. Each has:
   - **Depth**, and **Rate** or ♪.
@@ -62,24 +66,43 @@ to change it. **Gate** scales every step's length alike.
   input (a file or the mic; in the plug-in, the track) sound together, each at
   its level. Keys, Hold and the sequencer gate both.
 - **Body** — Size of the mouth (0.4–4×), Breath (lung pressure for the
-  consonants and folds) and Follow (how far it follows the sound).
+  consonants and folds) and Follow (how far it follows the sound). The
+  quality button steps through **HQ**, **Lean** (two to three times lighter)
+  and **Lo** (a coarser airway: duller, stranger and lighter still).
+- **Air** — The airway's turbulence, each source on its own: Aspir (breath at
+  the folds, h), Fric (the narrowest point: f, sh) and Sibil (the teeth: s),
+  0–1000%. Whistle tames the ringing of a mouth closed at both the tongue and
+  the lips. Move is the sound of the mouth changing shape, the air its moving
+  walls push: 0% silences it, up to 800%.
 - **Source** — Osc and Input levels, Folds (the model's own vocal folds at the
   played note; 100% is about as loud as Osc at 0 dB), Reson (a resonator tuned
   to the played note, so an input plays in pitch) and Glide (pitch and vowel;
-  ♪ syncs it; ↕ ↑ ↓ both ways, only up or only down).
+  ♪ syncs it; ↕ ↑ ↓ both ways, only up or only down). With the pitch from
+  the input, Steady takes a new note only once it has lasted, so a slide
+  between notes is not heard as the notes on the way.
 - **Tone** — Drive into the mouth, Tilt (source brightness), and Sub (the dry
   low end).
+- **Stereo** — A second mouth on the right, a little larger (Spread) and with
+  its vowel moved (Vowel); Width sets how far apart they sound. Phase runs
+  its Motion ahead in the cycle, Canon has it say the text that many parts
+  behind (up to the text's own count), and Mirror turns its horn round. It
+  doubles the CPU, so it is off until switched on.
 - **Space** — Delay and reverb, web only. Off is what the plug-in does.
 
 Keys **A W S E D F T G Y H U J K** play, **Z X** change octave, **Space**
 plays the sequencer, **Esc** releases all notes. Settings are kept in the
-browser with A/B and Init. Save and Open write and read preset files.
+browser. The **Preset** menu has A/B to compare, Init, and Save and Open for
+preset files.
 
 ## Install the plug-in
 
 macOS 11 or later, Apple silicon. Two plug-ins: **Suu** (an effect: the
 track through the mouth, MIDI from another track) and **Suu Synth** (an
 instrument: the oscillator through the mouth, a sidechain as input).
+
+In the plug-in the **MPE** menu chooses what a key's pressure and slide move
+(any Motion target, Breath or Level, with a depth) and sets the pitch bend
+range.
 
 Unzip the release and copy the `.vst3` files to `~/Library/Audio/Plug-Ins/VST3/`
 (and the `.clap` files to `~/Library/Audio/Plug-Ins/CLAP/`). The build is not

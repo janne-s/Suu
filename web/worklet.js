@@ -16,6 +16,7 @@ class SuuProcessor extends AudioWorkletProcessor {
     this.mem = buf;
     this.inp = new Float32Array(buf, this.x.suu_input(this.h), 256);
     this.out = new Float32Array(buf, this.x.suu_output(this.h), 256);
+    this.outR = new Float32Array(buf, this.x.suu_output_r(this.h), 256);
   }
 
   bytes(bytes) {
@@ -89,7 +90,9 @@ class SuuProcessor extends AudioWorkletProcessor {
       this.inp.fill(0, 0, n);
     }
     this.x.suu_process(this.h, n);
-    for (const ch of out) ch.set(this.out.subarray(0, n));
+    if (this.x.memory.buffer !== this.mem) this.views();
+    out[0].set(this.out.subarray(0, n));
+    if (out[1]) out[1].set(this.outR.subarray(0, n));
     this.untilFrame -= n / sampleRate;
     if (this.untilFrame <= 0) {
       this.untilFrame += FRAME_EVERY;

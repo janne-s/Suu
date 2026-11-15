@@ -33,8 +33,8 @@
   <span class="tgroup web-only"><span class="tlabel">IN</span><span class="seg" role="group" aria-label="Input"><button data-in="file" aria-pressed="false">FILE</button><button id="pickfile" class="square icon" aria-label="Choose an audio file"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M1.5 4.5v8h13v-6.5h-6.5l-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button data-in="mic" aria-pressed="false">MIC</button></span></span>
   <span id="status" role="status" aria-live="polite"></span>
   <span class="keys"><span class="seg" role="group" aria-label="What opens the sound"><button id="envgate" aria-pressed="false">ENV</button><button id="hold" aria-pressed="false">HOLD</button></span><select id="pitchfrom" class="field" aria-label="Where the pitch comes from"><option value="0">NOTE</option><option value="1">IN</option><option value="2">IN ♮</option></select><button id="pitch-more" class="square" aria-expanded="false" aria-controls="pitch-panel" aria-label="The input's scale and jump">▾</button><button id="octdown" class="square">−</button><select id="notename" class="field" aria-label="Root note"></select><output id="rootoct" class="field" aria-label="Root octave"></output><button id="octup" class="square">+</button></span>
-  <span class="seg" role="group" aria-label="Settings"><button id="slotA" class="web-only">A</button><button id="slotB" class="web-only">B</button><button id="copyab" class="web-only">A→B</button><button id="init">INIT</button></span>
-  <span class="seg"><button id="savefile">SAVE</button><button id="openfile">OPEN</button></span>
+  <button id="mpe-toggle" class="plugin-only" aria-expanded="false" aria-controls="mpe-panel">MPE</button>
+  <button id="preset-toggle" aria-expanded="false" aria-controls="preset-panel">PRESET<span id="preset-slot" class="web-only"></span></button>
   <label class="labeled">BPM<input id="bpm" class="field" type="number" min="30" max="300" value="100"></label>
   <button id="help-toggle" class="square" aria-pressed="true" aria-label="Tooltips on or off">?</button>
   <button id="info-toggle" class="square" aria-expanded="false" aria-controls="info">i</button>
@@ -64,7 +64,8 @@
           <span class="tgroup"><span class="tlabel">START</span><span class="seg" role="group" aria-label="Where the text starts"><button data-tseq="0">FREE</button><button data-tseq="1">SEQ</button></span></span>
           <span class="tgroup"><span class="tlabel">REPEAT</span><span class="seg" role="group" aria-label="How often"><button data-tonce="0">LOOP</button><button data-tonce="1">1×</button></span></span>
           <span class="tgroup"><span class="tlabel">SPEED</span><span id="speech" class="field drag" tabindex="0" aria-label="Speaking speed"></span></span>
-          <span class="tgroup"><span class="tlabel">GATE</span><span id="textgate" class="field drag" tabindex="0" aria-label="How much of each part is heard"></span></span>
+          <span class="tgroup"><span class="tlabel">GATE</span><span id="textgate" class="field drag" tabindex="0" aria-label="How much of each part is heard"></span><button id="textfit" aria-pressed="false">FIT</button></span>
+          <span class="tgroup"><span class="tlabel">ROUND</span><span id="textround" class="field drag" tabindex="0" aria-label="Fade in and out of each part"></span></span>
         </div></div>
         <div class="text-row"><span class="trow-title">GRID</span><div class="trow-body">
           <span class="tgroup"><span class="tlabel">LINES</span><select id="textgrid" class="field" aria-label="The text's grid"></select></span>
@@ -95,14 +96,20 @@
 </section>
 
 <div class="stages">
-  <section class="stage" style="--n: 3"><h2>BODY <button id="hq" class="tiny" aria-pressed="true">HQ</button></h2><div id="k-mouth" class="knobs"></div></section>
-  <section class="stage" style="--n: 4"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
-  <section class="stage" style="--n: 3"><h2>PITCH</h2><div id="k-pitch" class="knobs"></div></section>
-  <section class="stage" style="--n: 2"><h2>GATE</h2><div id="k-gate" class="knobs"></div></section>
-  <section class="stage" style="--n: 4"><h2>ENV <button id="legato" class="tiny" aria-pressed="false">RETRIG</button></h2><div id="k-env" class="knobs"></div></section>
-  <section class="stage" style="--n: 4"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
-  <section class="stage web-only" style="--n: 5"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
-  <section class="stage" style="--n: 2"><h2>OUT <output id="peak" class="web-only">−∞</output></h2><div id="k-out" class="knobs"></div></section>
+  <div class="stage-row">
+    <section class="stage" style="--n: 4"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
+    <section class="stage" style="--n: 4"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
+    <section class="stage" style="--n: 3"><h2>BODY <button id="hq" class="tiny" aria-pressed="true">HQ</button></h2><div id="k-mouth" class="knobs"></div></section>
+    <section class="stage" style="--n: 5"><h2>AIR</h2><div id="k-air" class="knobs"></div></section>
+  </div>
+  <div class="stage-row">
+    <section class="stage" style="--n: 3"><h2>PITCH</h2><div id="k-pitch" class="knobs"></div></section>
+    <section class="stage" style="--n: 2"><h2>GATE</h2><div id="k-gate" class="knobs"></div></section>
+    <section class="stage" style="--n: 4"><h2>ENV <button id="legato" class="tiny" aria-pressed="false">RETRIG</button></h2><div id="k-env" class="knobs"></div></section>
+    <section class="stage" style="--n: 5"><h2>STEREO <button id="stereomirror" class="tiny" aria-pressed="false">MIRROR</button><button id="stereoon" class="tiny" aria-pressed="false">OFF</button></h2><div id="k-stereo" class="knobs"></div></section>
+    <section class="stage web-only" style="--n: 5"><h2>SPACE <button id="spaceon" class="tiny" aria-pressed="true">ON</button></h2><div id="k-space" class="knobs"></div></section>
+    <section class="stage" style="--n: 2"><h2>OUT <output id="peak" class="web-only">−∞</output></h2><div id="k-out" class="knobs"></div></section>
+  </div>
 </div>
 
 <div id="pitch-panel" class="popover pitch-pop" hidden role="dialog" aria-label="The input's pitch: scale and jump">
@@ -111,6 +118,17 @@
   <div class="pitch-row"><span class="seg" role="group" aria-label="Scale from the root"><button data-preset="all">ALL</button><button data-preset="maj">MAJ</button><button data-preset="min">MIN</button><button data-preset="penta">PENTA</button><button data-preset="minpenta">m PENTA</button></span></div>
   <h2>JUMP</h2>
   <div class="pitch-row"><label class="labeled">WIDEST<span id="jump" class="field drag" tabindex="0" aria-label="The widest jump of the input's pitch"></span></label><span class="seg" role="group" aria-label="A wider jump"><button data-jump="1">FOLD</button><button data-jump="0">SKIP</button></span></div>
+</div>
+
+<div id="mpe-panel" class="popover preset-pop" hidden role="dialog" aria-label="MPE">
+  <div class="pitch-row"><span class="mpe-name">PRESSURE</span><select id="mpe-pressure-to" class="field" aria-label="What pressure moves"></select><span id="mpe-pressure-depth" class="field drag" tabindex="0" aria-label="Pressure depth"></span></div>
+  <div class="pitch-row"><span class="mpe-name">SLIDE</span><select id="mpe-slide-to" class="field" aria-label="What slide moves"></select><span id="mpe-slide-depth" class="field drag" tabindex="0" aria-label="Slide depth"></span></div>
+  <div class="pitch-row"><span class="mpe-name">BEND</span><span id="mpe-bend" class="field drag" tabindex="0" aria-label="Pitch bend range"></span></div>
+</div>
+
+<div id="preset-panel" class="popover preset-pop" hidden role="dialog" aria-label="Settings">
+  <div class="pitch-row web-only"><span class="seg" role="group" aria-label="Compare"><button id="slotA">A</button><button id="slotB">B</button><button id="copyab">A→B</button></span></div>
+  <div class="pitch-row"><span class="seg" role="group" aria-label="Settings"><button id="init">INIT</button><button id="savefile">SAVE</button><button id="openfile">OPEN</button></span></div>
 </div>
 
 <div id="info" class="popover" hidden role="dialog" aria-label="Keys and credits">

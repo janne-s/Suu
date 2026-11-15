@@ -70,6 +70,7 @@ const DEFAULT_BPM: f64 = 120.0;
 
 enum Job {
     Size { generation: u64, seed: MouthSeed },
+    Twin { generation: u64, seed: MouthSeed },
     Text { generation: u64, params: suu::Params, on: bool },
     Drop(Junk),
 }
@@ -82,6 +83,7 @@ enum Junk {
 
 enum Done {
     Mouth { generation: u64, mouth: Mouth },
+    Twin { generation: u64, mouth: Mouth },
     Text { generation: u64, plan: TextPlan },
 }
 
@@ -97,6 +99,7 @@ fn worker(jobs: Receiver<Job>, done: Sender<Done>, words: Arc<RwLock<String>>) {
         };
         let result = match job {
             Job::Size { generation, seed } => Done::Mouth { generation, mouth: Mouth::build(&seed) },
+            Job::Twin { generation, seed } => Done::Twin { generation, mouth: Mouth::build(&seed) },
             Job::Text { generation, params, on } => {
                 let text = if on { words.read().map(|w| w.chars().take(MAX_WORDS).collect::<String>()).unwrap_or_default() } else { String::new() };
                 Done::Text { generation, plan: TextPlan::new(&text, Some(g2p()), &params) }
@@ -220,10 +223,15 @@ pub struct SuuPlugin<K: Kind> {
     done: Option<Receiver<Done>>,
     input: Vec<f32>,
     output: Vec<f32>,
+    output_r: Vec<f32>,
+    twin_job: bool,
+    twin: Option<Mouth>,
     keys: Keys,
     last_key: Option<(u8, u8)>,
     last_root: i32,
     bend: [f32; 16],
+    pressure: [f32; 16],
+    slide: [f32; 16],
     size_job: bool,
     text_job: bool,
     planned_text: Option<bool>,
@@ -250,10 +258,15 @@ impl<K: Kind> Default for SuuPlugin<K> {
             done: None,
             input: Vec::new(),
             output: Vec::new(),
+            output_r: Vec::new(),
+            twin_job: false,
+            twin: None,
             keys: Keys::new(),
             last_key: None,
             last_root: i32::MIN,
             bend: [0.0; 16],
+            pressure: [0.0; 16],
+            slide: [0.5; 16],
             size_job: false,
             text_job: false,
             planned_text: None,
@@ -301,6 +314,11 @@ impl<K: Kind> SuuPlugin<K> {
                 self.mouth = Some(m);
             }
         }
+        if let Some(m) = self.twin.take() {
+            if let Err(m) = suu.set_twin(m) {
+                self.twin = Some(m);
+            }
+        }
         if let Some(old) = suu.take_retired() {
             self.discard(Junk::Mouth(old));
         }
@@ -313,6 +331,11 @@ impl<K: Kind> SuuPlugin<K> {
                     self.mouth = Some(mouth);
                 }
                 Done::Mouth { mouth, .. } => self.discard(Junk::Mouth(mouth)),
+                Done::Twin { generation: g, mouth } if g == generation && self.twin.is_none() => {
+                    self.twin_job = false;
+                    self.twin = Some(mouth);
+                }
+                Done::Twin { mouth, .. } => self.discard(Junk::Mouth(mouth)),
                 Done::Text { generation: g, plan } if g == generation => {
                     self.text_job = false;
                     let old = self.suu.as_mut().map(|s| s.set_text_plan(plan));
@@ -334,8 +357,11 @@ impl<K: Kind> SuuPlugin<K> {
             self.last_root = root;
         }
         let (note, gate) = self.note_and_gate();
+        let ch = self.keys.top().or(self.last_key).map_or(0, |k| k.1 as usize & 15);
+        let (pressure, slide) = (self.pressure[ch] as f64, (self.slide[ch] as f64 - 0.5) * 2.0);
         let p = self.params.clone();
         let Some(suu) = self.suu.as_mut() else { return };
+        suu.set_expression(pressure, slide);
         let core = p.to_core(note, gate, bpm);
         if core != suu.params() {
             suu.set_params(core);
@@ -376,9 +402,14 @@ impl<K: Kind> SuuPlugin<K> {
         }
         let Some(jobs) = &self.jobs else { return };
         let size = p.size.value() as f64;
-        if !self.size_job && self.mouth.is_none() && (size != suu.size() || p.hq.value() != suu.hq()) {
+        if !self.size_job && self.mouth.is_none() && (size != suu.size() || suu.params().quality() != suu.quality()) {
             if jobs.try_send(Job::Size { generation: self.generation, seed: suu.mouth_seed(size) }).is_ok() {
                 self.size_job = true;
+            }
+        }
+        if !self.twin_job && self.twin.is_none() && !self.size_job && self.mouth.is_none() && let Some(want) = suu.wants_twin() {
+            if jobs.try_send(Job::Twin { generation: self.generation, seed: suu.mouth_seed(want) }).is_ok() {
+                self.twin_job = true;
             }
         }
         let on = p.text.value();
@@ -407,7 +438,7 @@ impl<K: Kind> SuuPlugin<K> {
             let end = next.map_or(n, |e| (e.timing() as usize).clamp(pos + 1, n));
             self.sync(bpm, playing);
             if let Some(suu) = self.suu.as_mut() {
-                suu.process(&self.input[pos..end], &mut self.output[pos..end]);
+                suu.process_stereo(&self.input[pos..end], &mut self.output[pos..end], &mut self.output_r[pos..end]);
             }
             pos = end;
         }
@@ -425,6 +456,11 @@ impl<K: Kind> SuuPlugin<K> {
     #[doc(hidden)]
     pub fn io(&mut self) -> (&mut [f32], &[f32]) {
         (&mut self.input, &self.output)
+    }
+
+    #[doc(hidden)]
+    pub fn right(&self) -> &[f32] {
+        &self.output_r
     }
 
     #[doc(hidden)]
@@ -447,6 +483,7 @@ impl<K: Kind> SuuPlugin<K> {
         let n = max_block.max(1);
         self.input = vec![0.0; n];
         self.output = vec![0.0; n];
+        self.output_r = vec![0.0; n];
         self.frame = Vec::with_capacity(2 * UI_LEN);
         self.fs = fs;
         if self.jobs.is_none() {
@@ -474,8 +511,11 @@ impl<K: Kind> SuuPlugin<K> {
         self.suu = Some(s);
         self.mouth = None;
         (self.size_job, self.text_job, self.planned_text) = (false, false, None);
+        (self.twin_job, self.twin) = (false, None);
         self.keys = Keys::new();
         self.bend = [0.0; 16];
+        self.pressure = [0.0; 16];
+        self.slide = [0.5; 16];
         self.shared.generation.fetch_add(1, Ordering::AcqRel);
         true
     }
@@ -559,6 +599,9 @@ impl<K: Kind> SuuPlugin<K> {
             }
             NoteEvent::Choke { note, .. } => self.keys.choke(note),
             NoteEvent::MidiPitchBend { channel, value, .. } => self.bend[channel as usize & 15] = (value - 0.5) * 2.0,
+            NoteEvent::MidiChannelPressure { channel, pressure, .. } | NoteEvent::PolyPressure { channel, pressure, .. } => self.pressure[channel as usize & 15] = pressure,
+            NoteEvent::MidiCC { channel, cc: 74, value, .. } => self.slide[channel as usize & 15] = value,
+            NoteEvent::PolyBrightness { channel, brightness, .. } => self.slide[channel as usize & 15] = brightness,
             _ => {}
         }
     }
@@ -592,6 +635,8 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
     fn reset(&mut self) {
         self.keys = Keys::new();
         self.bend = [0.0; 16];
+        self.pressure = [0.0; 16];
+        self.slide = [0.5; 16];
     }
 
     fn process(&mut self, buffer: &mut Buffer, aux: &mut AuxiliaryBuffers, context: &mut impl ProcessContext<Self>) -> ProcessStatus {
@@ -622,8 +667,8 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
         }
         self.window_exchange(n, bpm);
         self.render(n, bpm, playing, || context.next_event());
-        for ch in buffer.as_slice() {
-            ch.copy_from_slice(&self.output[..n]);
+        for (i, ch) in buffer.as_slice().iter_mut().enumerate() {
+            ch.copy_from_slice(if i == 1 { &self.output_r[..n] } else { &self.output[..n] });
         }
         ProcessStatus::Normal
     }

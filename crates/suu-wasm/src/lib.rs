@@ -1,9 +1,10 @@
-use suu::{GlideDir, MAX_BLOCK, Mod, Params, PitchFrom, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
+use suu::{GlideDir, MAX_BLOCK, Mod, Mouth, Params, PitchFrom, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
 
 pub struct Handle {
     suu: Suu,
     input: Vec<f32>,
     output: Vec<f32>,
+    output_r: Vec<f32>,
     frame: Vec<f32>,
     snap: [f32; suu::HORN_POINTS],
 }
@@ -71,6 +72,25 @@ fn set(p: &mut Params, id: u32, v: f64) {
         61 => p.grid_breath = v,
         62 => p.grid_smooth = v,
         63 => p.text_grid = v,
+        64 => p.text_round = v,
+        65 => p.aspiration = v,
+        66 => p.frication = v,
+        67 => p.sibilance = v,
+        68 => p.lofi = v > 0.5,
+        69 => p.text_fit = v > 0.5,
+        70 => p.pressure_to = v as i32,
+        71 => p.pressure_depth = v,
+        72 => p.slide_to = v as i32,
+        73 => p.slide_depth = v,
+        74 => p.stereo = v > 0.5,
+        75 => p.stereo_spread = v,
+        76 => p.stereo_vowel = v,
+        77 => p.stereo_width = v,
+        78 => p.whistle = v,
+        79 => p.move_sound = v,
+        80 => p.stereo_canon = v,
+        81 => p.stereo_phase = v,
+        82 => p.stereo_mirror = v > 0.5,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}
@@ -94,7 +114,7 @@ pub extern "C" fn suu_free(p: *mut u8, n: usize) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn suu_new(fs: f64) -> *mut Handle {
-    Box::into_raw(Box::new(Handle { suu: Suu::new(fs), input: vec![0.0; MAX_BLOCK], output: vec![0.0; MAX_BLOCK], frame: Vec::with_capacity(4096), snap: [0.0; suu::HORN_POINTS] }))
+    Box::into_raw(Box::new(Handle { suu: Suu::new(fs), input: vec![0.0; MAX_BLOCK], output: vec![0.0; MAX_BLOCK], output_r: vec![0.0; MAX_BLOCK], frame: Vec::with_capacity(4096), snap: [0.0; suu::HORN_POINTS] }))
 }
 
 #[unsafe(no_mangle)]
@@ -108,10 +128,19 @@ pub extern "C" fn suu_output(h: *mut Handle) -> *mut f32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn suu_output_r(h: *mut Handle) -> *mut f32 {
+    unsafe { (*h).output_r.as_mut_ptr() }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn suu_process(h: *mut Handle, n: usize) {
     let h = unsafe { &mut *h };
     let n = n.min(MAX_BLOCK);
-    h.suu.process(&h.input[..n], &mut h.output[..n]);
+    h.suu.process_stereo(&h.input[..n], &mut h.output[..n], &mut h.output_r[..n]);
+    if let Some(want) = h.suu.wants_twin() {
+        let _ = h.suu.set_twin(Mouth::build(&h.suu.mouth_seed(want)));
+    }
+    let _ = h.suu.take_retired();
 }
 
 #[unsafe(no_mangle)]
@@ -124,7 +153,7 @@ pub extern "C" fn suu_set(h: *mut Handle, id: u32, v: f64) {
     let mut p = h.suu.params();
     set(&mut p, id, v);
     h.suu.set_params(p);
-    if h.suu.hq() != p.hq {
+    if h.suu.quality() != p.quality() {
         let size = h.suu.size();
         h.suu.set_size(size);
     }

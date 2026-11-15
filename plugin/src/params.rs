@@ -166,6 +166,42 @@ pub enum ModShape {
 }
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
+pub enum ExprTo {
+    #[id = "off"]
+    Off,
+    #[id = "vowel_x"]
+    #[name = "Vowel X"]
+    VowelX,
+    #[id = "vowel_y"]
+    #[name = "Vowel Y"]
+    VowelY,
+    #[id = "round"]
+    Round,
+    #[id = "nasal"]
+    Nasal,
+    #[id = "inject"]
+    Inject,
+    #[id = "damping"]
+    Damping,
+    #[id = "morph"]
+    Morph,
+    #[id = "shift"]
+    Shift,
+    #[id = "open"]
+    Open,
+    #[id = "breath"]
+    Breath,
+    #[id = "level"]
+    Level,
+}
+
+impl ExprTo {
+    pub fn core(self) -> i32 {
+        self as i32 - 1
+    }
+}
+
+#[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum Glide {
     #[id = "both"]
     Both,
@@ -499,6 +535,44 @@ pub struct SuuParams {
     pub glide_sync: EnumParam<Sync>,
     #[id = "glide_dir"]
     pub glide_dir: EnumParam<Glide>,
+    #[id = "lofi"]
+    pub lofi: BoolParam,
+    #[id = "text_round"]
+    pub text_round: FloatParam,
+    #[id = "text_fit"]
+    pub text_fit: BoolParam,
+    #[id = "aspiration"]
+    pub aspiration: FloatParam,
+    #[id = "frication"]
+    pub frication: FloatParam,
+    #[id = "sibilance"]
+    pub sibilance: FloatParam,
+    #[id = "whistle"]
+    pub whistle: FloatParam,
+    #[id = "move"]
+    pub move_sound: FloatParam,
+    #[id = "stereo_canon"]
+    pub stereo_canon: IntParam,
+    #[id = "stereo_phase"]
+    pub stereo_phase: FloatParam,
+    #[id = "stereo_mirror"]
+    pub stereo_mirror: BoolParam,
+    #[id = "pressure_to"]
+    pub pressure_to: EnumParam<ExprTo>,
+    #[id = "pressure_depth"]
+    pub pressure_depth: FloatParam,
+    #[id = "slide_to"]
+    pub slide_to: EnumParam<ExprTo>,
+    #[id = "slide_depth"]
+    pub slide_depth: FloatParam,
+    #[id = "stereo"]
+    pub stereo: BoolParam,
+    #[id = "stereo_spread"]
+    pub stereo_spread: FloatParam,
+    #[id = "stereo_vowel"]
+    pub stereo_vowel: FloatParam,
+    #[id = "stereo_width"]
+    pub stereo_width: FloatParam,
 
     // ------------------------------------------------ mouth
     #[id = "size"]
@@ -631,6 +705,25 @@ impl SuuParams {
                 .with_value_to_string(Arc::new(|v| if v < 0.0005 { "off".into() } else if v < 1.0 { format!("{:.0} m", v * 1000.0) } else { format!("{v:.2}") })),
             glide_sync: EnumParam::new("Glide Sync", Sync::Off),
             glide_dir: EnumParam::new("Glide Direction", Glide::Both),
+            lofi: BoolParam::new("Lo-Fi", false),
+            text_round: percent(FloatParam::new("Text Round", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            text_fit: BoolParam::new("Text Fits Note", false),
+            aspiration: percent(FloatParam::new("Aspiration", 1.0, FloatRange::Skewed { min: 0.0, max: 10.0, factor: 0.4 })),
+            frication: percent(FloatParam::new("Frication", 1.0, FloatRange::Skewed { min: 0.0, max: 10.0, factor: 0.4 })),
+            sibilance: percent(FloatParam::new("Sibilance", 1.0, FloatRange::Skewed { min: 0.0, max: 10.0, factor: 0.4 })),
+            whistle: percent(FloatParam::new("Whistle", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            move_sound: percent(FloatParam::new("Move", 1.0, FloatRange::Skewed { min: 0.0, max: 8.0, factor: 0.4 })),
+            stereo_canon: IntParam::new("Stereo Canon", 0, IntRange::Linear { min: 0, max: 16 }),
+            stereo_phase: percent(FloatParam::new("Stereo Phase", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            stereo_mirror: BoolParam::new("Stereo Mirror", false),
+            pressure_to: EnumParam::new("Pressure To", ExprTo::Breath),
+            pressure_depth: percent(FloatParam::new("Pressure Depth", 0.5, FloatRange::Linear { min: -1.0, max: 1.0 })),
+            slide_to: EnumParam::new("Slide To", ExprTo::VowelY),
+            slide_depth: percent(FloatParam::new("Slide Depth", 0.5, FloatRange::Linear { min: -1.0, max: 1.0 })),
+            stereo: BoolParam::new("Stereo", false),
+            stereo_spread: times(FloatParam::new("Stereo Spread", 1.12, FloatRange::Linear { min: 0.7, max: 1.4 })),
+            stereo_vowel: percent(FloatParam::new("Stereo Vowel", 0.12, FloatRange::Linear { min: -0.5, max: 0.5 })),
+            stereo_width: percent(FloatParam::new("Stereo Width", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
 
             size: times(FloatParam::new("Size", 1.0, log_range(0.4, 4.0, 1.265)).with_step_size(0.001)),
             breath: times(FloatParam::new("Breath", 1.0, FloatRange::Linear { min: 0.0, max: 6.0 })),
@@ -753,6 +846,25 @@ impl SuuParams {
             steady_s: self.steady.value() as f64,
             steady_sync: self.steady_sync.value().beats(),
             hq: self.hq.value(),
+            lofi: self.lofi.value(),
+            text_round: self.text_round.value() as f64,
+            text_fit: self.text_fit.value(),
+            aspiration: self.aspiration.value() as f64,
+            frication: self.frication.value() as f64,
+            sibilance: self.sibilance.value() as f64,
+            whistle: self.whistle.value() as f64,
+            move_sound: self.move_sound.value() as f64,
+            stereo_canon: self.stereo_canon.value() as f64,
+            stereo_phase: self.stereo_phase.value() as f64,
+            stereo_mirror: self.stereo_mirror.value(),
+            pressure_to: self.pressure_to.value().core(),
+            pressure_depth: self.pressure_depth.value() as f64,
+            slide_to: self.slide_to.value().core(),
+            slide_depth: self.slide_depth.value() as f64,
+            stereo: self.stereo.value(),
+            stereo_spread: self.stereo_spread.value() as f64,
+            stereo_vowel: self.stereo_vowel.value() as f64,
+            stereo_width: self.stereo_width.value() as f64,
             grid: self.grid.value().beats(),
             text_grid: if self.text_grid_main.value() { -1.0 } else { self.text_grid.value().beats() },
             grid_breath: self.grid_breath.value() as f64,

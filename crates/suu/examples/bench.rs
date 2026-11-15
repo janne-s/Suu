@@ -1,5 +1,5 @@
 use std::time::Instant;
-use suu::{HORN_POINTS, Mod, Params, PitchFrom, STEPS, Shape, Source, Step, Suu, TextStep};
+use suu::{HORN_POINTS, Mod, Mouth, Params, PitchFrom, STEPS, Shape, Source, Step, Suu, TextStep};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -63,6 +63,16 @@ fn main() {
             s.set_size(1.0);
             for t in 0..9 { s.set_mod(t, Mod { depth: 0.5, rate_hz: 0.7 + t as f64 * 0.3, sync: 0.0, shape: Shape::Sine, smooth: 0.0 }); }
         }), false),
+        ("LO: held supersaw", Box::new(move |s: &mut Suu| { s.set_params(Params { hq: false, lofi: true, ..gate }); s.set_size(1.0) }), false),
+        ("LO: size 0.4", Box::new(move |s: &mut Suu| { s.set_params(Params { hq: false, lofi: true, ..gate }); s.set_size(0.4) }), false),
+        ("LO: Motion on all 9", Box::new(move |s: &mut Suu| {
+            s.set_params(Params { morph: 0.5, hq: false, lofi: true, ..gate });
+            s.set_size(1.0);
+            for t in 0..9 { s.set_mod(t, Mod { depth: 0.5, rate_hz: 0.7 + t as f64 * 0.3, sync: 0.0, shape: Shape::Sine, smooth: 0.0 }); }
+        }), false),
+        ("stereo HQ: held supersaw", Box::new(move |s: &mut Suu| { s.set_params(Params { stereo: true, ..gate }); let w = s.wants_twin().unwrap(); let _ = s.set_twin(Mouth::build(&s.mouth_seed(w))); }), false),
+        ("stereo LEAN: held supersaw", Box::new(move |s: &mut Suu| { s.set_params(Params { stereo: true, hq: false, ..gate }); s.set_size(1.0); let w = s.wants_twin().unwrap(); let _ = s.set_twin(Mouth::build(&s.mouth_seed(w))); }), false),
+        ("stereo LO: held supersaw", Box::new(move |s: &mut Suu| { s.set_params(Params { stereo: true, hq: false, lofi: true, ..gate }); s.set_size(1.0); let w = s.wants_twin().unwrap(); let _ = s.set_twin(Mouth::build(&s.mouth_seed(w))); }), false),
         ("size automation (rebuilds)", Box::new(move |s: &mut Suu| s.set_params(gate)), false),
     ];
     let period = 128.0 / fs;
@@ -84,7 +94,8 @@ fn main() {
                     s.set_size(0.8 + 0.4 * ((i / 20) % 2) as f64);
                 }
                 let b = Instant::now();
-                s.process(x, o);
+                let mut r = [0f32; 128];
+                s.process_stereo(x, o, &mut r[..o.len()]);
                 times.push(b.elapsed().as_secs_f64());
             }
             let el: f64 = times.iter().sum();

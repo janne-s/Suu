@@ -105,6 +105,14 @@ await page.click("#text-toggle");
 ok("text button starts as SING", (await page.textContent("#singtext"))!.includes("SING"));
 await page.click("#singtext"); await page.waitForTimeout(500);
 ok("SING → STOP", (await page.textContent("#singtext"))!.includes("STOP"));
+{
+  const words = ((await page.inputValue("#text")).match(/[A-Za-z']+/g) ?? []).length;
+  page.once("dialog", (d) => d.accept("40"));
+  await page.click('output[for="stereoCanon"]');
+  ok("CANON reaches no further than the text has parts", (await page.textContent('output[for="stereoCanon"]')) === `+${words - 1}`, `${await page.textContent('output[for="stereoCanon"]')} with ${words} words`);
+  page.once("dialog", (d) => d.accept("0"));
+  await page.click('output[for="stereoCanon"]');
+}
 const pressed = async (sel: string) => (await page.getAttribute(sel, "aria-pressed")) === "true";
 ok("defaults: note, syllable, hold, seq, loop", (await pressed('[data-tstep="0"]')) && (await pressed('[data-tunit="0"]')) && (await pressed('[data-tsay="0"]')) && (await pressed('[data-tseq="1"]')) && (await pressed('[data-tonce="0"]')));
 ok("no clock rate or length on notes", !(await page.isVisible("#clockrate")) && !(await page.isVisible("#lenbox")));
@@ -164,13 +172,18 @@ ok("and back to both ways", (await page.textContent("#glidedir")) === "↕");
 ok("sync down to 1/128", (await page.locator(".motion-row select.field[hidden], .motion-row .rate select").first().locator('option', { hasText: "1/128" }).count()) === 1);
 ok("the sequencer runs at 1/128 too", (await page.locator('#rate option[value="32"]').count()) === 1);
 ok("glide knob", (await page.locator("#glide").count()) === 1, await page.textContent('output[for="glide"]') ?? "");
+const preset = async (sel: string) => {
+  if (!(await page.isVisible("#preset-panel"))) await page.click("#preset-toggle");
+  await page.click(sel);
+};
 await page.fill("#bpm", "123"); await page.dispatchEvent("#bpm", "change");
-await page.click("#slotB");
+await preset("#slotB");
+ok("the PRESET button names the side", (await page.textContent("#preset-toggle")) === "PRESET B");
 ok("B starts as a copy of A", (await page.inputValue("#bpm")) === "123");
 await page.fill("#bpm", "88"); await page.dispatchEvent("#bpm", "change");
-await page.click("#slotA");
+await preset("#slotA");
 ok("A keeps its own", (await page.inputValue("#bpm")) === "123");
-await page.click("#slotB");
+await preset("#slotB");
 ok("B keeps its own", (await page.inputValue("#bpm")) === "88");
 await page.waitForTimeout(1200);
 await page.reload({ waitUntil: "networkidle" });
@@ -197,6 +210,11 @@ await page.selectOption("#horn-shape", "0");
 let saved = async () => { await page.waitForTimeout(1200); return await page.evaluate(() => JSON.parse(localStorage.getItem("suu.session.v1")!).B); };
 let st = await saved();
 ok("SIN builds a wrapping wave horn", st.hornWrap === true && st.hornWave.shape === 0 && Math.abs(st.horn[8] - st.horn[24]) > 2, JSON.stringify(st.horn.slice(0, 6)));
+await page.selectOption("#horn-shape", "4");
+st = await saved();
+ok("RND builds an uneven horn at once, with one cycle", st.hornWave.shape === 4 && st.hornWave.cycles === 1 && new Set(st.horn.map((a: number) => a.toFixed(3))).size >= 4, JSON.stringify(st.horn.slice(0, 8)));
+await page.selectOption("#horn-shape", "0");
+st = await saved();
 await page.screenshot({ path: `${out}/5-wave.png` });
 await page.keyboard.down("a");
 await page.waitForTimeout(300);
@@ -286,8 +304,40 @@ await page.click("#view-pad");
   await page.press("#bpm", "Enter");
   ok("BPM typed 500 shows 300", (await page.inputValue("#bpm")) === "300", await page.inputValue("#bpm"));
 }
-await page.click("#init");
+await preset("#init");
 ok("INIT restores the defaults", (await page.inputValue("#bpm")) === "100" && (await page.textContent("#seqgate")) === "100%");
+await page.keyboard.press("Escape");
+await page.click("#stereoon");
+await page.keyboard.down("a");
+await page.waitForTimeout(1200);
+const stereoPeak = await peakDb();
+await page.keyboard.up("a");
+ok("STEREO on and it still sounds", (await page.textContent("#stereoon")) === "ON" && stereoPeak > -40, stereoPeak.toFixed(1) + " dB");
+await page.click("#stereoon");
+ok("no MPE button on the web", !(await page.isVisible("#mpe-toggle")));
+ok("PRESET closes", !(await page.isVisible("#preset-panel")));
+ok("ASPIR, FRIC and SIBIL at 100%", (await Promise.all(["aspiration", "frication", "sibilance"].map((k) => page.textContent(`output[for="${k}"]`)))).every((t) => t === "100%"));
+await page.click("#hq");
+ok("quality steps to LEAN", (await page.textContent("#hq")) === "LEAN");
+await page.click("#hq");
+ok("then LO", (await page.textContent("#hq")) === "LO");
+await page.click("#hq");
+ok("and back to HQ", (await page.textContent("#hq")) === "HQ");
+ok("ROUND 0% and FIT off by default", (await page.textContent("#textround")) === "0%" && (await page.getAttribute("#textfit", "aria-pressed")) === "false");
+{
+  const glide = page.locator("#glidedir").locator("..");
+  if ((await glide.locator("select").getAttribute("hidden")) !== null) await glide.locator(".sync").first().click();
+  const free = await page.evaluate(() => {
+    const dir = document.getElementById("glidedir")!;
+    const box = dir.parentElement!.querySelector("select")!.getBoundingClientRect();
+    return [...dir.parentElement!.querySelectorAll(".sync")].every((b) => {
+      const r = b.getBoundingClientRect();
+      return r.left >= box.right && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === b;
+    });
+  });
+  ok("glide's ♪ and direction sit beside the note value, not over it", free);
+  await glide.locator(".sync").first().click();
+}
 ok("resonator knob, off by default", (await page.textContent('output[for="reson"]')) === "off");
 ok("GitHub link at the header's right end", await page.evaluate(() => {
   const a = document.getElementById("github") as HTMLAnchorElement, bar = document.querySelector(".bar")!;

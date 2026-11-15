@@ -8,6 +8,8 @@ fn at(e: NoteEvent<()>, timing: u32) -> NoteEvent<()> {
     match e {
         NoteEvent::NoteOn { voice_id, channel, note, velocity, .. } => NoteEvent::NoteOn { timing, voice_id, channel, note, velocity },
         NoteEvent::NoteOff { voice_id, channel, note, velocity, .. } => NoteEvent::NoteOff { timing, voice_id, channel, note, velocity },
+        NoteEvent::MidiChannelPressure { channel, pressure, .. } => NoteEvent::MidiChannelPressure { timing, channel, pressure },
+        NoteEvent::MidiCC { channel, cc, value, .. } => NoteEvent::MidiCC { timing, channel, cc, value },
         other => other,
     }
 }
@@ -230,4 +232,47 @@ fn a_repeated_note_lasts_until_its_own_note_off() {
     assert!(level(20000) > 0.5, "the repeated note still sounds after the first one's note-off: {}", level(20000));
     assert!(level(23000) > 0.5, "until its own note-off: {}", level(23000));
     assert!(level(30000) < 0.01, "and ends there: {}", level(30000));
+}
+
+#[test]
+fn mpe_pressure_on_the_note_channel_drives_its_target() {
+    let mut params = SuuParams::new(true);
+    params.pressure_to = EnumParam::new("Pressure To", suu_plugin::params::ExprTo::Level);
+    params.pressure_depth = FloatParam::new("Pressure Depth", 1.0, FloatRange::Linear { min: -1.0, max: 1.0 });
+    let mut p = SuuSynth::with_params(params);
+    assert!(p.setup(FS, 512));
+    let press = |timing: u32, channel: u8, pressure: f32| NoteEvent::MidiChannelPressure { timing, channel, pressure };
+    let events = [
+        NoteEvent::NoteOn { timing: 4800, voice_id: None, channel: 3, note: 57, velocity: 0.8 },
+        press(24000, 5, 1.0),
+        press(48000, 3, 1.0),
+        NoteEvent::NoteOff { timing: 72000, voice_id: None, channel: 3, note: 57, velocity: 0.0 },
+    ];
+    let out = run(&mut p, 72000, 256, &events, |_| 0.0);
+    let (none, other, own) = (rms(&out[12000..23000]), rms(&out[36000..47000]), rms(&out[60000..71000]));
+    assert!(none < 1e-4 && other < 1e-4, "silent until its own channel presses: {none} {other}");
+    assert!(own > 0.01, "pressure on the note's channel opens it: {own}");
+}
+
+#[test]
+fn stereo_comes_from_the_worker_and_splits_the_sides() {
+    let mut params = SuuParams::new(true);
+    params.stereo = BoolParam::new("Stereo", true);
+    let mut p = SuuSynth::with_params(params);
+    assert!(p.setup(FS, 256));
+    for _ in 0..300 {
+        run(&mut p, 2560, 256, &[on(0, 45)], |_| 0.0);
+        if p.core().unwrap().stereo_active() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(p.core().unwrap().stereo_active(), "the worker built the second mouth");
+    let mut differ = 0.0f32;
+    for _ in 0..40 {
+        run(&mut p, 256, 256, &[], |_| 0.0);
+        let (l, r) = (p.io().1[..256].to_vec(), &p.right()[..256]);
+        differ = l.iter().zip(r).map(|(a, b)| (a - b).abs()).fold(differ, f32::max);
+    }
+    assert!(differ > 1e-3, "left and right differ: {differ}");
 }

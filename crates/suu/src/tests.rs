@@ -982,7 +982,7 @@ fn hq_off_is_lighter_and_stable_at_every_size() {
         s.set_params(Params { gate: true, hq: false, folds: 0.5, ..Params::default() });
         s.set_size(size);
         assert!(!s.hq());
-        assert!(s.voice.m <= oversample_for(48000.0, size, true), "size {size}: no higher rate than HQ");
+        assert!(s.voice.m <= oversample_for(48000.0, size, Quality::Hq), "size {size}: no higher rate than HQ");
         let (inp, mut out) = ([0f32; 128], [0f32; 128]);
         let mut peak = 0f32;
         for b in 0..1500 {
@@ -1420,4 +1420,469 @@ fn a_note_starts_without_a_thump() {
             assert!(rise < room_db, "attack {attack}, Motion {depth}, note {k}: the low band starts {rise:+.1} dB over the held note");
         }
     }
+}
+
+#[test]
+fn lo_is_coarser_than_lean_and_stable_at_every_size() {
+    for size in [0.4, 0.5, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 4.0] {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, hq: false, lofi: true, folds: 0.5, ..Params::default() });
+        s.set_size(size);
+        assert_eq!(s.quality(), Quality::Lo);
+        assert!(s.voice.m <= oversample_for(48000.0, size, Quality::Lean), "size {size}: no higher rate than lean");
+        let (inp, mut out) = ([0f32; 128], [0f32; 128]);
+        let mut peak = 0f32;
+        for b in 0..1500 {
+            if b % 150 == 0 {
+                let v = (b / 150) as f64 / 10.0;
+                s.set_params(Params { vowel_x: v, vowel_y: 1.0 - v, morph: if b > 750 { 0.7 } else { 0.0 }, ..s.params() });
+            }
+            s.process(&inp, &mut out);
+            for v in out {
+                assert!(v.is_finite(), "size {size}: NaN");
+                peak = peak.max(v.abs());
+            }
+        }
+        assert!(peak > 0.01 && peak <= 1.0, "size {size}: peak {peak}");
+    }
+    let cells = |lofi: bool| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { hq: false, lofi, ..Params::default() });
+        s.set_size(1.0);
+        (s.voice.m, s.voice.airway.n_ph + s.voice.airway.n_or)
+    };
+    let ((m_lean, lean), (m_lo, lo)) = (cells(false), cells(true));
+    assert_eq!((m_lean, m_lo), (1, 1), "size 1: both at the output rate");
+    assert!(lo < lean, "lo {lo} cells, lean {lean}");
+}
+
+fn round_clock(round: f64) -> Suu {
+    let mut s = Suu::new(48000.0);
+    s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+    s.set_params(Params { gate: true, bpm: 120.0, text_sync: 0.5, text_round: round, ..text_params(TextStep::Clock, TextUnit::Syllable, TextSay::Hold) });
+    s.set_text("wow yeah now");
+    s
+}
+
+#[test]
+fn round_fades_each_unit_in_and_out_without_clicks() {
+    let grains = |round: f64| {
+        let mut s = round_clock(round);
+        run(&mut s, 32, 24000);
+        let mut g = Vec::new();
+        let mut out = Vec::new();
+        for _ in 0..(48000 / 32) {
+            out.extend(run(&mut s, 32, 32));
+            g.push(s.grain);
+        }
+        (g, out)
+    };
+    let (g0, out0) = grains(0.0);
+    assert!(g0.iter().all(|&g| g == 1.0), "ROUND 0 leaves the sound on");
+    let (g1, out1) = grains(1.0);
+    let min = g1.iter().cloned().fold(f64::MAX, f64::min);
+    let mean = g1.iter().sum::<f64>() / g1.len() as f64;
+    assert!(min < 0.05 && (0.35..0.65).contains(&mean), "ROUND 1: min {min:.3}, mean {mean:.3}");
+    let jump = |x: &[f32]| x.windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0f32, f32::max);
+    assert!(jump(&out1) <= 1.2 * jump(&out0) + 1e-3, "no click: {} vs {}", jump(&out1), jump(&out0));
+    assert!(peak(&out1) > 0.01, "it sounds");
+}
+
+#[test]
+fn round_is_block_size_independent() {
+    assert_eq!(run(&mut round_clock(0.6), 128, 48000), run(&mut round_clock(0.6), 37, 48000));
+}
+
+#[test]
+fn round_on_a_held_note_fades_in_and_stays() {
+    let mut s = Suu::new(48000.0);
+    s.load_dict("WOW  W AW1\nYEAH  Y AE1\n");
+    s.set_text("wow yeah");
+    s.set_params(Params { gate: true, text_round: 1.0, ..text_params(TextStep::Note, TextUnit::Syllable, TextSay::Hold) });
+    let mut g = Vec::new();
+    for _ in 0..(48000 / 32) {
+        run(&mut s, 32, 32);
+        g.push(s.grain);
+    }
+    assert!(g[0] < 0.5, "it fades in: {}", g[0]);
+    assert!(g[g.len() / 2..].iter().all(|&x| x == 1.0), "and stays while the note is held");
+}
+
+#[test]
+fn noise_levels_scale_each_turbulence_source() {
+    let energy = |frication: f64, sibilance: f64, aspiration: f64| {
+        let mut s = Suu::new(48000.0);
+        s.load_dict("SEES  S IY1 Z\nSHE  SH IY1\nHA  HH AA1\n");
+        s.set_params(Params { gate: true, source: Source::Off, frication, sibilance, aspiration, ..text_params(TextStep::Clock, TextUnit::Syllable, TextSay::Hold) });
+        s.set_text("sees she ha");
+        let out = run(&mut s, 128, 96000);
+        let g = s.voice.airway.noise_gain;
+        let b = s.noise_base;
+        assert_eq!((g.glottis, g.constriction, g.teeth), (b.glottis * aspiration, b.constriction * frication, b.teeth * sibilance));
+        out.windows(2).map(|w| ((w[1] - w[0]) as f64).powi(2)).sum::<f64>()
+    };
+    let one = energy(1.0, 1.0, 1.0);
+    let none = energy(0.0, 0.0, 0.0);
+    let more = energy(3.0, 3.0, 3.0);
+    assert!(none < 0.5 * one && more > 2.0 * one, "noise energy: none {none:.3e}, one {one:.3e}, more {more:.3e}");
+    let fric = energy(0.0, 1.0, 1.0);
+    assert!(fric < one, "frication alone lowers it: {fric:.3e} vs {one:.3e}");
+}
+
+#[test]
+fn fit_ends_a_held_note_with_its_syllable() {
+    let open_after = |fit: bool| {
+        let mut s = Suu::new(48000.0);
+        s.load_dict("WOW  W AW1\nYEAH  Y AE1\n");
+        s.set_text("wow yeah");
+        s.set_params(Params { gate: true, text_fit: fit, ..text_params(TextStep::Note, TextUnit::Syllable, TextSay::Hold) });
+        let out = run(&mut s, 128, 96000);
+        let tail = &out[72000..];
+        (s.gate_eff, (tail.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / tail.len() as f64).sqrt())
+    };
+    let ((held_open, held), (fit_open, fit)) = (open_after(false), open_after(true));
+    assert!(held_open && !fit_open, "held stays open, FIT closes");
+    assert!(held > 1e-3 && fit < 0.05 * held, "a held key sounds on {held:.2e}; FIT has released {fit:.2e}");
+}
+
+#[test]
+fn fit_on_the_clock_leaves_a_gap_after_each_word() {
+    let share = |fit: bool| {
+        let mut s = Suu::new(48000.0);
+        s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+        s.set_params(Params { gate: true, bpm: 60.0, text_sync: 1.0, text_fit: fit, ..text_params(TextStep::Clock, TextUnit::Word, TextSay::Shot) });
+        s.set_text("wow yeah now");
+        run(&mut s, 32, 24000);
+        let (mut open, mut all) = (0, 0);
+        for _ in 0..(48000 * 3 / 32) {
+            run(&mut s, 32, 32);
+            all += 1;
+            open += s.gate_eff as u32;
+        }
+        open as f64 / all as f64
+    };
+    let (free, fit) = (share(false), share(true));
+    assert!(free > 0.99 && fit > 0.1 && fit < 0.8, "open share: free {free:.2}, fit {fit:.2}");
+}
+
+#[test]
+fn air_at_its_top_stays_finite_and_bounded() {
+    let mut s = Suu::new(48000.0);
+    s.load_dict("SEES  S IY1 Z\nSHE  SH IY1\nHA  HH AA1\n");
+    s.set_params(Params { gate: true, aspiration: AIR_MAX, frication: AIR_MAX, sibilance: AIR_MAX, breath: 6.0, ..text_params(TextStep::Clock, TextUnit::Syllable, TextSay::Shot) });
+    s.set_text("sees she ha");
+    let out = run(&mut s, 128, 96000);
+    assert!(peak(&out) <= 1.0 && peak(&out) > 0.01, "peak {}", peak(&out));
+}
+
+fn notes_through_a_slide(steady_s: f64, slide_s: f64) -> Vec<f64> {
+    let fs = 48000.0;
+    let mut s = Suu::new(fs);
+    s.set_params(Params { gate: true, pitch_from: PitchFrom::InputSnap, steady_s, glide_s: 0.0, ..Params::default() });
+    let (mut inp, mut out) = ([0f32; 128], [0f32; 128]);
+    let (mut ph, mut t) = (0.0f64, 0.0f64);
+    let mut heard = Vec::new();
+    let (hold, end) = (0.4, 0.4 + slide_s + 0.4);
+    while t < end {
+        for x in inp.iter_mut() {
+            let u = clamp((t - hold) / slide_s, 0.0, 1.0);
+            let f0 = 220.0 * pow(1.5, u);
+            ph = (ph + f0 / fs) % 1.0;
+            *x = (0.3 * (2.0 * ph - 1.0)) as f32;
+            t += 1.0 / fs;
+        }
+        s.process(&inp, &mut out);
+        if let Some(n) = s.tracked_note().map(f64::round)
+            && t > 0.3
+            && heard.last() != Some(&n)
+        {
+            heard.push(n);
+        }
+    }
+    heard
+}
+
+#[test]
+fn steady_does_not_creep_through_a_slide() {
+    let heard = notes_through_a_slide(0.08, 0.15);
+    let notes: Vec<f64> = heard.iter().map(|n| n.round()).fold(Vec::new(), |mut v, n| {
+        if v.last() != Some(&n) {
+            v.push(n);
+        }
+        v
+    });
+    assert_eq!(notes.first(), Some(&57.0), "{heard:?}");
+    assert_eq!(notes.last(), Some(&64.0), "{heard:?}");
+    assert!(notes.len() <= 2, "only the two notes, none on the way: {notes:?}");
+}
+
+#[test]
+fn expression_routes_to_motion_targets_breath_and_level() {
+    let mut s = Suu::new(48000.0);
+    s.set_params(Params { gate: true, slide_to: 1, slide_depth: 0.5, pressure_to: EXPR_BREATH, pressure_depth: 0.5, ..Params::default() });
+    run(&mut s, 128, 4800);
+    let (y0, b0) = (s.eff[1], s.breath());
+    assert_eq!((y0, b0), (0.6, 1.0), "no expression, no change");
+    s.set_expression(1.0, 0.5);
+    run(&mut s, 128, 4800);
+    assert!((s.eff[1] - (0.6 + 0.25 * 1.6)).abs() < 1e-9, "slide moves vowel Y: {}", s.eff[1]);
+    assert!((s.breath() - 4.0).abs() < 1e-9, "pressure adds breath: {}", s.breath());
+    s.set_params(Params { pressure_to: EXPR_LEVEL, pressure_depth: 1.0, ..s.params() });
+    s.set_expression(0.0, 0.0);
+    let quiet = run(&mut s, 128, 9600);
+    s.set_expression(1.0, 0.0);
+    let loud = run(&mut s, 128, 9600);
+    assert!(peak(&quiet[4800..]) < 1e-6 && peak(&loud[4800..]) > 0.01, "level follows pressure: {} {}", peak(&quiet[4800..]), peak(&loud[4800..]));
+    assert_eq!(run(&mut round_clock(0.0), 37, 9600), run(&mut round_clock(0.0), 128, 9600));
+}
+
+fn stereo_run(s: &mut Suu, block: usize, n: usize) -> (Vec<f32>, Vec<f32>) {
+    let input = vec![0f32; block];
+    let (mut l, mut r) = (vec![0f32; n], vec![0f32; n]);
+    for (lo, ro) in l.chunks_mut(block).zip(r.chunks_mut(block)) {
+        let k = lo.len();
+        s.process_stereo(&input[..k], lo, ro);
+    }
+    (l, r)
+}
+
+fn with_twin(p: Params) -> Suu {
+    let mut s = Suu::new(48000.0);
+    s.set_params(Params { stereo: true, ..p });
+    let want = s.wants_twin().expect("stereo asks for a second mouth");
+    let m = Mouth::build(&s.mouth_seed(want));
+    assert!(s.set_twin(m).is_ok());
+    assert!(s.wants_twin().is_none());
+    s
+}
+
+#[test]
+fn stereo_off_is_the_mono_output_on_both_sides() {
+    let mono = run(&mut playing(), 128, 24000);
+    let (l, r) = stereo_run(&mut playing(), 128, 24000);
+    assert_eq!(l, mono);
+    assert_eq!(r, mono);
+}
+
+#[test]
+fn stereo_has_two_different_mouths_and_fades_in_without_a_click() {
+    let mut s = with_twin(Params { gate: true, ..Params::default() });
+    let (l, r) = stereo_run(&mut s, 128, 48000);
+    assert!(peak(&l) <= 1.0 && peak(&r) <= 1.0 && peak(&r) > 0.01);
+    let tail = 24000..48000;
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum::<f64>();
+    let corr = dot(&l[tail.clone()], &r[tail.clone()]) / (dot(&l[tail.clone()], &l[tail.clone()]) * dot(&r[tail.clone()], &r[tail.clone()])).sqrt();
+    assert!(corr < 0.95, "the sides differ: correlation {corr:.3}");
+    let jump = |x: &[f32]| x.windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0f32, f32::max);
+    let (_, mono_r) = stereo_run(&mut playing(), 128, 48000);
+    assert!(jump(&r) <= 1.5 * jump(&mono_r) + 1e-3, "no click: {} vs {}", jump(&r), jump(&mono_r));
+}
+
+#[test]
+fn stereo_is_block_size_independent_and_does_not_allocate() {
+    let p = Params { gate: true, folds: 0.4, ..Params::default() };
+    assert_eq!(stereo_run(&mut with_twin(p), 128, 24000), stereo_run(&mut with_twin(p), 37, 24000));
+    let mut s = with_twin(p);
+    stereo_run(&mut s, 128, 9600);
+    let (input, mut l, mut r) = ([0f32; 64], [0f32; 64], [0f32; 64]);
+    let before = alloc_count::count();
+    for i in 0..900 {
+        if i == 750 {
+            s.set_params(Params { stereo: false, ..s.params() });
+        }
+        s.process_stereo(&input, &mut l, &mut r);
+    }
+    assert_eq!(alloc_count::count() - before, 0, "stereo allocated");
+    assert!(!s.stereo_active() && s.take_retired().is_some(), "off: the second mouth is retired after its fade");
+    let (l, r) = stereo_run(&mut s, 64, 4800);
+    assert_eq!(l, r, "and the sides are one again");
+}
+
+#[test]
+fn a_host_that_builds_on_demand_builds_the_second_mouth_once() {
+    let mut s = playing();
+    let (input, mut l, mut r) = ([0f32; 128], [0f32; 128], [0f32; 128]);
+    for _ in 0..100 {
+        s.process_stereo(&input, &mut l, &mut r);
+    }
+    s.set_params(Params { stereo: true, ..s.params() });
+    let mut builds = 0;
+    let mut level = 0f32;
+    for i in 0..400 {
+        s.process_stereo(&input, &mut l, &mut r);
+        if let Some(want) = s.wants_twin() {
+            builds += 1;
+            let _ = s.set_twin(Mouth::build(&s.mouth_seed(want)));
+        }
+        let _ = s.take_retired();
+        if i > 300 {
+            level = level.max(peak(&l)).max(peak(&r));
+        }
+    }
+    assert_eq!(builds, 1, "built once");
+    assert!(level > 0.01, "still sounding: {level}");
+}
+
+
+fn band_db(x: &[f32], f0: f64) -> f64 {
+    let n = 4096;
+    let segs = x.len() / n;
+    (0..17)
+        .map(|k| {
+            let f = f0 - 200.0 + 25.0 * k as f64;
+            let w = 2.0 * PI * f / 48000.0;
+            let c = 2.0 * cos(w);
+            let mut acc = 0.0;
+            for seg in x.chunks_exact(n).take(segs) {
+                let (mut s1, mut s2) = (0.0, 0.0);
+                for (i, v) in seg.iter().enumerate() {
+                    let s0 = *v as f64 * (0.5 - 0.5 * cos(2.0 * PI * i as f64 / n as f64)) + c * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                acc += (s1 * s1 + s2 * s2 - c * s1 * s2).max(1e-30);
+            }
+            10.0 * (acc / segs as f64).log10()
+        })
+        .fold(f64::MIN, f64::max)
+}
+
+#[test]
+fn whistle_tames_a_mouth_closed_at_two_points_and_leaves_open_vowels_alone() {
+    let render = |x: f64, y: f64, whistle: f64| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, vowel_x: x, vowel_y: y, whistle, ..Params::default() });
+        run(&mut s, 128, 9600);
+        run(&mut s, 128, 4096 * 6)
+    };
+    let (ringing, tamed) = (band_db(&render(1.3, 0.0, 1.0), 5775.0), band_db(&render(1.3, 0.0, 0.0), 5775.0));
+    assert!(ringing - tamed > 10.0, "the 5.8 kHz whistle drops: {ringing:.1} → {tamed:.1} dB");
+    assert_eq!(render(0.5, 0.6, 0.0), render(0.5, 0.6, 1.0), "an open vowel is untouched");
+}
+
+#[test]
+fn move_scales_the_sound_of_the_mouth_changing_shape() {
+    let level = |move_sound: f64| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { source: Source::Off, breath: 0.0, drive_db: -40.0, move_sound, ..Params::default() });
+        for (i, st) in default_pattern().iter().enumerate() {
+            s.set_step(i, *st);
+        }
+        s.set_seq(16, 4.0, 0.4);
+        s.set_playing(true);
+        let o = run(&mut s, 128, 96000);
+        10.0 * (o[48000..].iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 48000.0 + 1e-30).log10()
+    };
+    let (off, one, more) = (level(0.0), level(1.0), level(4.0));
+    assert!(one > -70.0 && off < one - 40.0, "moving makes a sound, MOVE 0 removes it: {off:.1} vs {one:.1} dB");
+    assert!(more > one + 9.0, "MOVE 400% is louder: {more:.1} vs {one:.1} dB");
+}
+
+#[test]
+fn canon_has_the_right_mouth_one_unit_behind() {
+    let dict = "WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\nSHE  SH IY1\n";
+    let make = |canon: f64| {
+        let mut s = with_twin(Params { gate: true, bpm: 120.0, text_sync: 0.5, text_len: 0.6, stereo_spread: 1.0, stereo_vowel: 0.0, stereo_canon: canon, ..text_params(TextStep::Clock, TextUnit::Word, TextSay::Hold) });
+        s.load_dict(dict);
+        s.set_text("wow yeah now she");
+        stereo_run(&mut s, 128, 48000 * 4)
+    };
+    let bright = |x: &[f32]| -> Vec<f64> {
+        x.chunks(480)
+            .map(|c| {
+                let e = c.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() + 1e-12;
+                let d = c.windows(2).map(|w| ((w[1] - w[0]) as f64).powi(2)).sum::<f64>();
+                (d / e).sqrt()
+            })
+            .collect()
+    };
+    let corr = |a: &[f64], b: &[f64]| {
+        let (ma, mb) = (a.iter().sum::<f64>() / a.len() as f64, b.iter().sum::<f64>() / b.len() as f64);
+        let num: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        num / (a.iter().map(|x| (x - ma).powi(2)).sum::<f64>() * b.iter().map(|y| (y - mb).powi(2)).sum::<f64>()).sqrt()
+    };
+    let tick = 25;
+    let (l, r) = make(1.0);
+    let (bl, br) = (bright(&l), bright(&r));
+    let (from, to) = (200, 375);
+    let lagged = corr(&bl[from - tick..to - tick], &br[from..to]);
+    let aligned = corr(&bl[from..to], &br[from..to]);
+    assert!(lagged > 0.7 && lagged > aligned + 0.2, "right follows one word behind: lagged {lagged:.2}, aligned {aligned:.2}");
+    let (l0, r0) = make(0.0);
+    let same = corr(&bright(&l0)[from..to], &bright(&r0)[from..to]);
+    assert!(same > 0.9, "no canon: the two say the same at once ({same:.2})");
+}
+
+#[test]
+fn phase_and_mirror_make_the_right_mouth_move_and_shape_otherwise() {
+    let mut s = with_twin(Params { gate: true, stereo_phase: 0.5, stereo_mirror: true, ..Params::default() });
+    s.set_mod(0, Mod { depth: 0.6, rate_hz: 1.3, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+    let wave: Vec<f64> = (0..HORN_POINTS).map(|i| 1.0 + i as f64 * 0.2).collect();
+    s.set_profile(&wave, false);
+    for _ in 0..40 {
+        stereo_run(&mut s, 128, 1200);
+        let base = s.params().vowel_x;
+        assert!(((s.eff[0] - base) + (s.eff_twin[0] - base)).abs() < 1e-9, "half a cycle apart: {} {}", s.eff[0], s.eff_twin[0]);
+    }
+    let t = s.twin.as_ref().unwrap();
+    assert_eq!(t.airway.profile[0], s.voice.airway.profile[HORN_POINTS - 1], "the right horn is the left one turned round");
+    let (l, r) = stereo_run(&mut s, 128, 24000);
+    assert!(peak(&l) <= 1.0 && peak(&r) <= 1.0 && peak(&r) > 0.01);
+}
+
+#[test]
+fn canon_phase_and_mirror_do_not_allocate() {
+    let mut s = with_twin(Params { gate: true, stereo_canon: 2.0, stereo_phase: 0.3, stereo_mirror: true, ..text_params(TextStep::Clock, TextUnit::Syllable, TextSay::Hold) });
+    s.load_dict("WOW  W AW1\nYEAH  Y AE1\nNOW  N AW1\n");
+    s.set_text("wow yeah now wow");
+    s.set_mod(0, Mod { depth: 0.5, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+    let (input, mut l, mut r) = ([0f32; 64], [0f32; 64], [0f32; 64]);
+    for _ in 0..200 {
+        s.process_stereo(&input, &mut l, &mut r);
+    }
+    let before = alloc_count::count();
+    for i in 0..3000 {
+        if i == 1500 {
+            s.set_params(Params { text_say: TextSay::Shot, stereo_canon: 3.0, ..s.params() });
+        }
+        s.process_stereo(&input, &mut l, &mut r);
+    }
+    assert_eq!(alloc_count::count() - before, 0, "canon allocated");
+}
+
+#[test]
+fn a_changing_breath_does_not_buzz_at_the_folds_control_rate() {
+    let mut s = Suu::new(48000.0);
+    s.load_dict("WOW  W AW1\nYEAH  Y AE1\nOH  OW1\nNOW  N AW1\nWAH  W AA1\n");
+    s.set_params(Params {
+        osc_db: -59.2, drive_db: -40.0, breath: 2.8, follow: 0.68, aspiration: 0.0, frication: 0.0, sibilance: 0.0, move_sound: 0.0, release_s: 1.6,
+        text_step: TextStep::Note, text_unit: TextUnit::Word, text_say: TextSay::Shot, text_round: 0.48, text_seq: false,
+        ..Params::default()
+    });
+    s.set_size(1.37);
+    s.set_text("wow yeah oh yeah now wah wow");
+    let mut out = Vec::new();
+    for _ in 0..8 {
+        s.set_params(Params { gate: true, ..s.params() });
+        s.note_start();
+        out.extend(run(&mut s, 128, 14400));
+        s.set_params(Params { gate: false, ..s.params() });
+        out.extend(run(&mut s, 128, 4800));
+    }
+    let seg = &out[out.len() - 65536..];
+    let bin = |f: f64| {
+        let w = 2.0 * PI * f / 48000.0;
+        let c = 2.0 * cos(w);
+        let (mut s1, mut s2) = (0.0, 0.0);
+        for (i, v) in seg.iter().enumerate() {
+            let s0 = *v as f64 * (0.5 - 0.5 * cos(2.0 * PI * i as f64 / seg.len() as f64)) + c * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        10.0 * (s1 * s1 + s2 * s2 - c * s1 * s2).max(1e-30).log10()
+    };
+    let rms = 10.0 * (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64 + 1e-30).log10();
+    let (buzz, around) = (bin(750.0), (bin(700.0) + bin(800.0)) / 2.0);
+    assert!(rms < -40.0, "the near-silent preset stays near silent: {rms:.1} dB (was -26.5 with the buzz)");
+    assert!(buzz < around + 15.0, "no strong line at 750 Hz (36 dB above its surroundings with the bug): {buzz:.1} dB against {around:.1} dB beside it");
 }

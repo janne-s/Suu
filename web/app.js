@@ -27,7 +27,7 @@ const times = (v) => "×" + v.toFixed(2);
 const dbOff = (v) => (v <= -59.95 ? "off" : (v > 0 ? "+" : "") + v.toFixed(1) + " dB");
 const secsFmt = (v) => (v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s");
 const shortSecs = (v) => (v < 0.01 ? (v * 1000).toFixed(1) + "ms" : v < 1 ? (v * 1000).toFixed(0) + "ms" : v.toFixed(v < 10 ? 2 : 1) + "s");
-const INT = new Set(["coarse"]);
+const INT = new Set(["coarse", "stereoCanon"]);
 const KNOBS = {
   "k-mouth": [
     ["size", "SIZE", 0.4, 4, 1, times, "log", 18, [0.7, 1.25]],
@@ -39,6 +39,13 @@ const KNOBS = {
     ["input", "INPUT", -60, 12, 0, dbOff, null, 37],
     ["folds", "FOLDS", 0, 2, 0, pct, null, 13, [0, 1]],
     ["reson", "RESON", 0, 1, 0, (v) => (v < 0.005 ? "off" : pct(v)), null, 24],
+  ],
+  "k-air": [
+    ["aspiration", "ASPIR", 0, 10, 1, pct, "sq", 65],
+    ["frication", "FRIC", 0, 10, 1, pct, "sq", 66],
+    ["sibilance", "SIBIL", 0, 10, 1, pct, "sq", 67],
+    ["whistle", "WHISTLE", 0, 1, 1, pct, null, 78],
+    ["move", "MOVE", 0, 8, 1, pct, "sq", 79],
   ],
   "k-pitch": [
     ["glide", "GLIDE", 0, 2, 0.03, (v) => (v < 0.0005 ? "off" : v < 1 ? (v * 1000).toFixed(0) + " ms" : v.toFixed(2) + " s"), "sq", 20],
@@ -61,6 +68,13 @@ const KNOBS = {
     ["sub", "SUB", 0, 1, 0, pct, null, 15],
     ["subhz", "SUB HZ", 30, 400, 120, (v) => v.toFixed(0) + " Hz", "log", 14],
   ],
+  "k-stereo": [
+    ["stereoSpread", "SPREAD", 0.7, 1.4, 1.12, times, null, 75],
+    ["stereoVowel", "VOWEL", -0.5, 0.5, 0.12, (v) => (v > 0.005 ? "+" : "") + Math.round(v * 100) + "%", null, 76],
+    ["stereoWidth", "WIDTH", 0, 1, 1, pct, null, 77],
+    ["stereoPhase", "PHASE", 0, 1, 0, (v) => (v < 0.005 ? "off" : Math.round(v * 360) + "°"), null, 81],
+    ["stereoCanon", "CANON", 0, 16, 0, (v) => (v < 0.5 ? "off" : "+" + Math.round(v)), null, 80],
+  ],
   "k-space": [
     ["delayTime", "TIME", 0.05, 1.2, 0.45, (v) => (v * 1000).toFixed(0) + " ms", null, "space"],
     ["delayFb", "FEEDBACK", 0, 0.9, 0.35, pct, null, "space"],
@@ -75,16 +89,26 @@ const KNOBS = {
 };
 const KNOB_TIPS = {
   size: "Size\nThe mouth's size: small is bright and high, large dark and low.",
-  osc: "Osc\nThe oscillator's level into the mouth. At 0 dB as loud as Folds at 100%.",
+  osc: "Osc\nThe oscillator's level into the mouth.",
   input: "Input\nThe file's or mic's level into the mouth (in the plug-in: the track).",
-  folds: "Folds\nThe model's own vocal folds at the played note: a third source. 100% ≈ Osc at 0 dB.",
+  folds: "Folds\nThe model's own vocal folds at the played note.",
+  stereoSpread: "Spread\nThe right mouth's size against the left's.",
+  stereoVowel: "Vowel\nThe right mouth's vowel, further back (+) or front (−).",
+  stereoWidth: "Width\nHow far apart the two mouths sound. 0%: both in the middle.",
+  aspiration: "Aspiration\nThe breath noise at the folds: h and a breathy edge.",
+  frication: "Frication\nThe noise at the mouth's narrowest point: f, sh, ch.",
+  sibilance: "Sibilance\nThe noise where the air hits the teeth: s and z.",
+  move: "Move\nThe sound of the mouth changing shape: the air its moving walls push. 0%: silent moves.",
+  stereoPhase: "Phase\nThe right mouth's Motion runs this far ahead in its cycle.",
+  stereoCanon: "Canon\nThe right mouth says the text this many parts behind the left.",
+  whistle: "Whistle\nThe ringing of a mouth closed at the tongue and the lips. Lower tames it.",
   breath: "Breath\nLung pressure: the air in the consonants and the folds.",
   follow: "Follow\nHow far the breath follows the sound's level (0: steady air).",
   reson: "Reson\nA resonator tuned to the played note: gives a file or mic pitch. 0: off.",
   glide: "Glide\nHow long pitch and vowel changes take. 0: at once.",
   drive: "Drive\nLevel into the mouth.",
-  tilt: "Tilt\nDarkens the source before the mouth, as a voice's own slope does. 0: off.",
-  sub: "Sub\nThe dry source's low end, added back (a mouth radiates little bass).",
+  tilt: "Tilt\nDarkens the source before the mouth. 0: off.",
+  sub: "Sub\nAdds the dry source's low end.",
   subhz: "Sub Hz\nWhere the sub's low-pass sits.",
   delayTime: "Time\nDelay time.",
   delayFb: "Feedback\nDelay repeats.",
@@ -99,7 +123,7 @@ const KNOB_TIPS = {
   sustain: "Sustain\nThe level it holds while the note is on.",
   release: "Release\nHow long it takes to fall silent after the note ends. ♪: a note value.",
   coarse: "Tune (coarse)\nTransposes the pitch in semitones: the note's, or the input's (PITCH IN).",
-  steady: "Steady\nWith PITCH IN: a new pitch is taken only once the input has stayed on it this long, so quick changes pass by. Vibrato and slides within a note follow at once. ♪: a note value.",
+  steady: "Steady\nWith PITCH IN: a new pitch is taken once the input has stayed on it this long. Quick changes and slides between notes are skipped. ♪: a note value.",
   out: "Output\nOutput level.",
 };
 const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 }, steady: { div: "1/16", id: 55 } };
@@ -126,7 +150,7 @@ function update(key, v, final = true) {
   c.input.style.setProperty("--turn", `${270 * n}deg`);
   c.output.textContent = c.fmt(c.sync ? eff(key) : v);
   c.cell.classList.toggle("beyond", !!c.anat && (v < c.anat[0] - 1e-9 || v > c.anat[1] + 1e-9));
-  c.cell.dataset.tip = (KNOB_TIPS[key] ?? c.label) + (c.anat ? ` The anatomy spans ${c.fmt(c.anat[0])} … ${c.fmt(c.anat[1])}; beyond is allowed.` : "");
+  c.cell.dataset.tip = KNOB_TIPS[key] ?? c.label;
   if (c.target === "space") setSpace();
   else if (c.target === 18) {
     const now = performance.now();
@@ -189,6 +213,7 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
     box.setAttribute("aria-label", `${label} as a note value`);
     box.innerHTML = DIVS.filter((d) => d[1] <= 4).map(([n]) => `<option>${n}</option>`).join("");
     input.after(box);
+    cell.classList.add("syncable");
     cell.append(btn);
     if (key === "glide") {
       const dir = document.createElement("button");
@@ -410,6 +435,7 @@ function sendHorn() {
 }
 const hornU = (i) => i / (hornWrap ? HORN_POINTS : HORN_POINTS - 1);
 let rndSteps = [];
+const RND_STEPS = 8;
 let snapVals = [];
 let drawn = { mean: 3, w: new Array(HORN_POINTS).fill(0) };
 function captureDrawn() {
@@ -427,11 +453,11 @@ function buildWave(newRandom = false) {
     });
     return sendHorn();
   }
-  if (newRandom || rndSteps.length !== cycles) rndSteps = Array.from({ length: cycles }, () => Math.random() * 2 - 1);
+  if (newRandom || rndSteps.length !== RND_STEPS) rndSteps = Array.from({ length: RND_STEPS }, () => Math.random() * 2 - 1);
   const steps = rndSteps;
   horn = Float32Array.from({ length: HORN_POINTS }, (_, i) => {
     const ph = (cycles * i) / HORN_POINTS, f = ph % 1;
-    const w = [Math.sin(2 * Math.PI * ph), 1 - 4 * Math.abs(f - 0.5), 2 * f - 1, f < 0.5 ? 1 : -1, steps[Math.floor(ph)], snapVals[Math.floor(f * HORN_POINTS)] ?? 0][shape];
+    const w = [Math.sin(2 * Math.PI * ph), 1 - 4 * Math.abs(f - 0.5), 2 * f - 1, f < 0.5 ? 1 : -1, steps[Math.floor(f * RND_STEPS)], snapVals[Math.floor(f * HORN_POINTS)] ?? 0][shape];
     return clamp(3 * (1 + depth * w), 0, HORN_MAX);
   });
   hornWrap = true;
@@ -849,7 +875,7 @@ async function boot() {
   analyser.fftSize = 2048;
   fx.master.connect(analyser);
   analyser.connect(ctx.destination);
-  window.__suu = { ctx, analyser };
+  window.__suu = { ctx, analyser, node };
   pushAll();
   setOsc(oscWave);
   await setInput(inputKind);
@@ -868,11 +894,18 @@ function status(t, keep = false) {
   if (!keep) statusTimer = setTimeout(() => el.classList.add("fade"), 4000);
 }
 
+let lastSyllables = 0;
+function countUnits() {
+  textUnits = lastSyllables > 0 ? (tx.unit === 1 ? ($("text").value.match(/[A-Za-z']+/g) ?? []).length : lastSyllables) : 0;
+  setCanonRange();
+}
 function onWorklet(m) {
   if (m.type === "dict") status("ready");
   else if (m.type === "snapshot") onSnapshot(m.values);
   else if (m.type === "text") {
     textOn = m.syllables > 0;
+    lastSyllables = m.syllables;
+    countUnits();
     $("text-toggle").textContent = textOn ? `TEXT · ${m.syllables}` : "TEXT";
     playLabel($("singtext"), textOn, "SING");
     $("singtext").setAttribute("aria-pressed", String(textOn));
@@ -902,6 +935,9 @@ function pushAll() {
   send(44, vowelIn ? 1 : 0);
   send(52, legato ? 1 : 0);
   send(56, hq ? 1 : 0);
+  send(68, lofi ? 1 : 0);
+  send(74, stereoOn ? 1 : 0);
+  send(82, stereoMirror ? 1 : 0);
   send(57, grid ? divBeats(grid) : 0);
   send(61, gridBreath);
   send(62, gridSmooth);
@@ -970,6 +1006,27 @@ function setSpace() {
   fx.dmix.gain.setTargetAtTime(on ? state.delayMix : 0, t, 0.02);
   fx.rmix.gain.setTargetAtTime(on ? state.revMix : 0, t, 0.02);
   if (Math.abs(fx.irLen - state.revSize) > 0.05) makeIR(state.revSize);
+}
+let stereoOn = false;
+function setStereo(on) {
+  stereoOn = on;
+  $("stereoon").setAttribute("aria-pressed", String(on));
+  $("stereoon").textContent = on ? "ON" : "OFF";
+  send(74, on ? 1 : 0);
+}
+$("stereoon").onclick = () => setStereo(!stereoOn);
+let stereoMirror = false;
+function setMirror(on) {
+  stereoMirror = on;
+  $("stereomirror").setAttribute("aria-pressed", String(on));
+  send(82, on ? 1 : 0);
+}
+$("stereomirror").onclick = () => setMirror(!stereoMirror);
+let textUnits = 0;
+function setCanonRange() {
+  const c = controls.get("stereoCanon");
+  c.max = textUnits > 1 ? textUnits - 1 : 16;
+  update("stereoCanon", state.stereoCanon);
 }
 let spaceOn = true;
 $("spaceon").onclick = () => {
@@ -1139,6 +1196,67 @@ $("pitch-more").onclick = (e) => {
 addEventListener("pointerdown", (e) => {
   if (!$("pitch-panel").hidden && !$("pitch-panel").contains(e.target) && e.target !== $("pitch-more")) showPitchPanel(false);
 });
+const EXPR_TARGETS = ["OFF", "VOWEL X", "VOWEL Y", "ROUND", "NASAL", "INJECT", "DAMPING", "MORPH", "SHIFT", "OPEN", "BREATH", "LEVEL"];
+const mpe = { pressureTo: 9, pressureDepth: 0.5, slideTo: 1, slideDepth: 0.5, bend: 2 };
+for (const id of ["mpe-pressure-to", "mpe-slide-to"]) $(id).innerHTML = EXPR_TARGETS.map((n, i) => `<option value="${i - 1}">${n}</option>`).join("");
+function showMpe() {
+  $("mpe-pressure-to").value = String(mpe.pressureTo);
+  $("mpe-slide-to").value = String(mpe.slideTo);
+  $("mpe-pressure-depth").textContent = Math.round(mpe.pressureDepth * 100) + "%";
+  $("mpe-slide-depth").textContent = Math.round(mpe.slideDepth * 100) + "%";
+  $("mpe-bend").textContent = "±" + mpe.bend + " st";
+  send(70, mpe.pressureTo);
+  send(71, mpe.pressureDepth);
+  send(72, mpe.slideTo);
+  send(73, mpe.slideDepth);
+}
+$("mpe-pressure-to").onchange = () => ((mpe.pressureTo = +$("mpe-pressure-to").value), showMpe());
+$("mpe-slide-to").onchange = () => ((mpe.slideTo = +$("mpe-slide-to").value), showMpe());
+for (const [id, key] of [["mpe-pressure-depth", "pressureDepth"], ["mpe-slide-depth", "slideDepth"]]) {
+  dragValue($(id), () => (mpe[key] + 1) / 2, (v) => ((mpe[key] = Math.round(clamp(v * 2 - 1, -1, 1) * 100) / 100), showMpe()), 1 / 200);
+  $(id).ondblclick = () => ((mpe[key] = 0), showMpe());
+}
+dragValue($("mpe-bend"), () => mpe.bend / 48, (v) => ((mpe.bend = Math.round(clamp(v, 0, 1) * 48)), showMpe()), 1 / 240);
+$("mpe-bend").ondblclick = () => ((mpe.bend = 48), showMpe());
+function showMpePanel(open) {
+  const panel = $("mpe-panel");
+  panel.hidden = !open;
+  if (open) {
+    const r = $("mpe-toggle").getBoundingClientRect();
+    const box = panel.offsetParent.getBoundingClientRect();
+    panel.style.left = Math.max(8, Math.min(r.left, innerWidth - panel.offsetWidth - 8)) - box.left + "px";
+    panel.style.top = r.bottom - box.top + 4 + "px";
+  }
+  $("mpe-toggle").setAttribute("aria-expanded", String(open));
+}
+$("mpe-toggle").onclick = (e) => {
+  e.stopPropagation();
+  showMpePanel($("mpe-panel").hidden);
+};
+addEventListener("pointerdown", (e) => {
+  if (!$("mpe-panel").hidden && !$("mpe-panel").contains(e.target) && !$("mpe-toggle").contains(e.target)) showMpePanel(false);
+});
+addEventListener("keydown", (e) => e.key === "Escape" && showMpePanel(false));
+showMpe();
+function showPresetPanel(open) {
+  const panel = $("preset-panel");
+  panel.hidden = !open;
+  if (open) {
+    const r = $("preset-toggle").getBoundingClientRect();
+    const box = panel.offsetParent.getBoundingClientRect();
+    panel.style.left = Math.max(8, Math.min(r.left, innerWidth - panel.offsetWidth - 8)) - box.left + "px";
+    panel.style.top = r.bottom - box.top + 4 + "px";
+  }
+  $("preset-toggle").setAttribute("aria-expanded", String(open));
+}
+$("preset-toggle").onclick = (e) => {
+  e.stopPropagation();
+  showPresetPanel($("preset-panel").hidden);
+};
+addEventListener("pointerdown", (e) => {
+  if (!$("preset-panel").hidden && !$("preset-panel").contains(e.target) && !$("preset-toggle").contains(e.target)) showPresetPanel(false);
+});
+addEventListener("keydown", (e) => e.key === "Escape" && showPresetPanel(false));
 let grid = null;
 $("grid").add(new Option("FREE", ""));
 for (const [n] of DIVS) $("grid").add(new Option(n, n));
@@ -1163,13 +1281,18 @@ $("gridbreath").ondblclick = () => setGridMore(1, gridSmooth);
 $("gridsmooth").ondblclick = () => setGridMore(gridBreath, 0);
 setGridMore(1, 0);
 $("grid").onchange = () => setGrid($("grid").value);
-let hq = true;
-function setHq(on) {
-  hq = on;
-  $("hq").setAttribute("aria-pressed", String(on));
-  send(56, on ? 1 : 0);
+let hq = true, lofi = false;
+const QUALITY = ["HQ", "LEAN", "LO"];
+function setQuality(q) {
+  hq = q === 0;
+  lofi = q === 2;
+  $("hq").textContent = QUALITY[q];
+  $("hq").setAttribute("aria-pressed", String(q !== 1));
+  send(56, hq ? 1 : 0);
+  send(68, lofi ? 1 : 0);
 }
-$("hq").onclick = () => setHq(!hq);
+const quality = () => (hq ? 0 : lofi ? 2 : 1);
+$("hq").onclick = () => setQuality((quality() + 1) % 3);
 let vowelIn = false;
 function setVowelIn(on) {
   vowelIn = on;
@@ -1435,7 +1558,7 @@ function intField(el, lo, hi) {
 }
 
 // ---------------------------------------------------------------- text
-const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1, grid: null, resetNote: -1, restartPlay: false };
+const tx = { step: 0, unit: 0, say: 0, len: 1, rate: 2, sync: "1/4", seq: true, once: false, speech: 1, gate: 1, round: 0, fit: false, grid: null, resetNote: -1, restartPlay: false };
 $("textresetoff").onclick = () => {
   tx.resetNote = -1;
   sendText(false);
@@ -1501,6 +1624,11 @@ function sendText(final = true) {
   send(30, tx.once ? 1 : 0);
   send(29, tx.speech);
   send(38, tx.gate);
+  send(64, tx.round);
+  send(69, tx.fit ? 1 : 0);
+  $("textround").textContent = Math.round(tx.round * 100) + "%";
+  $("textround").classList.toggle("on", tx.round > 0);
+  $("textfit").setAttribute("aria-pressed", String(tx.fit));
   send(63, tx.grid === "GRID" ? -1 : tx.grid ? divBeats(tx.grid) : 0);
   $("textgrid").value = tx.grid ?? "";
   $("textreset").textContent = tx.resetNote < 0 ? "off" : String(tx.resetNote);
@@ -1525,6 +1653,7 @@ function sendText(final = true) {
   $("loopsync").setAttribute("aria-pressed", String(!!tx.sync));
   $("speech").textContent = "×" + tx.speech.toFixed(2);
   $("speech").classList.toggle("on", tx.speech !== 1);
+  countUnits();
   if (final && textOn) sing($("text").value);
 }
 for (const [attr, key, bool] of [["data-tstep", "step"], ["data-tunit", "unit"], ["data-tsay", "say"], ["data-tseq", "seq", true], ["data-tonce", "once", true]]) {
@@ -1573,6 +1702,18 @@ $("textgate").ondblclick = () => {
   tx.gate = 1;
   sendText(false);
 };
+dragValue($("textround"), () => tx.round, (v) => {
+  tx.round = Math.round(clamp(v, 0, 1) * 100) / 100;
+  sendText(false);
+}, 1 / 150);
+$("textround").ondblclick = () => {
+  tx.round = 0;
+  sendText(false);
+};
+$("textfit").onclick = () => {
+  tx.fit = !tx.fit;
+  sendText(false);
+};
 sendText(false);
 
 // ---------------------------------------------------------------- focus
@@ -1614,6 +1755,8 @@ function getState() {
     legato,
     vowelIn,
     hq,
+    lofi,
+    mpe: { ...mpe },
     grid,
     gridBreath,
     gridSmooth,
@@ -1621,6 +1764,8 @@ function getState() {
     jump,
     jumpFold,
     space: spaceOn,
+    stereo: stereoOn,
+    stereoMirror,
     knobs,
     motion,
     seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
@@ -1657,6 +1802,13 @@ function readState(raw) {
     legato: bool(r.legato, d.legato),
     vowelIn: bool(r.vowelIn, d.vowelIn),
     hq: bool(r.hq, d.hq),
+    lofi: bool(r.lofi, d.lofi),
+    stereo: bool(r.stereo, d.stereo),
+    stereoMirror: bool(r.stereoMirror, d.stereoMirror),
+    mpe: (() => {
+      const m = obj(r.mpe, "mpe"), to = (x, dv) => (Number.isInteger(x) && x >= -1 && x <= 10 ? x : dv);
+      return { pressureTo: to(m.pressureTo, d.mpe.pressureTo), pressureDepth: num(m.pressureDepth, d.mpe.pressureDepth, -1, 1), slideTo: to(m.slideTo, d.mpe.slideTo), slideDepth: num(m.slideDepth, d.mpe.slideDepth, -1, 1), bend: Math.round(num(m.bend, d.mpe.bend, 0, 48)) };
+    })(),
     grid: div(r.grid, d.grid),
     gridBreath: num(r.gridBreath, d.gridBreath, 0, 1),
     gridSmooth: num(r.gridSmooth, d.gridSmooth, 0, 1),
@@ -1724,6 +1876,8 @@ function readState(raw) {
     once: bool(text.once, d.text.once),
     speech: num(text.speech, d.text.speech, 0.25, 4),
     gate: num(text.gate, d.text.gate, 0.05, 1),
+    round: num(text.round, d.text.round, 0, 1),
+    fit: bool(text.fit, d.text.fit),
     grid: text.grid === "GRID" ? "GRID" : div(text.grid, d.text.grid),
     resetNote: Math.round(num(text.resetNote, d.text.resetNote, -1, 127)),
     restartPlay: bool(text.restartPlay, d.text.restartPlay),
@@ -1741,7 +1895,11 @@ function applyState(st) {
   setPitchFrom(st.pitchFrom);
   setLegato(st.legato);
   setVowelIn(st.vowelIn);
-  setHq(st.hq);
+  setQuality(st.hq ? 0 : st.lofi ? 2 : 1);
+  Object.assign(mpe, st.mpe);
+  setStereo(st.stereo);
+  setMirror(st.stereoMirror);
+  showMpe();
   setGrid(st.grid);
   setGridMore(st.gridBreath, st.gridSmooth);
   setScale(st.scale);
@@ -1815,6 +1973,7 @@ function save() {
 function showSlots() {
   for (const k of ["A", "B"]) $("slot" + k).setAttribute("aria-pressed", String(slots.active === k));
   const other = slots.active === "A" ? "B" : "A";
+  $("preset-slot").textContent = " " + slots.active;
   $("copyab").textContent = `${slots.active}→${other}`;
   $("copyab").dataset.tip = `Copy ${slots.active} → ${other}\nThis side's settings onto the other.`;
 }
@@ -1919,7 +2078,7 @@ const TIPS = {
   '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. The folder beside it, or a drop anywhere, loads another.",
   "#pickfile": "Choose file\nLoad an audio file (or drop one anywhere).",
   '[data-in="mic"]': "Mic\nThe microphone, mixed with the oscillator. Use headphones.",
-  "#envgate": "Env\nThe input's own level opens the sound (see GATE: threshold and release). Each onset says the text's next part.",
+  "#envgate": "Env\nThe input's level opens the sound. Each onset says the text's next part.",
   "#hold": "Hold\nKeeps the note on: a drone, or a file or mic passing through. Keys then say the text's next part.",
   "#octdown": "Octave down (Z)",
   "#octup": "Octave up (X)",
@@ -1928,23 +2087,34 @@ const TIPS = {
   "#pitch-more": "Scale and jump\nThe input's pitch (PITCH IN): which notes IN ♮ snaps to, and how far it may jump.",
   "#scale-notes button": "Note\nIN ♮ snaps the input's pitch to the notes lit. The presets build a scale on the root.",
   "#jump": "Widest jump\nHow far the input's pitch may move at once, in semitones (any: no limit). Drag; double-click for any.",
-  "[data-jump='1']": "Fold\nA wider jump moves by octaves to the nearest the pitch it was.",
+  "[data-jump='1']": "Fold\nA wider jump is moved by octaves next to the current pitch.",
   "[data-jump='0']": "Skip\nA wider jump is left out: the pitch stays.",
-  "#grid": "Grid (modulation)\nThe mouth's own movement on this note value's lines, on the host's bars while it plays: the pad, Motion, the input's vowel and pitch, step vowels, the horn. A played note sounds at once. The text has its own grid. FREE: as it comes.",
+  "#grid": "Grid (modulation)\nThe mouth moves only on this note value's lines: the pad, Motion, the input's vowel and pitch, step vowels, the horn. FREE: as it comes.",
   "#gridsmooth": "Smooth\nBoth grids: 0% a step on each line; up to 100% each move glides over the line.",
-  "#textreset": "Reset note\nThe MIDI note (its number) that starts the text over from its beginning; it does not sound. Set it with LEARN; put it in a clip where the text should start.",
+  "#textreset": "Reset note\nThis MIDI note starts the text over and does not sound. Set it with LEARN.",
   "#textresetoff": "No reset note",
-  "#textlearn": "Learn\nPress, then play the reset note (or let the clip play it): that note becomes the reset note, whatever the host calls it.",
+  "#textlearn": "Learn\nPress, then play a note: it becomes the reset note.",
   "#textplay": "On play\nThe text starts over when the host's transport starts.",
-  "#textgrid": "Grid (text)\nThe speech on this note value's lines: what it asks of the mouth held line to line (a stepped, robotic voice), and with STEP NOTE each part starting on a line. GRID: the modulation's. FREE: as it comes.",
-  "#gridbreath": "Breath\nHow far the text's breath and voicing (where it breathes, where the folds open and close) follow its grid. 0%: as they come.",
-  "#hq": "HQ\nThe airway at full rate and resolution. Off: a lean one, two to three times lighter on the CPU, with a slightly different top end. Switching rebuilds the mouth.",
+  "#textgrid": "Grid (text)\nThe speech moves only on this note value's lines, for a stepped, robotic voice. With STEP NOTE each part starts on a line. GRID: the modulation's. FREE: as it comes.",
+  "#gridbreath": "Breath\nHow far the text's breath and voicing follow its grid. 0%: as they come.",
+  "#hq": "Quality\nHQ: full detail. LEAN: lighter on the CPU. LO: coarser and duller, lightest. Click to step through.",
+  "#textround": "Round\nFades each spoken part in and out. 0%: the sound stays on. Double-click: 0%.",
+  "#textfit": "Fit\nEach note lasts as long as its syllable or word, even with the key held. On the clock the gaps between parts are silent.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",
-  "#vowelin": "In\nThe input's vowel places the pad, as a talk box does: sing or speak into it. Motion moves around it; held through consonants and quiet.",
-  "#pitchfrom": "Pitch\nNOTE: the root and the keys. IN: the input's own pitch, as it moves; IN ♮ snaps it to semitones. The resonator, the folds, the oscillator and the sequence follow it; the note fields show it.",
+  "#vowelin": "In\nThe input's vowel sets the pad: sing or speak into it. Motion moves around it.",
+  "#pitchfrom": "Pitch\nNOTE: the root and the keys. IN: the input's own pitch. IN ♮: the input's pitch snapped to the scale.",
   "#slotA": "A\nOne of two full settings to compare; switching keeps the other.",
   "#slotB": "B\nOne of two full settings to compare; switching keeps the other.",
   "#init": "Init\nThis side back to the initial settings.",
+  "#stereomirror": "Mirror\nThe right mouth's horn turned round, lips to throat.",
+  "#stereoon": "Stereo\nA second mouth on the right. Twice the CPU.",
+  "#mpe-toggle": "MPE\nWhat a key's pressure and slide move, and the pitch bend range.",
+  "#mpe-pressure-to": "Pressure\nWhat pressing into the key moves.",
+  "#mpe-slide-to": "Slide\nWhat sliding up and down the key moves.",
+  "#mpe-pressure-depth": "Depth\nHow far pressure moves it; negative turns it the other way. Double-click: 0%.",
+  "#mpe-slide-depth": "Depth\nHow far slide moves it; negative turns it the other way. Double-click: 0%.",
+  "#mpe-bend": "Bend\nPitch bend range in semitones. Double-click: ±48 (MPE).",
+  "#preset-toggle": "Preset\nA and B to compare, INIT, and preset files.",
   "#savefile": "Save\nThe settings as a preset file.",
   "#openfile": "Open\nA preset file (or drop one anywhere).",
   "#bpm": "Tempo\nFor the sequencer, the text clock and every ♪.",
@@ -1992,7 +2162,7 @@ cells.forEach((c) => {
   c.vowel.dataset.tip = "Vowel\nClick: the vowel this step moves the mouth to (· leaves it).";
 });
 function mouthTip() {
-  mouthEl.dataset.tip = view === "horn" ? "Horn\nThe tract, throat to lips, as it sounds now. Drag to draw; double-click: the original." : "Vowel pad\nDrag: front to back, close to open. Past the dashed box goes beyond the vowels.";
+  mouthEl.dataset.tip = view === "horn" ? "Horn\nThe tract, throat to lips, as it sounds now. Drag to draw; double-click: the original." : "Vowel pad\nDrag: front to back, close to open.";
 }
 mouthTip();
 for (const id of ["view-pad", "view-horn"]) $(id).addEventListener("click", mouthTip);
@@ -2061,7 +2231,7 @@ const PMAP = [];
     else st.knobs[key] = v;
   });
   add("wave", (st) => st.source, (st, v) => (st.source = Math.round(v)));
-  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["coarse", "coarse"], ["steady", "steady"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"]]) knob(id, key);
+  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["coarse", "coarse"], ["steady", "steady"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"], ["aspiration", "aspiration"], ["frication", "frication"], ["sibilance", "sibilance"], ["whistle", "whistle"], ["stereo_spread", "stereoSpread"], ["stereo_vowel", "stereoVowel"], ["stereo_width", "stereoWidth"], ["move", "move"], ["stereo_canon", "stereoCanon"], ["stereo_phase", "stereoPhase"]]) knob(id, key);
   add("glide_sync", (st) => (typeof st.knobs.glide === "object" ? divIndex(st.knobs.glide.sync) : 0), (st, v) => {
     const val = knobVal(st.knobs.glide);
     st.knobs.glide = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
@@ -2074,6 +2244,14 @@ const PMAP = [];
   add("legato", (st) => +st.legato, (st, v) => (st.legato = v > 0.5));
   add("vowel_in", (st) => +st.vowelIn, (st, v) => (st.vowelIn = v > 0.5));
   add("hq", (st) => +st.hq, (st, v) => (st.hq = v > 0.5));
+  add("lofi", (st) => +st.lofi, (st, v) => (st.lofi = v > 0.5));
+  add("stereo", (st) => +st.stereo, (st, v) => (st.stereo = v > 0.5));
+  add("stereo_mirror", (st) => +st.stereoMirror, (st, v) => (st.stereoMirror = v > 0.5));
+  add("pressure_to", (st) => st.mpe.pressureTo + 1, (st, v) => (st.mpe.pressureTo = Math.round(v) - 1));
+  add("pressure_depth", (st) => st.mpe.pressureDepth, (st, v) => (st.mpe.pressureDepth = v));
+  add("slide_to", (st) => st.mpe.slideTo + 1, (st, v) => (st.mpe.slideTo = Math.round(v) - 1));
+  add("slide_depth", (st) => st.mpe.slideDepth, (st, v) => (st.mpe.slideDepth = v));
+  add("bend_range", (st) => st.mpe.bend, (st, v) => (st.mpe.bend = Math.round(v)));
   add("grid", (st) => divIndex(st.grid), (st, v) => (st.grid = PDIVS[Math.round(v)]));
   add("grid_breath", (st) => st.gridBreath, (st, v) => (st.gridBreath = v));
   add("grid_smooth", (st) => st.gridSmooth, (st, v) => (st.gridSmooth = v));
@@ -2102,6 +2280,8 @@ const PMAP = [];
   text("text_sync", "sync", "sync");
   text("text_len", "len");
   text("text_gate", "gate");
+  text("text_round", "round");
+  text("text_fit", "fit", "bool");
   text("text_seq", "seq", "bool");
   text("text_once", "once", "bool");
   text("speech", "speech");
