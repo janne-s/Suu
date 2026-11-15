@@ -2,10 +2,10 @@
 
 Suu is a talking filter: any sound through a simulated human vocal tract.
 Shape the mouth on a vowel pad, set it moving, type words for it to sing, or
-sequence vowels and notes. A browser app now; VST3 and CLAP plug-ins are in
-progress.
+sequence vowels and notes. In the browser, and as a VST3 and CLAP plug-in.
 
-See it live: [**https://janne-s.github.io/Suu/**](https://janne-s.github.io/Suu/)
+See it live: [**https://janne-s.github.io/Suu/**](https://janne-s.github.io/Suu/) ·
+Plug-in: [**Releases**](https://github.com/janne-s/Suu/releases)
 
 ![Suu interface](web/assets/screenshot.jpg)
 
@@ -61,6 +61,21 @@ Keys **A W S E D F T G Y H U J K** play, **Z X** change octave, **Space**
 plays the sequencer, **Esc** releases all notes. Settings are kept in the
 browser with A/B and Init. Save and Open write and read preset files.
 
+## Install the plug-in
+
+macOS 11 or later, Apple silicon. Two plug-ins: **Suu** (an effect: the
+track through the mouth, MIDI from another track) and **Suu Synth** (an
+instrument: the oscillator through the mouth, a sidechain as input).
+
+Unzip the release and copy the `.vst3` files to `~/Library/Audio/Plug-Ins/VST3/`
+(and the `.clap` files to `~/Library/Audio/Plug-Ins/CLAP/`). The build is not
+notarized, so clear the quarantine once (the second line for CLAP):
+
+```sh
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/Suu*.vst3
+xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/CLAP/Suu*.clap
+```
+
 ## Run
 
 Rust with the `wasm32-unknown-unknown` target, and Bun (only for the local
@@ -93,8 +108,8 @@ bun run e2e        # headless Chrome, with bun run web running
 
 ## Limits
 
-English text only. Mono. Tested in Chrome and Safari. The plug-in builds and
-runs in Ableton Live but is not released yet.
+English text only. Mono. The page is tested in Chrome and Safari, the
+plug-in in Ableton Live on macOS (Apple silicon only for now).
 
 ## Credits
 
