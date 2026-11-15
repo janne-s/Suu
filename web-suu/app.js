@@ -1239,7 +1239,8 @@ function shiftOctave(d) {
   note(lastNote + 12 * d);
   for (const [i, m] of down) down.set(i, m + 12 * d);
 }
-const typing = (e) => e.target.tagName === "SELECT" || (e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "number"));
+// a list is not typing: its keys are still the notes (see the keydown below)
+const typing = (e) => e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "number");
 /** Every key up: on blur, a hidden tab, Escape, or Cmd released (macOS sends no keyup for keys
  *  released while Cmd is down, which left notes sounding). */
 function allKeysUp() {
@@ -1252,6 +1253,9 @@ addEventListener("keydown", async (e) => {
   if (inPlugin) return; // keys belong to the host (its computer keyboard, its shortcuts)
   if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   const key = e.key.toLowerCase();
+  // on a focused list, the keys the page plays do not pick from it (a note key picked the
+  // option of its letter; the keys played nothing while the list kept the focus)
+  if (e.target.tagName === "SELECT" && (KEYS.includes(key) || key === "z" || key === "x" || e.code === "Space")) e.preventDefault();
   if (e.code === "Space") {
     e.preventDefault();
     if (!e.repeat) {
@@ -1287,6 +1291,10 @@ addEventListener("keyup", (e) => {
   gate();
 });
 addEventListener("blur", allKeysUp);
+// a list's menu takes the keys while it is open: a held key's keyup never came, and the note
+// stayed on. Opening one lets go of the keys; a pick gives the focus back to the page.
+addEventListener("pointerdown", (e) => e.target.tagName === "SELECT" && allKeysUp(), true);
+addEventListener("change", (e) => e.target.tagName === "SELECT" && e.target.blur(), true);
 document.addEventListener("visibilitychange", () => document.hidden && allKeysUp());
 function setHold(on) {
   held = on;

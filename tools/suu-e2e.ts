@@ -57,6 +57,29 @@ await page.evaluate(() => dispatchEvent(new KeyboardEvent("keydown", { key: "Met
 await page.evaluate(() => dispatchEvent(new KeyboardEvent("keyup", { key: "Meta", code: "MetaLeft" })));
 await page.waitForTimeout(600); db = await peakDb(); ok("Cmd release frees a key whose keyup was lost", db < -60, `${db.toFixed(1)} dB`);
 await page.keyboard.up("s");
+// stuck note 3: a list opened while a key is held (its menu takes the keyup), then picked from;
+// the list kept the focus, so the keys were its own (they picked options) and played nothing
+{
+  const sel = page.locator(".motion-row select.shape").first();
+  const before = await sel.inputValue();
+  await page.keyboard.down("d"); await page.waitForTimeout(300);
+  // the menu opening: the pointer on the list (the keyup that follows never reaches the page)
+  await sel.dispatchEvent("pointerdown");
+  await sel.focus();
+  await page.waitForTimeout(600); db = await peakDb();
+  ok("opening a list frees a held key", db < -60, `${db.toFixed(1)} dB`);
+  await page.keyboard.down("a"); await page.keyboard.up("a");
+  ok("a note key on a focused list picks nothing", (await sel.inputValue()) === before, `${before} → ${await sel.inputValue()}`);
+  await sel.selectOption("1");
+  ok("the pick lands", (await sel.inputValue()) === "1");
+  await page.keyboard.up("d"); await page.waitForTimeout(600);
+  await page.keyboard.down("f"); await page.waitForTimeout(400); db = await peakDb();
+  ok("keys play after a pick", db > -40, `${db.toFixed(1)} dB`);
+  await page.keyboard.up("f"); await page.waitForTimeout(600); db = await peakDb();
+  ok("and stop", db < -60, `${db.toFixed(1)} dB`);
+  await sel.selectOption(before);
+  await page.waitForTimeout(600);
+}
 // a file (the oscillator off, so only it sounds): hold opens it at once, keys gate it without
 // hold; turned off, the file leaves hold as the player set it
 {
