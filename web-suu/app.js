@@ -1463,6 +1463,33 @@ function showSeq(isPlaying, step) {
   shownStep = s;
 }
 for (const id of ["rate", "seqlen"]) $(id).onchange = sendSeq;
+intField($("seqlen"), 1, 16);
+intField($("bpm"), 30, 300);
+
+// A whole-number field: what is typed is shown as it is used (rounded, within lo … hi), and the
+// wheel steps it by 1 (a trackpad's small deltas add up to a step). Both go through `onchange`.
+function intField(el, lo, hi) {
+  const set = (v) => {
+    const n = String(clamp(Math.round(v), lo, hi));
+    if (el.value !== n) el.value = n;
+  };
+  el.addEventListener("change", () => set(+el.value || lo), { capture: true });
+  let acc = 0;
+  el.addEventListener("wheel", (e) => {
+    if (el.readOnly || el.disabled) return;
+    e.preventDefault();
+    const d = e.deltaMode === 0 ? e.deltaY / 40 : Math.sign(e.deltaY);
+    if (d * acc < 0) acc = 0; // turned the other way: start afresh
+    acc += d;
+    const n = Math.trunc(acc);
+    if (!n) return;
+    acc -= n;
+    const before = el.value;
+    set((+el.value || lo) - n);
+    if (el.value !== before) el.dispatchEvent(new Event("change"));
+    else acc = 0; // at the end: nothing left over to spend on the way back
+  }, { passive: false });
+}
 
 // ---------------------------------------------------------------- text
 // What moves the text on (note or its own clock), what it says at a time (syllable or word),

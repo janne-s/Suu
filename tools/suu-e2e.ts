@@ -276,6 +276,29 @@ await page.click("#view-pad");
   const bare = await page.evaluate(() => [...document.querySelectorAll("button, select, input, .field.drag, .knob")].filter((el) => (el as HTMLElement).offsetParent && !el.closest("[data-tip]") && !el.closest(".popover")).map((el) => el.id || el.className || el.tagName));
   ok("every visible control has a tip", bare.length === 0, JSON.stringify(bare));
 }
+// STEPS and BPM: a typed number is shown as it is used; the wheel steps STEPS by 1, within 1 … 16
+{
+  await page.fill("#seqlen", "20");
+  await page.press("#seqlen", "Enter");
+  ok("STEPS typed 20 shows 16", (await page.inputValue("#seqlen")) === "16", await page.inputValue("#seqlen"));
+  const sl = await page.locator("#seqlen").boundingBox();
+  await page.mouse.move(sl!.x + sl!.width / 2, sl!.y + sl!.height / 2);
+  await page.mouse.wheel(0, -100);
+  await page.waitForTimeout(50);
+  const up = await page.inputValue("#seqlen");
+  await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(50);
+  const down = await page.inputValue("#seqlen");
+  ok("STEPS wheel stays at 16 up, 3 steps down for 120 px", up === "16" && down === "13", `${up} ${down}`);
+  await page.fill("#seqlen", "0");
+  await page.press("#seqlen", "Enter");
+  ok("STEPS typed 0 shows 1", (await page.inputValue("#seqlen")) === "1");
+  await page.fill("#seqlen", "16");
+  await page.press("#seqlen", "Enter");
+  await page.fill("#bpm", "500");
+  await page.press("#bpm", "Enter");
+  ok("BPM typed 500 shows 300", (await page.inputValue("#bpm")) === "300", await page.inputValue("#bpm"));
+}
 // INIT: this side back to the initial settings
 await page.click("#init");
 ok("INIT restores the defaults", (await page.inputValue("#bpm")) === "100" && (await page.textContent("#seqgate")) === "100%");
