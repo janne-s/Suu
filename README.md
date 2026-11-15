@@ -19,9 +19,12 @@ purpose.
 
 ## Mouth
 
-- **Vowel pad**: drag the mouth.
-  - Left to right: front to back. Top to bottom: close to open.
-  - The edge beyond the corner vowels extrapolates.
+- **Vowel pad**: drag the point to choose the vowel. The pad's corners are
+  i, u, æ and ɑ.
+  - Left to right: from front vowels (i, æ) to back vowels (u, ɑ).
+  - Top to bottom: from close vowels (i, u) to open vowels (æ, ɑ).
+  - The border outside the corners goes past those vowels, further than a
+    human mouth can.
 - **Horn**: the tract from the side, glottis to lips, as it sounds now.
   - Drag to draw your own, build it from a **Wave** (cycles and depth), or
     take one period of the sound with the camera. ↺ restores the original.
