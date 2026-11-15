@@ -967,6 +967,12 @@ pub struct Suu {
     /// GRID: the line last crossed, the pitch and shape taken there (held until the next)
     grid_line: i64,
     grid_held: Option<(f64, [f64; N_MOD])>,
+    /// the shape the mouth keeps while nothing sounds (taken when the sound ends)
+    still_shape: Option<[f64; N_MOD]>,
+    /// the breath's gate: 1 while a note or the text sounds, falling with the ADSR's release
+    breath_env: f64,
+    /// the ADSR's level when its release began (the breath falls with it from there)
+    release_from: f64,
     /// the host's song position (beats) and the sample it was at
     song: Option<(f64, u64)>,
     /// TEXT GRID: the line last seen, and a note's start and end waiting for the next
@@ -1078,6 +1084,9 @@ impl Suu {
             candidate: None,
             grid_line: i64::MIN,
             grid_held: None,
+            still_shape: None,
+            breath_env: 0.0,
+            release_from: 1.0,
             song: None,
             text_line: i64::MIN,
             text_pending: (false, false),
@@ -1113,7 +1122,7 @@ impl Suu {
         // will set it: a jump there from zero was the blip)
         let p = self.p;
         if self.fade.is_none() {
-            self.voice.set_source(&SourcePatch { pressure: Some(9.0 * p.breath * (1.0 - p.follow)), ..Default::default() });
+            self.voice.set_source(&SourcePatch { pressure: Some(9.0 * p.breath * (1.0 - p.follow) * self.breath_env), ..Default::default() });
         }
         let zeros = [0f32; MAX_BLOCK];
         let mut left = (0.25 * self.fs) as usize;
@@ -1437,6 +1446,11 @@ impl Suu {
             && let Some((_, held)) = self.grid_held
         {
             self.eff = held;
+        }
+        // still: a turned knob does not move the mouth either (it takes the change with the note;
+        // with GRID the held shape went on with Motion, so each new value moved it a step)
+        if let Some(shape) = self.still_shape {
+            self.eff = shape;
         }
         self.applied = [f64::NAN; N_MOD];
         self.apply_mouth();
@@ -2048,15 +2062,31 @@ impl Suu {
         }
         // still: Motion and GRID run on as if it sounded (they never depend on the sound); only
         // the mouth keeps the shape it has, and takes the current one when a note starts
-        if still && !self.applied[0].is_nan() {
-            self.eff = self.applied;
+        if !still {
+            self.still_shape = None;
+        } else if self.still_shape.is_none() && !self.applied[0].is_nan() {
+            self.still_shape = Some(self.applied);
+        }
+        if let Some(shape) = self.still_shape {
+            self.eff = shape;
         }
         self.apply_mouth();
         // the breath follows the source's level; while the folds sound, at their full pressure
         // (so their level depends on Folds and Breath alone: a louder oscillator drove them up
         // by 20 dB before)
         let drive_env = if p.folds > 0.0 { js_max(envn, self.fold_env) } else { envn };
-        let pressure = 9.0 * p.breath * (1.0 - p.follow + p.follow * drive_env);
+        // the breath stops with the note (FOLLOW 0 kept full pressure on, and the folds went on
+        // sounding after the release): full while the note or the text sounds, falling with the
+        // ADSR's release, off after it (5 ms up, 60 ms down)
+        let goal = match self.stage {
+            _ if self.on_clock() => 1.0,
+            Stage::Idle => 0.0,
+            Stage::Release => clamp(self.adsr / js_max(self.release_from, 1e-6), 0.0, 1.0),
+            _ => 1.0,
+        };
+        let tau = if goal > self.breath_env { 0.005 } else { 0.06 };
+        self.breath_env += (goal - self.breath_env) * (1.0 - exp(-(CTRL as f64) / (tau * self.fs)));
+        let pressure = 9.0 * p.breath * (1.0 - p.follow + p.follow * drive_env) * self.breath_env;
         // the folds follow the glide too (at the control rate)
         let f0 = midi_to_hz(self.pitch);
         if (pressure - self.voice.source.pressure).abs() > 1e-6 || (p.folds > 0.0 && f0 != self.folds_f0) {
@@ -2173,6 +2203,7 @@ impl Suu {
             self.stage = Stage::Attack;
         } else if !self.gate_eff && matches!(self.stage, Stage::Attack | Stage::Decay) {
             self.stage = Stage::Release;
+            self.release_from = self.adsr;
         }
         let secs = |s: f64, sync: f64| if sync > 0.0 { sync * 60.0 / p.bpm } else { s };
         let fs = self.fs;
@@ -3778,5 +3809,91 @@ mod tests {
         c.restart_text();
         run(&mut c, 0.01);
         assert_eq!(c.last_unit, 0, "restarted on the clock: the first part");
+    }
+
+    /// FOLLOW 0: the breath stops with the note. Full pressure stayed on after the release, and
+    /// the folds went on sounding at about −5 dB, never asleep (the owner's bug, web and plug-in).
+    #[test]
+    fn the_breath_stops_with_the_note_at_follow_0() {
+        for folds in [0.0, 0.73] {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { gate: true, follow: 0.0, folds, breath: 2.04, ..Params::default() });
+            let (inp, mut out) = ([0f32; 480], [0f32; 480]);
+            for _ in 0..50 {
+                s.process(&inp, &mut out);
+            }
+            s.set_params(Params { gate: false, ..s.params() });
+            let mut peak = 0f32;
+            for b in 0..300 {
+                s.process(&inp, &mut out);
+                if b >= 100 {
+                    peak = out.iter().fold(peak, |m, v| m.max(v.abs()));
+                }
+            }
+            assert!(peak < 1e-5, "folds {folds}: {peak} a second after the note");
+            assert!(s.asleep, "folds {folds}: asleep");
+        }
+    }
+
+    /// The breath falls with a long release: it does not hold full until the ADSR is done and
+    /// then drop (−20 dB to −60 dB took 30 ms after a 1.3 s plateau).
+    #[test]
+    fn the_breath_follows_a_long_release() {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, follow: 0.0, folds: 0.73, breath: 2.04, release_s: 0.5, ..Params::default() });
+        let (inp, mut out) = ([0f32; 480], [0f32; 480]);
+        let mut on = 0f32;
+        for _ in 0..50 {
+            s.process(&inp, &mut out);
+            on = out.iter().fold(on, |m, v| m.max(v.abs()));
+        }
+        s.set_params(Params { gate: false, ..s.params() });
+        let mut window = |n: usize| {
+            let mut pk = 0f32;
+            for _ in 0..n {
+                s.process(&inp, &mut out);
+                pk = out.iter().fold(pk, |m, v| m.max(v.abs()));
+            }
+            pk / on
+        };
+        let early = window(10); // 0 … 0.1 s
+        window(20);
+        let mid = window(10); // 0.3 … 0.4 s
+        window(30);
+        let late = window(10); // 0.7 … 0.8 s
+        assert!(early > 0.3, "the release starts from the note: {early}");
+        assert!(mid < 0.3 * early && mid > 1e-3, "and falls through it: {mid}");
+        assert!(late < 1e-3, "and is gone after it: {late}");
+    }
+
+    /// A still mouth stays still when a knob turns (the owner: turning FOLLOW moved the
+    /// modulation on, a step at each new value; with GRID the held shape went on with Motion).
+    #[test]
+    fn a_turned_knob_does_not_move_a_still_mouth() {
+        for grid in [0.0, 0.25] {
+            let mut s = Suu::new(48000.0);
+            s.set_params(Params { gate: true, morph: 0.5, bpm: 120.0, grid, ..Params::default() });
+            s.set_mod(6, Mod { depth: 0.9, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+            let (inp, mut out) = ([0f32; 480], [0f32; 480]);
+            for _ in 0..50 {
+                s.process(&inp, &mut out);
+            }
+            s.set_params(Params { gate: false, ..s.params() });
+            for _ in 0..50 {
+                s.process(&inp, &mut out);
+            }
+            let held = s.applied[6];
+            for k in 0..20 {
+                s.set_params(Params { follow: 0.05 * k as f64, ..s.params() });
+                for _ in 0..3 {
+                    s.process(&inp, &mut out);
+                }
+                assert_eq!(s.applied[6], held, "grid {grid}, turn {k}: the still mouth moved");
+            }
+            // the note takes Motion where it is now
+            s.set_params(Params { gate: true, ..s.params() });
+            s.process(&inp, &mut out);
+            assert_ne!(s.applied[6], held, "grid {grid}: the note takes the current shape");
+        }
     }
 }
