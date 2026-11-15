@@ -234,6 +234,9 @@ pub struct HumanVoice {
     pub clock: f64,
     blend: [Blended; N_CONTROL],
     base_abduction: f64,
+    /// what the score's last control step added to the folds (abduction, closure, vibrato depth),
+    /// so a source change between control steps keeps it instead of resetting it
+    score_glottis: (f64, f64, Option<f64>),
     base_closure: f64,
     score_f0: Option<f64>,
     lim_env: f64,
@@ -266,9 +269,14 @@ impl HumanVoice {
 
     /// As `new`, with at least `min_cells` sections per tract tube (`HumanAirway::with_min_cells`).
     pub fn with_min_cells(fs_out: f64, body: HumanBody, oversample: usize, min_cells: usize) -> Self {
+        Self::with_resolution(fs_out, body, oversample, min_cells, 1.0)
+    }
+
+    /// As `with_min_cells`, with a coarser tube (`HumanAirway::with_resolution`).
+    pub fn with_resolution(fs_out: f64, body: HumanBody, oversample: usize, min_cells: usize, coarse: f64) -> Self {
         let m = oversample;
         let fs = fs_out * m as f64;
-        let airway = HumanAirway::with_min_cells(fs, body, min_cells);
+        let airway = HumanAirway::with_resolution(fs, body, min_cells, coarse);
         let n_tract = airway.n_ph + airway.n_or;
         let mut v = HumanVoice {
             fs_out,
@@ -309,6 +317,7 @@ impl HumanVoice {
             clock: 0.0,
             blend: [Blended::default(); N_CONTROL],
             base_abduction: 0.0,
+            score_glottis: (0.0, 0.0, None),
             base_closure: 0.0,
             score_f0: None,
             lim_env: 0.0,
@@ -388,9 +397,11 @@ impl HumanVoice {
         let g = &mut self.glottis.params;
         let k2 = self.airway.body.scale * self.airway.body.scale;
         g.amplitude = 0.17 * k2 * self.glottal_area_scale * (if s.voiced { 1.0 } else { 0.0 });
-        g.abduction = (if s.voiced { 0.1 * s.breathiness * s.breathiness } else { 0.2 + 0.1 * s.breathiness }) * k2;
-        self.base_abduction = g.abduction;
+        self.base_abduction = (if s.voiced { 0.1 * s.breathiness * s.breathiness } else { 0.2 + 0.1 * s.breathiness }) * k2;
         self.base_closure = 0.0;
+        let (ab_add, closure, vibrato) = self.score_glottis;
+        g.abduction = self.base_abduction + ab_add;
+        g.closure = js_max(self.base_closure, closure);
         // Most voices, women's and trained singers' included, leave a small posterior gap between
         // the arytenoids through the closed phase (Södersten & Lindestad 1990). It leaks a little
         // air and damps the tract, which lifts H1 and the band below 500 Hz.
@@ -412,10 +423,10 @@ impl HumanVoice {
         g.jitter = (0.0021 + 0.0245 * s.roughness) * self.jitter_scale;
         g.shimmer = (0.02 + 0.22 * s.roughness) * self.shimmer_scale;
         g.diplophonia = if s.roughness > 0.5 { (s.roughness - 0.5) * 1.4 } else { 0.0 };
-        g.vibrato_depth = s.vibrato_depth;
+        g.vibrato_depth = vibrato.unwrap_or(s.vibrato_depth);
         g.vibrato_rate = s.vibrato_rate;
         g.drift = s.drift;
-        g.effort = clamp((s.pressure.abs() - 3.0) / 10.0, 0.0, 1.0);
+        g.effort = clamp(((s.pressure * self.gate).abs() - 3.0) / 10.0, 0.0, 1.0);
     }
 
     /// Render `out.len()` output samples.
@@ -586,16 +597,20 @@ impl HumanVoice {
             let k2 = self.airway.body.scale * self.airway.body.scale;
             let ab = b[ControlKey::ABDUCTION.index()];
             let ab_act = if ab.weight > 0.0 { js_min(1.0, ab.weight / 2.0) } else { 0.0 };
-            gp.abduction = self.base_abduction + ab.value * ab_act * k2;
+            let ab_add = ab.value * ab_act * k2;
+            gp.abduction = self.base_abduction + ab_add;
             let cl = b[ControlKey::CLOSURE.index()];
-            gp.closure = js_max(self.base_closure, if cl.weight > 0.0 { cl.value * js_min(1.0, cl.weight / 2.0) } else { 0.0 });
+            let closure = if cl.weight > 0.0 { cl.value * js_min(1.0, cl.weight / 2.0) } else { 0.0 };
+            gp.closure = js_max(self.base_closure, closure);
             let br = b[ControlKey::BREATH.index()];
             if br.weight > 0.0 {
                 breath_act = js_min(1.0, br.weight);
                 breath_val = br.value;
             }
             let vb = b[ControlKey::VIBRATO.index()];
-            gp.vibrato_depth = if vb.weight > 0.0 { (self.source.vibrato_depth * 0.05 + vb.value * vb.weight) / (0.05 + vb.weight) } else { self.source.vibrato_depth };
+            let vibrato = (vb.weight > 0.0).then(|| (self.source.vibrato_depth * 0.05 + vb.value * vb.weight) / (0.05 + vb.weight));
+            gp.vibrato_depth = vibrato.unwrap_or(self.source.vibrato_depth);
+            self.score_glottis = (ab_add, closure, vibrato);
             let pf = b[ControlKey::F0.index()];
             if pf.weight > 0.0 {
                 f0_target = (self.source.f0 * 0.02 + pf.value * pf.weight) / (0.02 + pf.weight);
@@ -610,6 +625,7 @@ impl HumanVoice {
             self.artic.step(dt, None, 1.0);
             self.glottis.params.abduction = self.base_abduction;
             self.glottis.params.closure = self.base_closure;
+            self.score_glottis = (0.0, 0.0, None);
             self.score_f0 = None;
         }
         self.clock += dt;
