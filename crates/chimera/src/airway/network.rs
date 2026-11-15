@@ -263,6 +263,9 @@ pub struct AirwayNetwork {
     pub squeeze_area: f64,
     /// model switches (diagnostics / ablation)
     pub enable_volume_source: bool,
+    /// × on the moving walls' volume source (1 = physics, the default): the sound of the tract
+    /// changing shape
+    pub volume_source_gain: f64,
     pub enable_junction_floor: bool,
     pub energy_safe: bool,
     /// diagnostics: use the larger kinetic coefficient for both flow directions
@@ -418,6 +421,7 @@ impl AirwayNetwork {
             volume_source_hz: 60.0,
             squeeze_area: 0.12,
             enable_volume_source: true,
+            volume_source_gain: 1.0,
             enable_junction_floor: true,
             energy_safe: true,
             symmetric_kinetic: false,
@@ -757,6 +761,14 @@ impl AirwayNetwork {
     }
 
     #[inline]
+    /// × on one node's viscous wall loss (its tube's factor is the default); takes effect next step.
+    pub fn set_viscous_factor(&mut self, node: usize, f: f64) {
+        if self.visc_f[node] != f {
+            self.visc_f[node] = f;
+            self.coef_valid = false;
+        }
+    }
+
     pub fn set_fixed_pressure(&mut self, node: usize, p: f64) {
         self.p[node] = p;
     }
@@ -930,7 +942,7 @@ impl AirwayNetwork {
                 self.half_r[k] = self.wall_perim[k] * d * sa * ia * ia * self.visc_f[k];
                 let v = (if a > min_a { a } else { min_a }) * d;
                 if vol_on {
-                    let raw = -(v - self.vol[k]) * inv_t;
+                    let raw = -(v - self.vol[k]) * inv_t * self.volume_source_gain;
                     let ae = if amin[k] < a { amin[k] } else { a }; // a node sealed at its minimum cannot hold air either
                     if raw != 0.0 && ae < sq {
                         let tt = ae / sq;

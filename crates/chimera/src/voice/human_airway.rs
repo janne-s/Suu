@@ -14,7 +14,7 @@ pub const MIN_CELLS: usize = 8;
 
 /// Room for the settled-geometry key: the articulation, 17 settings and a drawn horn of up to
 /// 256 points (Suu's has 32), so comparing it never allocates.
-const GEOM_KEY_CAP: usize = N_ARTIC + 17 + 256;
+const GEOM_KEY_CAP: usize = N_ARTIC + 18 + 256;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NoiseGains {
@@ -53,6 +53,11 @@ pub struct HumanAirway {
     pub or_len: f64,
     /// noise gains (tunable)
     pub noise_gain: NoiseGains,
+    /// × on the oral tube's wall loss while the tract is narrow somewhere, weighted by how narrow
+    /// (1 = physics, the default). A mouth closed at two points (tongue and lips) traps a cavity
+    /// whose high mode rings as a whistle; above 1 damps it, below 1 lets it ring.
+    pub narrow_loss: f64,
+    narrow_applied: bool,
     /// max area change rate (cm²/s, body-scaled): a physiological guard against geometric jumps
     pub max_area_rate: f64,
     /// additional rate per cm² of current area (1/s)
@@ -123,11 +128,18 @@ impl HumanAirway {
     /// As `new`, with at least `min_cells` sections in the pharynx and the oral tube instead of
     /// `MIN_CELLS` (fewer allow a lower rate for the same body; the tube resolves less).
     pub fn with_min_cells(fs: f64, body: HumanBody, min_cells: usize) -> Self {
+        Self::with_resolution(fs, body, min_cells, 1.0)
+    }
+
+    /// As `with_min_cells`, with sections `coarse` times longer than the stable step allows
+    /// (`coarse` ≥ 1): fewer cells at the same rate, a lower-resolution tube that stays stable.
+    pub fn with_resolution(fs: f64, body: HumanBody, min_cells: usize, coarse: f64) -> Self {
         let k = body.scale;
         let tract = HumanVocalTract::new(body);
         let mut net = AirwayNetwork::new(fs);
-        let dx_min = (C_SOUND / fs) / 0.93;
-        let (n_ph, n_or) = Self::cells(fs, &body, min_cells);
+        let coarse = js_max(1.0, coarse);
+        let dx_min = coarse * (C_SOUND / fs) / 0.93;
+        let (n_ph, n_or) = Self::cells(fs / coarse, &body, min_cells);
 
         let tr_len = 12.0 * k;
         let trachea = net.add_tube(TubeSpec::new("trachea", js_max(6.0, (tr_len / js_max(dx_min, 0.9 * k)).floor()) as usize, tr_len, Area::Uniform(2.5 * k * k)).wall(Some(WALL_TRACHEA)));
@@ -210,6 +222,8 @@ impl HumanAirway {
             base: None,
             base_dt: 0.0,
             noise_list: Vec::with_capacity(8),
+            narrow_loss: 1.0,
+            narrow_applied: false,
             scratch_frame: HumanFrame::with_capacity(),
             geom_key: Vec::with_capacity(GEOM_KEY_CAP),
             key_scratch: Vec::with_capacity(GEOM_KEY_CAP),
@@ -244,6 +258,7 @@ impl HumanAirway {
             g.teeth,
             g.glottis_lowpass,
             g.glottis_highpass,
+            self.narrow_loss,
         ]);
         out.extend_from_slice(&self.profile);
     }
@@ -445,6 +460,20 @@ impl HumanAirway {
         f.lip_area += m * (self.profile_at(1.0) - f.lip_area);
     }
 
+    /// `narrow_loss` on the oral cells, as far as the narrowest point is narrow.
+    fn apply_narrow_loss(&mut self, min_i: isize, min_a: f64) {
+        if self.narrow_loss == 1.0 && !self.narrow_applied {
+            return;
+        }
+        let k2 = self.body.scale * self.body.scale;
+        let narrow = if min_i >= 0 { 1.0 - smooth(0.35 * k2, 0.9 * k2, min_a) } else { 0.0 };
+        let f = 1.0 + (self.narrow_loss - 1.0) * narrow;
+        for i in 0..self.n_or {
+            self.net.set_viscous_factor(self.oral.node(i), f);
+        }
+        self.narrow_applied = self.narrow_loss != 1.0;
+    }
+
     /// Register turbulence sources: glottis, narrowest supraglottal constriction, teeth obstacle.
     fn update_noise(&mut self, f: &HumanFrame) {
         let g = self.noise_gain;
@@ -463,6 +492,7 @@ impl HumanAirway {
                 min_i = i as isize;
             }
         }
+        self.apply_narrow_loss(min_i, min_a);
         // narrowest open point: its jet makes frication noise. Every weight below is a smooth function
         // of geometry so sources fade in/out instead of toggling (toggling = audible noise bursts).
         let k2 = self.body.scale * self.body.scale;
