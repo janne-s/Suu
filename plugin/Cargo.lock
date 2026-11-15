@@ -2907,6 +2907,7 @@ dependencies = [
  "flate2",
  "nih_plug",
  "nih_plug_webview",
+ "objc",
  "raw-window-handle 0.5.2",
  "raw-window-handle 0.6.2",
  "rfd",

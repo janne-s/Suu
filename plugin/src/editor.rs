@@ -81,6 +81,8 @@ enum Message {
     Ui { json: String },
     /// a text field has the focus: its keys stay in the window, away from the host
     Typing { on: bool },
+    /// a control was let go (not a text field): the keys go back to the host at once
+    Keys,
     Snapshot,
     /// LEARN the text's reset note from the next note played (or stop)
     Learn { on: bool },
@@ -174,6 +176,50 @@ struct Gui {
     text_shown: Option<(bool, String)>,
     dialog: Option<Dialog>,
     frame: u64,
+    /// since when the webview has held the keys with no text field focused (macOS)
+    keys_held: Option<Instant>,
+}
+
+/// After a click the webview held the keys (it is the first responder then) and handed the ones
+/// it does not use on to the host from its web process, late and unevenly: Live's computer
+/// keyboard lost its timing after any control was touched, until the window was closed.
+const KEYS_BACK: Duration = Duration::from_millis(300);
+
+/// macOS: give the keys back to the window's own view, which passes them on to the host at once
+/// (baseview: unused keys go up the responder chain). Only from the webview, never from a view of
+/// the host's. `now`: the page says a control was let go; otherwise after `KEYS_BACK`, the time
+/// the page has to say that a click went into a text field.
+#[cfg(target_os = "macos")]
+fn keys_to_host(window: &impl HasRawWindowHandle, held: &mut Option<Instant>, now: bool) {
+    use objc::runtime::{BOOL, NO, Object, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+    let raw_window_handle_05::RawWindowHandle::AppKit(handle) = window.raw_window_handle() else { return };
+    let view = handle.ns_view as *mut Object;
+    if view.is_null() {
+        return;
+    }
+    unsafe {
+        let win: *mut Object = msg_send![view, window];
+        if win.is_null() {
+            return;
+        }
+        let first: *mut Object = msg_send![win, firstResponder];
+        let in_webview: BOOL = if first.is_null() || first == view {
+            NO
+        } else {
+            let is_view: BOOL = msg_send![first, isKindOfClass: class!(NSView)];
+            if is_view == YES { msg_send![first, isDescendantOf: view] } else { NO }
+        };
+        if in_webview != YES {
+            *held = None;
+            return;
+        }
+        let since = *held.get_or_insert_with(Instant::now);
+        if now || since.elapsed() >= KEYS_BACK {
+            let _: BOOL = msg_send![win, makeFirstResponder: view];
+            *held = None;
+        }
+    }
 }
 
 fn plain(p: ParamPtr) -> f32 {
@@ -252,6 +298,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
         text_shown: None,
         dialog: None,
         frame: 0,
+        keys_held: None,
     });
     let typing = Arc::new(AtomicBool::new(false));
     let typing_keys = typing.clone();
@@ -283,6 +330,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 page.send_json(init_message(gui, &params, synth));
                 gui.text_shown = None;
             }
+            let mut keys_now = false;
             while let Ok(value) = page.next_event() {
                 let message = match serde_json::from_value::<Message>(value) {
                     Ok(m) => m,
@@ -343,6 +391,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                         }
                     }
                     Message::Typing { on } => typing.store(on, Ordering::Relaxed),
+                    Message::Keys => keys_now = true,
                     Message::Snapshot => shared.snap_state.store(1, Ordering::Release),
                     Message::Learn { on } => shared.learn.store(on, Ordering::Release),
                     Message::Resize { width, height } => page.resize(window, width.max(SMALLEST_WINDOW.0), height.max(SMALLEST_WINDOW.1)),
@@ -440,6 +489,10 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                 let values: Option<Vec<f32>> = (snap == 2).then(|| shared.snap.iter().map(|v| f32::from_bits(v.load(Ordering::Relaxed))).collect());
                 page.send_json(json!({ "type": "snapshot", "values": values }));
                 shared.snap_state.store(0, Ordering::Release);
+            }
+            #[cfg(target_os = "macos")]
+            if !typing.load(Ordering::Relaxed) {
+                keys_to_host(window, &mut gui.keys_held, keys_now);
             }
         });
     Some(Box::new(editor))

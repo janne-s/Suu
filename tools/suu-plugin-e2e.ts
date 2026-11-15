@@ -151,6 +151,16 @@ await frames();
 await sent();
 // text and INIT
 await page.click("#text-toggle");
+// a control let go gives the keys back to the host at once (held by the webview after a click,
+// they reached Live late and unevenly); a click into a text field does not
+s = await sent();
+ok("letting go of a button gives the keys back", s.some((m) => m.type === "keys"));
+await page.click("#text");
+s = await sent();
+ok("a click into a text field keeps them", !s.some((m) => m.type === "keys"), JSON.stringify(s.map((m) => m.type)));
+await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+await frames();
+await sent();
 // while typing in a field the keys stay in the window
 await page.focus("#text");
 await frames();

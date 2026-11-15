@@ -2313,6 +2313,10 @@ if (inPlugin) {
   // go of it once picked from.
   addEventListener("focusin", (e) => !textField(e.target) && e.target.tagName !== "SELECT" && e.target.blur?.(), true);
   addEventListener("change", (e) => e.target.tagName === "SELECT" && e.target.blur(), true);
+  // a control let go: the plug-in gives the keys back to the host at once (held by the webview,
+  // they reached it late and unevenly; a list hands them back once picked from)
+  addEventListener("pointerup", (e) => !textField(e.target) && e.target.tagName !== "SELECT" && sendToPlugin({ type: "keys" }), true);
+  addEventListener("change", (e) => e.target.tagName === "SELECT" && sendToPlugin({ type: "keys" }), true);
   TIPS["#rootoct"] = "Octave\nThe root's octave: − and + change it.";
   $("rootoct").dataset.tip = TIPS["#rootoct"];
   addEventListener("error", (e) => sendToPlugin({ type: "log", text: `${e.message} ${e.filename}:${e.lineno}` }));
