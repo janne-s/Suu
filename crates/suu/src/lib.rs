@@ -967,12 +967,13 @@ pub struct Suu {
     /// GRID: the line last crossed, the pitch and shape taken there (held until the next)
     grid_line: i64,
     grid_held: Option<(f64, [f64; N_MOD])>,
-    /// the shape the mouth keeps while nothing sounds (taken when the sound ends)
-    still_shape: Option<[f64; N_MOD]>,
-    /// the breath's gate: 1 while a note or the text sounds, falling with the ADSR's release
+    /// the breath's gate: 1 while the ADSR runs (or the text speaks), 0 after
     breath_env: f64,
-    /// the ADSR's level when its release began (the breath falls with it from there)
-    release_from: f64,
+    /// the source's gate (per sample): open while the ADSR runs, so the mouth is driven through
+    /// the release and rings out after it; the ADSR itself is the amp, after the mouth
+    src_gate: f64,
+    /// the ADSR per sample of this block, for the amp
+    amp: Vec<f32>,
     /// the host's song position (beats) and the sample it was at
     song: Option<(f64, u64)>,
     /// TEXT GRID: the line last seen, and a note's start and end waiting for the next
@@ -1084,9 +1085,9 @@ impl Suu {
             candidate: None,
             grid_line: i64::MIN,
             grid_held: None,
-            still_shape: None,
             breath_env: 0.0,
-            release_from: 1.0,
+            src_gate: 0.0,
+            amp: vec![0.0; MAX_BLOCK],
             song: None,
             text_line: i64::MIN,
             text_pending: (false, false),
@@ -1446,11 +1447,6 @@ impl Suu {
             && let Some((_, held)) = self.grid_held
         {
             self.eff = held;
-        }
-        // still: a turned knob does not move the mouth either (it takes the change with the note;
-        // with GRID the held shape went on with Motion, so each new value moved it a step)
-        if let Some(shape) = self.still_shape {
-            self.eff = shape;
         }
         self.applied = [f64::NAN; N_MOD];
         self.apply_mouth();
@@ -1952,10 +1948,6 @@ impl Suu {
         // NOTE: a key, MIDI, a step) takes its pitch at once; the input's pitch and every change
         // of shape wait for the line.
         let grid_take = self.grid_take();
-        // nothing sounds (no note, the envelope done, no text clock, no crossfade): the mouth
-        // stands still. Its moving walls push air, so a mouth moved by Motion (in steps on a
-        // grid most of all) went on sounding, a thump on each line, and never slept.
-        let still = !self.gate_now && self.stage == Stage::Idle && !self.on_clock() && self.fade.is_none();
         // TEXT GRID: its lines (for the score held in the voice and the parts' starts)
         let tg = self.text_grid_beats();
         self.text_crossed = false;
@@ -1969,7 +1961,8 @@ impl Suu {
         {
             let p = self.p;
             let h = &mut self.voice.hold;
-            h.freeze = still;
+            // the mouth is never frozen: the amp after it keeps a silent mouth silent
+            h.freeze = false;
             h.on = tg > 0.0;
             h.take |= h.on && self.text_crossed;
             h.breath = p.grid_breath;
@@ -2013,6 +2006,7 @@ impl Suu {
             self.voice.cancel_score();
             self.open_unit = None;
         }
+        let woke = self.asleep && !asleep;
         self.asleep = asleep;
         let secs = if p.glide_sync > 0.0 { p.glide_sync * 60.0 / p.bpm } else { p.glide_s };
         // Glide moves the vowels too: the articulators' speed is ×1 at the default 30 ms, up to
@@ -2060,30 +2054,27 @@ impl Suu {
         } else {
             self.grid_held = None;
         }
-        // still: Motion and GRID run on as if it sounded (they never depend on the sound); only
-        // the mouth keeps the shape it has, and takes the current one when a note starts
-        if !still {
-            self.still_shape = None;
-        } else if self.still_shape.is_none() && !self.applied[0].is_nan() {
-            self.still_shape = Some(self.applied);
-        }
-        if let Some(shape) = self.still_shape {
-            self.eff = shape;
-        }
+        // the mouth follows Motion and GRID always, sounding or not (the amp after it keeps a
+        // silent mouth silent); waking, it is where they are at once, without moving there
         self.apply_mouth();
+        if woke {
+            // the airway has rung out: its areas jump to the shape now (a step there, with no
+            // sound in it, makes none; moved there, the walls pushed a thump out at the note)
+            let a = &mut self.voice.artic;
+            a.x = a.target;
+            a.v = [0.0; N_ARTIC];
+            let x = a.x;
+            self.voice.airway.apply(&x, 0.0);
+            self.voice.airway.net.snap_to_targets();
+        }
         // the breath follows the source's level; while the folds sound, at their full pressure
         // (so their level depends on Folds and Breath alone: a louder oscillator drove them up
         // by 20 dB before)
         let drive_env = if p.folds > 0.0 { js_max(envn, self.fold_env) } else { envn };
         // the breath stops with the note (FOLLOW 0 kept full pressure on, and the folds went on
-        // sounding after the release): full while the note or the text sounds, falling with the
-        // ADSR's release, off after it (5 ms up, 60 ms down)
-        let goal = match self.stage {
-            _ if self.on_clock() => 1.0,
-            Stage::Idle => 0.0,
-            Stage::Release => clamp(self.adsr / js_max(self.release_from, 1e-6), 0.0, 1.0),
-            _ => 1.0,
-        };
+        // sounding after the release): on while the ADSR runs, off after it (5 ms up, 60 ms
+        // down); the amp shapes what is heard
+        let goal = if self.stage != Stage::Idle || self.on_clock() { 1.0 } else { 0.0 };
         let tau = if goal > self.breath_env { 0.005 } else { 0.06 };
         self.breath_env += (goal - self.breath_env) * (1.0 - exp(-(CTRL as f64) / (tau * self.fs)));
         let pressure = 9.0 * p.breath * (1.0 - p.follow + p.follow * drive_env) * self.breath_env;
@@ -2203,7 +2194,6 @@ impl Suu {
             self.stage = Stage::Attack;
         } else if !self.gate_eff && matches!(self.stage, Stage::Attack | Stage::Decay) {
             self.stage = Stage::Release;
-            self.release_from = self.adsr;
         }
         let secs = |s: f64, sync: f64| if sync > 0.0 { sync * 60.0 / p.bpm } else { s };
         let fs = self.fs;
@@ -2260,6 +2250,7 @@ impl Suu {
         let env_a = 1.0 - exp(-1.0 / (0.005 * fs));
         let env_r = 1.0 - exp(-1.0 / (0.08 * fs));
         let acc_k = 1.0 - exp(-1.0 / (0.004 * fs));
+        let (gate_a, gate_r) = (1.0 - exp(-1.0 / (0.002 * fs)), 1.0 - exp(-1.0 / (0.005 * fs)));
         let level_of = |db: f64| if db <= -60.0 { 0.0 } else { pow(10.0, db / 20.0) };
         let (osc_g, input_g) = (level_of(p.osc_db), level_of(p.input_db));
         let level = if self.seq.playing && self.accent { ACCENT } else { 1.0 };
@@ -2314,7 +2305,13 @@ impl Suu {
             }
             // the accent's level glides (4 ms), so an accented step does not click
             self.osc_env += (level - self.osc_env) * acc_k;
-            let x = raw * self.adsr * self.osc_env;
+            // the source is on while the ADSR runs (2 ms up, 5 ms down after it); the ADSR is
+            // the amp after the mouth, so all the mouth makes (its walls, the breath, the
+            // folds, the sub) starts and ends with it
+            let open = if self.stage == Stage::Idle { 0.0 } else { 1.0 };
+            self.src_gate += (open - self.src_gate) * if open > self.src_gate { gate_a } else { gate_r };
+            self.amp[i] = (self.adsr * self.osc_env) as f32;
+            let x = raw * self.src_gate;
             // the resonator: the dry source crossfades into the comb, whose loop gain rises with
             // the amount
             let x = if p.reson > 0.0 {
@@ -2374,9 +2371,10 @@ impl Suu {
             self.sub1 = cs * self.sub1 + (1.0 - cs) * d;
             self.sub2 = cs * self.sub2 + (1.0 - cs) * self.sub1;
             let wet = self.wet[i] as f64 + p.sub_level * self.sub2;
-            out[off + i] = ((p.mix * wet + (1.0 - p.mix) * d) * g) as f32;
+            out[off + i] = ((p.mix * wet + (1.0 - p.mix) * d) * g * self.amp[i] as f64) as f32;
         }
-        let peak = self.dry[..n].iter().chain(&self.wet[..n]).fold(self.period_peak, |m, v| m.max(v.abs()));
+        // quiet: what is heard (the mouth may move on, unheard, and sleep)
+        let peak = out[off..off + n].iter().fold(self.period_peak, |m, v| m.max(v.abs()));
         self.period_peak = peak;
     }
 }
@@ -3835,10 +3833,10 @@ mod tests {
         }
     }
 
-    /// The breath falls with a long release: it does not hold full until the ADSR is done and
-    /// then drop (−20 dB to −60 dB took 30 ms after a 1.3 s plateau).
+    /// The sound falls with a long release, the folds' breath too: it did not, held full until
+    /// the ADSR was done and then dropped (−20 dB to −60 dB in 30 ms after a 1.3 s plateau).
     #[test]
-    fn the_breath_follows_a_long_release() {
+    fn the_sound_follows_a_long_release() {
         let mut s = Suu::new(48000.0);
         s.set_params(Params { gate: true, follow: 0.0, folds: 0.73, breath: 2.04, release_s: 0.5, ..Params::default() });
         let (inp, mut out) = ([0f32; 480], [0f32; 480]);
@@ -3859,41 +3857,90 @@ mod tests {
         let early = window(10); // 0 … 0.1 s
         window(20);
         let mid = window(10); // 0.3 … 0.4 s
-        window(30);
-        let late = window(10); // 0.7 … 0.8 s
+        window(50);
+        let late = window(10); // 0.9 … 1.0 s (the ADSR at 0.03 %)
         assert!(early > 0.3, "the release starts from the note: {early}");
         assert!(mid < 0.3 * early && mid > 1e-3, "and falls through it: {mid}");
         assert!(late < 1e-3, "and is gone after it: {late}");
     }
 
-    /// A still mouth stays still when a knob turns (the owner: turning FOLLOW moved the
-    /// modulation on, a step at each new value; with GRID the held shape went on with Motion).
+    /// A turned knob does not move Motion on, sounding or not (the owner: turning FOLLOW moved
+    /// the modulation a step at each new value; with GRID the held shape was taken anew).
     #[test]
-    fn a_turned_knob_does_not_move_a_still_mouth() {
+    fn a_turned_knob_does_not_move_the_modulation() {
         for grid in [0.0, 0.25] {
-            let mut s = Suu::new(48000.0);
-            s.set_params(Params { gate: true, morph: 0.5, bpm: 120.0, grid, ..Params::default() });
-            s.set_mod(6, Mod { depth: 0.9, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+            let mk = || {
+                let mut s = Suu::new(48000.0);
+                s.set_params(Params { gate: true, morph: 0.5, bpm: 120.0, grid, ..Params::default() });
+                s.set_mod(6, Mod { depth: 0.9, rate_hz: 2.0, sync: 0.0, shape: Shape::Sine, smooth: 0.0 });
+                s
+            };
+            let (mut a, mut b) = (mk(), mk());
             let (inp, mut out) = ([0f32; 480], [0f32; 480]);
-            for _ in 0..50 {
-                s.process(&inp, &mut out);
-            }
-            s.set_params(Params { gate: false, ..s.params() });
-            for _ in 0..50 {
-                s.process(&inp, &mut out);
-            }
-            let held = s.applied[6];
-            for k in 0..20 {
-                s.set_params(Params { follow: 0.05 * k as f64, ..s.params() });
-                for _ in 0..3 {
-                    s.process(&inp, &mut out);
+            for k in 0..200 {
+                if k == 50 || k == 150 {
+                    // a note's end and a new one
+                    for s in [&mut a, &mut b] {
+                        s.set_params(Params { gate: k == 150, ..s.params() });
+                    }
                 }
-                assert_eq!(s.applied[6], held, "grid {grid}, turn {k}: the still mouth moved");
+                if k % 3 == 0 {
+                    b.set_params(Params { follow: 0.01 * (k % 100) as f64, ..b.params() });
+                }
+                a.process(&inp, &mut out);
+                b.process(&inp, &mut out);
+                assert_eq!(a.applied[6], b.applied[6], "grid {grid}, block {k}: the knob moved the mouth");
             }
-            // the note takes Motion where it is now
-            s.set_params(Params { gate: true, ..s.params() });
-            s.process(&inp, &mut out);
-            assert_ne!(s.applied[6], held, "grid {grid}: the note takes the current shape");
+        }
+    }
+
+    /// No bass thump at a note's start (the owner's preset: Motion on MORPH, breath 0, a long
+    /// attack). The mouth stood still between notes and jumped to Motion's shape at the note;
+    /// its walls pushed the air out past the ADSR, which shaped only the source: the low band in
+    /// a note's first 100 ms was 6 … 15 dB above the held note's, whatever the attack. Without
+    /// Motion, the first note after a new instance did the same (+4.6 dB): its mouth had stood
+    /// in the new one's shape until then.
+    #[test]
+    fn a_note_starts_without_a_thump() {
+        let fs = 48000.0;
+        let c = (-2.0 * PI * 100.0 / fs).exp();
+        let horn = [0.603, 3.921, 9.225, 9.726, 10.322, 10.964, 2.363, 2.031, 1.695, 1.695, 1.695, 1.717, 1.853, 6.575, 6.57, 6.438, 5.762, 5.236, 4.786, 4.475, 4.165, 3.735, 3.461, 3.248, 2.989, 2.989, 2.989, 2.989, 4.811, 3.727, 2.729, 1.777];
+        for (attack, depth, room_db) in [(0.503, 0.76, -6.0), (0.001, 0.76, 3.0), (0.503, 0.0, -6.0)] {
+            let mut s = Suu::new(fs);
+            s.set_size(1.5583);
+            s.set_profile(&horn, false);
+            s.set_params(Params {
+                source: Source::Supersaw, note: 48.0, bpm: 120.0, breath: 0.0, follow: 0.0, osc_db: -6.575, folds: 1.1244, glide_s: 0.2139, glide_sync: 0.25,
+                attack_s: attack, decay_sync: 0.5, sustain: 1.0, release_s: 0.001, drive_db: 5.269, tilt_hz: 814.0, sub_level: 0.418, sub_hz: 120.0,
+                vowel_x: 0.9464, vowel_y: 0.8462, round: -0.228, nasal: 0.618, inject: 0.613, damping: 0.1, morph: 0.473, shift: -0.296, open: 3.0652, mix: 1.0,
+                ..Params::default()
+            });
+            s.set_mod(6, Mod { depth, rate_hz: 0.5, sync: 8.0, shape: Shape::Sine, smooth: 0.0 });
+            let (inp, mut out) = ([0f32; 48], [0f32; 48]);
+            let mut y = 0f64;
+            // the low band's peak over `ms` milliseconds
+            let mut low = |s: &mut Suu, ms: usize| {
+                let mut pk = 0f64;
+                for _ in 0..ms {
+                    s.process(&inp, &mut out);
+                    for &v in &out {
+                        y = c * y + (1.0 - c) * v as f64;
+                        pk = js_max(pk, y.abs());
+                    }
+                }
+                pk
+            };
+            low(&mut s, 500);
+            for k in 0..4 {
+                s.set_params(Params { gate: true, ..s.params() });
+                let onset = low(&mut s, 100);
+                low(&mut s, 300);
+                let held = low(&mut s, 200);
+                s.set_params(Params { gate: false, ..s.params() });
+                low(&mut s, 400);
+                let rise = 20.0 * (onset / held).log10();
+                assert!(rise < room_db, "attack {attack}, Motion {depth}, note {k}: the low band starts {rise:+.1} dB over the held note");
+            }
         }
     }
 }
