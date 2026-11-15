@@ -289,6 +289,10 @@ await page.click("#view-pad");
 await page.click("#init");
 ok("INIT restores the defaults", (await page.inputValue("#bpm")) === "100" && (await page.textContent("#seqgate")) === "100%");
 ok("resonator knob, off by default", (await page.textContent('output[for="reson"]')) === "off");
+ok("GitHub link at the header's right end", await page.evaluate(() => {
+  const a = document.getElementById("github") as HTMLAnchorElement, bar = document.querySelector(".bar")!;
+  return a.href === "https://github.com/janne-s/Suu" && bar.lastElementChild === a && a.getBoundingClientRect().right > innerWidth - 40;
+}));
 ok("credits name the author and the repo", (await page.locator('#info a[href="https://github.com/janne-s/Suu"]').count()) === 1);
 await page.evaluate(() => {
   localStorage.setItem("suu.session.v1", JSON.stringify({ active: "A", A: { suu: 1, bpm: 140, seq: { steps: 5 } } }));

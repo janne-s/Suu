@@ -1977,6 +1977,7 @@ const TIPS = {
   "#speech": "Speed\nHow fast it's spoken: the consonants and moves between sounds. Double-click: ×1.",
   "#textgate": "Gate\nHow much of each part you hear: the sound is cut after this share of a tick (clock) or of its spoken length (notes). Double-click: 100%.",
   "#motion-fold": "Motion\nShow or hide the rows.",
+  "#github": "GitHub\nSuu's source code and the plug-in's releases.",
   "#motion-reset": "Reset\nEvery depth back to 0.",
   "#play": "Play (Space)\nStart or stop the sequencer.",
   "#rate": "Rate\nThe steps' note value.",

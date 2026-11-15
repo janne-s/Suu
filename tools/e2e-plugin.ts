@@ -179,7 +179,7 @@ ok("PLAY and STOP look the same size", (await box()) === before, `${before} vs $
 ok("PLAY reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq" && m.value === 1));
 await page.screenshot({ path: (process.argv[3] ?? "out/suu-plugin.png").replace(".png", "-seq.png"), clip: { x: 0, y: 410, width: 260, height: 70 } });
 await page.click("#play");
-for (const sel of ['[data-in="file"]', "#slotA", "#spaceon", "#peak"]) ok(`${sel} hidden`, !(await page.isVisible(sel)));
+for (const sel of ['[data-in="file"]', "#slotA", "#spaceon", "#peak", "#github"]) ok(`${sel} hidden`, !(await page.isVisible(sel)));
 const scroll = await page.evaluate(() => [document.documentElement.scrollWidth > innerWidth, document.documentElement.scrollHeight > innerHeight]);
 ok("the window's first size, 1280x640, is one window", !scroll[0] && !scroll[1], JSON.stringify(scroll));
 await page.screenshot({ path: process.argv[3] ?? "out/suu-plugin.png" });
