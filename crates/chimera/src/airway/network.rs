@@ -298,6 +298,8 @@ pub struct AirwayNetwork {
     pub wall_u: Vec<f64>,
     node_tube: Vec<usize>,
     visc_f: Vec<f64>,
+    visc_f_target: Vec<f64>,
+    visc_f_step: Vec<f64>,
     rad_of: Vec<i32>,
 
     // --- branches ---
@@ -447,6 +449,8 @@ impl AirwayNetwork {
             wall_u: Vec::new(),
             node_tube: Vec::new(),
             visc_f: Vec::new(),
+            visc_f_target: Vec::new(),
+            visc_f_step: Vec::new(),
             rad_of: Vec::new(),
             n_branches: 0,
             b_a: Vec::new(),
@@ -612,6 +616,8 @@ impl AirwayNetwork {
         self.wall_u = zf(n);
         self.node_tube = vec![0; n];
         self.visc_f = zf(n);
+        self.visc_f_target = zf(n);
+        self.visc_f_step = zf(n);
         self.rad_of = vec![-1; n];
         for ti in 0..self.tubes.len() {
             let t = self.tubes[ti];
@@ -631,6 +637,7 @@ impl AirwayNetwork {
                 self.dx_target[k] = dx;
                 self.node_tube[k] = t.index;
                 self.visc_f[k] = spec.viscous_factor;
+                self.visc_f_target[k] = spec.viscous_factor;
                 if let Some(w) = spec.wall {
                     self.has_wall[k] = true;
                     self.wall_m[k] = w.mass;
@@ -763,10 +770,7 @@ impl AirwayNetwork {
     #[inline]
     /// × on one node's viscous wall loss (its tube's factor is the default); takes effect next step.
     pub fn set_viscous_factor(&mut self, node: usize, f: f64) {
-        if self.visc_f[node] != f {
-            self.visc_f[node] = f;
-            self.coef_valid = false;
-        }
+        self.visc_f_target[node] = f;
     }
 
     pub fn set_fixed_pressure(&mut self, node: usize, p: f64) {
@@ -780,6 +784,8 @@ impl AirwayNetwork {
             self.area[k] = self.area_target[k];
             self.amin[k] = self.amin_target[k];
             self.dx[k] = self.dx_target[k];
+            self.visc_f[k] = self.visc_f_target[k];
+            self.visc_f_step[k] = 0.0;
             self.vol[k] = js_max(self.area[k], self.min_node_area) * self.dx[k];
             self.inv_a[k] = 1.0 / js_max(self.area[k], 1e-6);
             self.area_step[k] = 0.0;
@@ -802,6 +808,14 @@ impl AirwayNetwork {
             self.area_step[k] = (self.area_target[k] - self.area[k]) * inv;
             self.amin_step[k] = (self.amin_target[k] - self.amin[k]) * inv;
             self.dx_step[k] = (self.dx_target[k] - self.dx[k]) * inv;
+            let vf = self.visc_f_target[k] - self.visc_f[k];
+            if vf != 0.0 && vf.abs() <= 1e-9 * self.visc_f_target[k].abs() {
+                self.visc_f[k] = self.visc_f_target[k];
+                self.visc_f_step[k] = 0.0;
+                self.coef_valid = false;
+            } else {
+                self.visc_f_step[k] = vf * inv;
+            }
             if !self.fixed[k] {
                 let ap = self.p[k].abs();
                 if ap > max_p {
@@ -912,7 +926,7 @@ impl AirwayNetwork {
             let dx = &mut self.dx;
             let inj = &mut self.spill; // the per-node raw injection accumulator
             for k in 0..n {
-                if fresh && self.area_step[k] == 0.0 && self.amin_step[k] == 0.0 && self.dx_step[k] == 0.0 {
+                if fresh && self.area_step[k] == 0.0 && self.amin_step[k] == 0.0 && self.dx_step[k] == 0.0 && self.visc_f_step[k] == 0.0 {
                     // area, minimum, length, coefficients and volume as last step; its own
                     // volume source is −0 (adds nothing)
                     self.inv_lsum[k] = 0.0;
@@ -932,6 +946,7 @@ impl AirwayNetwork {
                 let amk = if am > a { a } else { am };
                 amin[k] = amk;
                 dx[k] += self.dx_step[k];
+                self.visc_f[k] += self.visc_f_step[k];
                 let d = dx[k];
                 let ia = 1.0 / (if a > 1e-6 { a } else { 1e-6 });
                 self.inv_a[k] = ia;

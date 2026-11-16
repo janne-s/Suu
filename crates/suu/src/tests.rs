@@ -1968,3 +1968,28 @@ fn fast_mouth_moves_stay_stable_at_every_quality() {
         }
     }
 }
+
+#[test]
+fn closing_with_damping_and_no_whistle_does_not_click() {
+    let p = Params {
+        osc_db: -60.0, input_db: -60.0, aspiration: 1.7, coarse: -12.0, damping: 14.787, folds: 1.03, frication: 0.74, inject: 0.439,
+        move_sound: 1.06, open: 0.895, shift: -0.106, sibilance: 0.0, whistle: 0.0, note: 45.0,
+        text_step: TextStep::Clock, text_unit: TextUnit::Word, text_seq: false, ..Params::default()
+    };
+    let mut s = Suu::new(48000.0);
+    s.set_params(p);
+    s.load_dict("WOW  W AW1\nYEAH  Y AE1\nOH  OW1\nNOW  N AW1\nWAH  W AA1\n");
+    s.set_text("wow yeah oh yeah now wah wow");
+    let mut out = Vec::new();
+    for _ in 0..6 {
+        s.set_params(Params { gate: true, ..p });
+        s.note_start();
+        out.extend(run(&mut s, 128, 24064));
+        s.set_params(Params { gate: false, ..p });
+        out.extend(run(&mut s, 128, 24064));
+    }
+    let step = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0f32, f32::max);
+    let peak = out.iter().fold(0f32, |m, v| m.max(v.abs()));
+    assert!(step < 0.2, "largest step between samples {step:.3} (0.71 when the whistle loss stepped once per control period)");
+    assert!(peak < 0.6, "peak {peak:.3} (0.75, the limiter, before)");
+}
