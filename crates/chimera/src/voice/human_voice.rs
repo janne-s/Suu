@@ -274,9 +274,22 @@ impl HumanVoice {
 
     /// As `with_min_cells`, with a coarser tube (`HumanAirway::with_resolution`).
     pub fn with_resolution(fs_out: f64, body: HumanBody, oversample: usize, min_cells: usize, coarse: f64) -> Self {
+        Self::with_airway(fs_out, oversample, |fs| HumanAirway::with_resolution(fs, body, min_cells, coarse))
+    }
+
+    pub fn with_layout(fs_out: f64, body: HumanBody, oversample: usize, min_cells: usize, tract_coarse: f64, rest_coarse: f64) -> Self {
+        Self::with_airway(fs_out, oversample, |fs| HumanAirway::with_layout(fs, body, min_cells, tract_coarse, rest_coarse))
+    }
+
+    pub fn with_control_every(mut self, samples: usize) -> Self {
+        self.ctrl_every = samples.max(1) * self.m;
+        self
+    }
+
+    fn with_airway(fs_out: f64, oversample: usize, airway: impl FnOnce(f64) -> HumanAirway) -> Self {
         let m = oversample;
         let fs = fs_out * m as f64;
-        let airway = HumanAirway::with_resolution(fs, body, min_cells, coarse);
+        let airway = airway(fs);
         let n_tract = airway.n_ph + airway.n_or;
         let mut v = HumanVoice {
             fs_out,

@@ -520,14 +520,13 @@ pub fn snap_to_scale(n: f64, scale: u16) -> f64 {
 }
 
 const LEAN_CELLS: usize = 6;
-const LO_CELLS: usize = 4;
-const LO_COARSE: f64 = 2.0;
+const LO_REST_COARSE: f64 = 2.0;
+const LO_CONTROL_EVERY: usize = 256;
 
 fn oversample_for(fs: f64, k: f64, q: Quality) -> usize {
     if q != Quality::Hq {
         let body = HumanBody { name: "suu", scale: k, ..BODY_MALE };
-        let cells = if q == Quality::Lo { LO_CELLS } else { LEAN_CELLS };
-        return (1..=4).find(|&m| HumanAirway::fits(fs * m as f64, &body, cells)).unwrap_or(4);
+        return (1..=4).find(|&m| HumanAirway::fits(fs * m as f64, &body, LEAN_CELLS)).unwrap_or(4);
     }
     let base: usize = if k < 0.5 {
         4
@@ -575,7 +574,7 @@ impl Mouth {
         let mut v = Box::new(match seed.quality {
             Quality::Hq => HumanVoice::new(seed.fs, body, os),
             Quality::Lean => HumanVoice::with_min_cells(seed.fs, body, os, LEAN_CELLS),
-            Quality::Lo => HumanVoice::with_resolution(seed.fs, body, os, LO_CELLS, LO_COARSE),
+            Quality::Lo => HumanVoice::with_layout(seed.fs, body, os, LEAN_CELLS, 1.0, LO_REST_COARSE).with_control_every(LO_CONTROL_EVERY),
         });
         v.artic = seed.artic.clone();
         v.airway.profile = seed.profile.to_vec();

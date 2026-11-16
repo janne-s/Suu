@@ -2097,7 +2097,7 @@ const TIPS = {
   "#textplay": "On play\nThe text starts over when the host's transport starts.",
   "#textgrid": "Grid (text)\nThe speech moves only on this note value's lines, for a stepped, robotic voice. With STEP NOTE each part starts on a line. GRID: the modulation's. FREE: as it comes.",
   "#gridbreath": "Breath\nHow far the text's breath and voicing follow its grid. 0%: as they come.",
-  "#hq": "Quality\nHQ: full detail. LEAN: lighter on the CPU. LO: coarser and duller, lightest. Click to step through.",
+  "#hq": "Quality\nHQ: full detail. LEAN: lighter on the CPU. LO: lightest; fast mouth moves a little smoother. Click to step through.",
   "#textround": "Round\nFades each spoken part in and out. 0%: the sound stays on. Double-click: 0%.",
   "#textfit": "Fit\nEach note lasts as long as its syllable or word, even with the key held. On the clock the gaps between parts are silent.",
   "#legato": "Retrig / Legato\nRETRIG: every note starts the envelope again. LEGATO: a note while the sound is open goes on with it (only the pitch moves).",

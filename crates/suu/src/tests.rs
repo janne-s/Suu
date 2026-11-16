@@ -1423,13 +1423,13 @@ fn a_note_starts_without_a_thump() {
 }
 
 #[test]
-fn lo_is_coarser_than_lean_and_stable_at_every_size() {
+fn lo_is_lighter_than_lean_and_stable_at_every_size() {
     for size in [0.4, 0.5, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0, 4.0] {
         let mut s = Suu::new(48000.0);
         s.set_params(Params { gate: true, hq: false, lofi: true, folds: 0.5, ..Params::default() });
         s.set_size(size);
         assert_eq!(s.quality(), Quality::Lo);
-        assert!(s.voice.m <= oversample_for(48000.0, size, Quality::Lean), "size {size}: no higher rate than lean");
+        assert_eq!(s.voice.m, oversample_for(48000.0, size, Quality::Lean), "size {size}: the rate of lean");
         let (inp, mut out) = ([0f32; 128], [0f32; 128]);
         let mut peak = 0f32;
         for b in 0..1500 {
@@ -1449,11 +1449,47 @@ fn lo_is_coarser_than_lean_and_stable_at_every_size() {
         let mut s = Suu::new(48000.0);
         s.set_params(Params { hq: false, lofi, ..Params::default() });
         s.set_size(1.0);
-        (s.voice.m, s.voice.airway.n_ph + s.voice.airway.n_or)
+        let a = &s.voice.airway;
+        (s.voice.m, a.n_ph + a.n_or, a.trachea.n + a.nasal.n + a.fossa.n)
     };
-    let ((m_lean, lean), (m_lo, lo)) = (cells(false), cells(true));
+    let ((m_lean, tract_lean, rest_lean), (m_lo, tract_lo, rest_lo)) = (cells(false), cells(true));
     assert_eq!((m_lean, m_lo), (1, 1), "size 1: both at the output rate");
-    assert!(lo < lean, "lo {lo} cells, lean {lean}");
+    assert_eq!(tract_lo, tract_lean, "the tract as fine as lean's");
+    assert!(rest_lo < rest_lean, "trachea, nose and sinus: lo {rest_lo} cells, lean {rest_lean}");
+}
+
+fn span_db(x: &[f32], lo: f64, hi: f64) -> f64 {
+    let n = 2048;
+    let mut e = 0.0;
+    for frame in x.chunks_exact(n) {
+        for k in (lo * n as f64 / 48000.0) as usize..(hi * n as f64 / 48000.0) as usize {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (i, v) in frame.iter().enumerate() {
+                let w = *v as f64 * (0.5 - 0.5 * cos(2.0 * PI * i as f64 / n as f64));
+                let ph = 2.0 * PI * (k * i) as f64 / n as f64;
+                re += w * cos(ph);
+                im -= w * sin(ph);
+            }
+            e += re * re + im * im;
+        }
+    }
+    10.0 * (e + 1e-30).log10()
+}
+
+#[test]
+fn lo_keeps_the_highs_of_lean() {
+    let render = |lofi: bool| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, hq: false, lofi, ..Params::default() });
+        s.set_size(1.0);
+        let out = run(&mut s, 128, 48000 + 8192);
+        out[48000..].to_vec()
+    };
+    let (lean, lo) = (render(false), render(true));
+    for (a, b) in [(1500.0, 4000.0), (4000.0, 7000.0), (7000.0, 10000.0), (10000.0, 14000.0)] {
+        let d = span_db(&lo, a, b) - span_db(&lean, a, b);
+        assert!(d.abs() < 1.0, "{a}–{b} Hz: lo {d:+.1} dB against lean (the coarse tube was −30 dB above 7 kHz)");
+    }
 }
 
 fn round_clock(round: f64) -> Suu {
@@ -1852,11 +1888,21 @@ fn canon_phase_and_mirror_do_not_allocate() {
 
 #[test]
 fn a_changing_breath_does_not_buzz_at_the_folds_control_rate() {
+    breath_buzz(false, 750.0);
+}
+
+#[test]
+fn a_changing_breath_does_not_buzz_at_lo_control_rate() {
+    breath_buzz(true, 48000.0 / LO_CONTROL_EVERY as f64);
+}
+
+fn breath_buzz(lofi: bool, rate: f64) {
     let mut s = Suu::new(48000.0);
     s.load_dict("WOW  W AW1\nYEAH  Y AE1\nOH  OW1\nNOW  N AW1\nWAH  W AA1\n");
     s.set_params(Params {
         osc_db: -59.2, drive_db: -40.0, breath: 2.8, follow: 0.68, aspiration: 0.0, frication: 0.0, sibilance: 0.0, move_sound: 0.0, release_s: 1.6,
         text_step: TextStep::Note, text_unit: TextUnit::Word, text_say: TextSay::Shot, text_round: 0.48, text_seq: false,
+        hq: !lofi, lofi,
         ..Params::default()
     });
     s.set_size(1.37);
@@ -1882,7 +1928,7 @@ fn a_changing_breath_does_not_buzz_at_the_folds_control_rate() {
         10.0 * (s1 * s1 + s2 * s2 - c * s1 * s2).max(1e-30).log10()
     };
     let rms = 10.0 * (out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / out.len() as f64 + 1e-30).log10();
-    let (buzz, around) = (bin(750.0), (bin(700.0) + bin(800.0)) / 2.0);
+    let (buzz, around) = (bin(rate), (bin(rate - 50.0) + bin(rate + 50.0)) / 2.0);
     assert!(rms < -40.0, "the near-silent preset stays near silent: {rms:.1} dB (was -26.5 with the buzz)");
-    assert!(buzz < around + 15.0, "no strong line at 750 Hz (36 dB above its surroundings with the bug): {buzz:.1} dB against {around:.1} dB beside it");
+    assert!(buzz < around + 15.0, "no strong line at {rate} Hz (36 dB above its surroundings with the bug): {buzz:.1} dB against {around:.1} dB beside it");
 }

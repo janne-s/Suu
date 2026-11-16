@@ -134,12 +134,15 @@ impl HumanAirway {
     /// As `with_min_cells`, with sections `coarse` times longer than the stable step allows
     /// (`coarse` ≥ 1): fewer cells at the same rate, a lower-resolution tube that stays stable.
     pub fn with_resolution(fs: f64, body: HumanBody, min_cells: usize, coarse: f64) -> Self {
+        Self::with_layout(fs, body, min_cells, coarse, coarse)
+    }
+
+    pub fn with_layout(fs: f64, body: HumanBody, min_cells: usize, tract_coarse: f64, rest_coarse: f64) -> Self {
         let k = body.scale;
         let tract = HumanVocalTract::new(body);
         let mut net = AirwayNetwork::new(fs);
-        let coarse = js_max(1.0, coarse);
-        let dx_min = coarse * (C_SOUND / fs) / 0.93;
-        let (n_ph, n_or) = Self::cells(fs / coarse, &body, min_cells);
+        let dx_min = js_max(1.0, rest_coarse) * (C_SOUND / fs) / 0.93;
+        let (n_ph, n_or) = Self::cells(fs / js_max(1.0, tract_coarse), &body, min_cells);
 
         let tr_len = 12.0 * k;
         let trachea = net.add_tube(TubeSpec::new("trachea", js_max(6.0, (tr_len / js_max(dx_min, 0.9 * k)).floor()) as usize, tr_len, Area::Uniform(2.5 * k * k)).wall(Some(WALL_TRACHEA)));

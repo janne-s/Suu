@@ -68,7 +68,7 @@ to change it. **Gate** scales every step's length alike.
 - **Body** — Size of the mouth (0.4–4×), Breath (lung pressure for the
   consonants and folds) and Follow (how far it follows the sound). The
   quality button steps through **HQ**, **Lean** (two to three times lighter)
-  and **Lo** (a coarser airway: duller, stranger and lighter still).
+  and **Lo** (lighter still; fast mouth moves are a little smoother).
 - **Air** — The airway's turbulence, each source on its own: Aspir (breath at
   the folds, h), Fric (the narrowest point: f, sh) and Sibil (the teeth: s),
   0–1000%. Whistle tames the ringing of a mouth closed at both the tongue and
