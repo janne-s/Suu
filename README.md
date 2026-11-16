@@ -171,3 +171,9 @@ license with its source.
 CHIMERA's engine (`crates/chimera/`) is © 2026 Jameson Hodge under the
 [MIT License](crates/chimera/LICENSE). The CMU Pronouncing Dictionary and the
 AVHershey fonts keep their own licenses ([data/](data/), [data/fonts/](data/fonts/)).
+
+## Support Suu
+
+Support development through [GitHub Sponsors](https://github.com/sponsors/janne-s)
+or [Ko-fi](https://ko-fi.com/jannesarkela). See
+[Sanara Creations](https://www.sanaracreations.fi/) for related work.
