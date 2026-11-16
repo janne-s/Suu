@@ -13,6 +13,10 @@ function post(m, transfer) {
   if (inPlugin) return pluginPost(m);
   node?.port.postMessage(m, transfer ?? []);
 }
+function setText(el, t) {
+  t = String(t);
+  if (el.textContent !== t) el.textContent = t;
+}
 function send(id, v) {
   post({ type: "param", id, v });
 }
@@ -156,7 +160,7 @@ function update(key, v, final = true) {
   const n = toNorm(c, v);
   c.input.value = n;
   c.input.style.setProperty("--turn", `${270 * n}deg`);
-  c.output.textContent = c.sync && SYNCABLE[key].showDiv ? c.sync : c.fmt(c.sync ? eff(key) : v);
+  setText(c.output, c.sync && SYNCABLE[key].showDiv ? c.sync : c.fmt(c.sync ? eff(key) : v));
   c.cell.classList.toggle("beyond", !!c.anat && (v < c.anat[0] - 1e-9 || v > c.anat[1] + 1e-9));
   c.cell.dataset.tip = KNOB_TIPS[key] ?? c.label;
   if (c.target === "space") setSpace();
@@ -212,7 +216,7 @@ function knob(parent, [key, label, min, max, def, fmt, curve, target, anat]) {
   if (SYNCABLE[key]) {
     const btn = document.createElement("button");
     btn.className = "sync";
-    btn.textContent = "♪";
+    setText(btn, "♪");
     btn.dataset.tip = "Sync\nA note value at the tempo instead of a time.";
     btn.setAttribute("aria-pressed", "false");
     const box = document.createElement("select");
@@ -259,7 +263,7 @@ function setGlideDir(d) {
   glideDir = d;
   send(35, d);
   const b = $("glidedir");
-  b.textContent = ["↕", "↑", "↓"][d];
+  setText(b, ["↕", "↑", "↓"][d]);
   const said = ["Glide both ways", "Glide up only (down jumps)", "Glide down only (up jumps)"][d];
   b.dataset.tip = `Direction\n${said}. Click to change.`;
   b.setAttribute("aria-label", said);
@@ -300,19 +304,19 @@ function setBase(r, v, sendIt = true) {
   dirty = true;
   r.base = clamp(v, r.lo, r.hi);
   r.input.value = baseNorm(r, r.base);
-  r.out.textContent = r.fmt(r.base);
+  setText(r.out, r.fmt(r.base));
   if (sendIt) send(r.param, r.base);
 }
 function sendMod(r) {
   const env = r.shape === 5;
   post({ type: "mod", target: r.t, depth: r.depth, rate: r.rate, sync: r.sync ? divBeats(r.sync) : 0, shape: r.shape, smooth: r.smooth });
-  r.smoothBox.textContent = Math.round(r.smooth * 100) + "%";
+  setText(r.smoothBox, Math.round(r.smooth * 100) + "%");
   r.smoothBox.classList.toggle("idle", ![2, 3, 4].includes(r.shape));
   r.el.classList.toggle("active", r.depth !== 0);
   r.el.classList.toggle("env", env);
-  r.depthBox.textContent = (r.depth > 0 ? "+" : "") + Math.round(r.depth * 100) + "%";
+  setText(r.depthBox, (r.depth > 0 ? "+" : "") + Math.round(r.depth * 100) + "%");
   r.depthBox.classList.toggle("on", r.depth !== 0);
-  r.rateVal.textContent = r.rate < 1 ? r.rate.toFixed(2) + " Hz" : r.rate.toFixed(1) + " Hz";
+  setText(r.rateVal, r.rate < 1 ? r.rate.toFixed(2) + " Hz" : r.rate.toFixed(1) + " Hz");
   r.rateVal.hidden = !!r.sync;
   r.rateSel.hidden = !r.sync;
   r.syncBtn.setAttribute("aria-pressed", String(!!r.sync));
@@ -474,8 +478,8 @@ function buildWave(newRandom = false) {
 }
 function showHornWave() {
   $("horn-shape").value = String(hornWave.shape);
-  $("horn-cycles").textContent = String(hornWave.cycles);
-  $("horn-depth").textContent = Math.round(hornWave.depth * 100) + "%";
+  setText($("horn-cycles"), String(hornWave.cycles));
+  setText($("horn-depth"), Math.round(hornWave.depth * 100) + "%");
 }
 function resetHorn() {
   horn = defaultHorn();
@@ -839,7 +843,7 @@ function frameLoop() {
     for (const v of t) p = Math.max(p, Math.abs(v));
     peakHold = Math.max(p, peakHold * 0.97);
     const db = 20 * Math.log10(peakHold + 1e-9);
-    $("peak").textContent = (db < -90 ? "−∞" : db.toFixed(1)) + " dB";
+    setText($("peak"), (db < -90 ? "−∞" : db.toFixed(1)) + " dB");
     $("peak").style.color = peakHold > 0.99 ? color("--warn") : "";
   }
 }
@@ -896,7 +900,7 @@ for (const ev of ["pointerdown", "pointerup", "touchend", "click", "keydown"]) a
 let statusTimer = 0;
 function status(t, keep = false) {
   const el = $("status");
-  el.textContent = t;
+  setText(el, t);
   el.classList.remove("fade");
   clearTimeout(statusTimer);
   if (!keep) statusTimer = setTimeout(() => el.classList.add("fade"), 4000);
@@ -914,7 +918,7 @@ function onWorklet(m) {
     textOn = m.syllables > 0;
     lastSyllables = m.syllables;
     countUnits();
-    $("text-toggle").textContent = textOn ? `TEXT · ${m.syllables}` : "TEXT";
+    setText($("text-toggle"), textOn ? `TEXT · ${m.syllables}` : "TEXT");
     playLabel($("singtext"), textOn, "SING");
     $("singtext").setAttribute("aria-pressed", String(textOn));
   } else if (m.type === "ui") {
@@ -1019,7 +1023,7 @@ let stereoOn = false;
 function setStereo(on) {
   stereoOn = on;
   $("stereoon").setAttribute("aria-pressed", String(on));
-  $("stereoon").textContent = on ? "ON" : "OFF";
+  setText($("stereoon"), on ? "ON" : "OFF");
   send(74, on ? 1 : 0);
 }
 $("stereoon").onclick = () => setStereo(!stereoOn);
@@ -1040,7 +1044,7 @@ let spaceOn = true;
 $("spaceon").onclick = () => {
   spaceOn = !spaceOn;
   $("spaceon").setAttribute("aria-pressed", String(spaceOn));
-  $("spaceon").textContent = spaceOn ? "ON" : "OFF";
+  setText($("spaceon"), spaceOn ? "ON" : "OFF");
   setSpace();
 };
 
@@ -1139,7 +1143,7 @@ function showRoot() {
   const t = pitchFrom && ui && ui.length > 23 + UI_AREAS ? ui[23 + UI_AREAS] : 0;
   const m = t > 0 ? Math.round(t) : lastNote;
   $("notename").value = String(((m % 12) + 12) % 12);
-  $("rootoct").textContent = String(Math.floor(m / 12) - 1);
+  setText($("rootoct"), String(Math.floor(m / 12) - 1));
 }
 let pitchFrom = 0;
 function setPitchFrom(v) {
@@ -1153,7 +1157,7 @@ $("pitchfrom").onchange = () => setPitchFrom(+$("pitchfrom").value);
 let legato = false;
 function setLegato(on) {
   legato = on;
-  $("legato").textContent = on ? "LEGATO" : "RETRIG";
+  setText($("legato"), on ? "LEGATO" : "RETRIG");
   $("legato").setAttribute("aria-pressed", String(on));
   send(52, on ? 1 : 0);
 }
@@ -1162,7 +1166,7 @@ let scale = 0xfff, jump = 0, jumpFold = true;
 const SCALES = { all: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], maj: [0, 2, 4, 5, 7, 9, 11], min: [0, 2, 3, 5, 7, 8, 10], penta: [0, 2, 4, 7, 9], minpenta: [0, 3, 5, 7, 10] };
 NAMES.forEach((n, i) => {
   const b = document.createElement("button");
-  b.textContent = n;
+  setText(b, n);
   b.dataset.pc = String(i);
   b.onclick = () => setScale(scale ^ (1 << i));
   $("scale-notes").append(b);
@@ -1178,7 +1182,7 @@ for (const b of document.querySelectorAll("[data-preset]")) {
 function setJump(st, fold) {
   jump = clamp(Math.round(st), 0, 48);
   jumpFold = fold;
-  $("jump").textContent = jump === 0 ? "any" : "±" + jump + " st";
+  setText($("jump"), jump === 0 ? "any" : "±" + jump + " st");
   for (const b of document.querySelectorAll("[data-jump]")) b.setAttribute("aria-pressed", String((b.dataset.jump === "1") === fold));
   send(59, jump);
   send(60, fold ? 1 : 0);
@@ -1226,9 +1230,9 @@ for (const id of ["mpe-pressure-to", "mpe-slide-to"]) $(id).innerHTML = EXPR_TAR
 function showMpe() {
   $("mpe-pressure-to").value = String(mpe.pressureTo);
   $("mpe-slide-to").value = String(mpe.slideTo);
-  $("mpe-pressure-depth").textContent = Math.round(mpe.pressureDepth * 100) + "%";
-  $("mpe-slide-depth").textContent = Math.round(mpe.slideDepth * 100) + "%";
-  $("mpe-bend").textContent = "±" + mpe.bend + " st";
+  setText($("mpe-pressure-depth"), Math.round(mpe.pressureDepth * 100) + "%");
+  setText($("mpe-slide-depth"), Math.round(mpe.slideDepth * 100) + "%");
+  setText($("mpe-bend"), "±" + mpe.bend + " st");
   send(70, mpe.pressureTo);
   send(71, mpe.pressureDepth);
   send(72, mpe.slideTo);
@@ -1294,8 +1298,8 @@ function setGrid(div) {
 function setGridMore(breath, smooth) {
   gridBreath = clamp(breath, 0, 1);
   gridSmooth = clamp(smooth, 0, 1);
-  $("gridbreath").textContent = Math.round(gridBreath * 100) + "%";
-  $("gridsmooth").textContent = Math.round(gridSmooth * 100) + "%";
+  setText($("gridbreath"), Math.round(gridBreath * 100) + "%");
+  setText($("gridsmooth"), Math.round(gridSmooth * 100) + "%");
   send(61, gridBreath);
   send(62, gridSmooth);
 }
@@ -1310,7 +1314,7 @@ const QUALITY = ["HQ", "LEAN", "LO"];
 function setQuality(q) {
   hq = q === 0;
   lofi = q === 2;
-  $("hq").textContent = QUALITY[q];
+  setText($("hq"), QUALITY[q]);
   $("hq").setAttribute("aria-pressed", String(q !== 1));
   send(56, hq ? 1 : 0);
   send(68, lofi ? 1 : 0);
@@ -1441,7 +1445,7 @@ function setSeqOpen(v) {
 function setSeqVowel(v) {
   seqVowel = Math.round(clamp(v, 0, 1) * 100) / 100;
   send(88, seqVowel);
-  $("seqvowel").textContent = Math.round(seqVowel * 100) + "%";
+  setText($("seqvowel"), Math.round(seqVowel * 100) + "%");
   $("seqvowel").classList.toggle("on", seqVowel !== 1);
 }
 $("seqopen").onchange = () => setSeqOpen(+$("seqopen").value);
@@ -1451,7 +1455,7 @@ setSeqOpen(0);
 setSeqVowel(1);
 function sendSeq() {
   post({ type: "seq", len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: seqGate });
-  $("seqgate").textContent = Math.round(seqGate * 100) + "%";
+  setText($("seqgate"), Math.round(seqGate * 100) + "%");
   $("seqgate").classList.toggle("on", seqGate !== 1);
   renderSteps();
 }
@@ -1473,8 +1477,8 @@ function renderSteps() {
     c.el.style.setProperty("--len", s.len);
     c.el.style.setProperty("--glen", Math.min(1, s.len * seqGate));
     c.el.classList.toggle("off-len", i >= len);
-    c.label.textContent = s.on ? (s.note > 0 ? "+" + s.note : s.note < 0 ? "−" + -s.note : "0") : "–";
-    c.vowel.textContent = VOWELS[s.vowel + 1];
+    setText(c.label, s.on ? (s.note > 0 ? "+" + s.note : s.note < 0 ? "−" + -s.note : "0") : "–");
+    setText(c.vowel, VOWELS[s.vowel + 1]);
     c.vowel.classList.toggle("set", s.vowel >= 0);
   });
 }
@@ -1608,7 +1612,7 @@ let learning = false;
 function setLearning(on) {
   learning = on;
   $("textlearn").setAttribute("aria-pressed", String(on));
-  $("textlearn").textContent = on ? "PLAY A NOTE…" : "LEARN";
+  setText($("textlearn"), on ? "PLAY A NOTE…" : "LEARN");
 }
 $("textlearn").onclick = () => {
   setLearning(!learning);
@@ -1667,16 +1671,16 @@ function sendText(final = true) {
   send(38, tx.gate);
   send(64, tx.round);
   send(69, tx.fit ? 1 : 0);
-  $("textround").textContent = Math.round(tx.round * 100) + "%";
+  setText($("textround"), Math.round(tx.round * 100) + "%");
   $("textround").classList.toggle("on", tx.round > 0);
   $("textfit").setAttribute("aria-pressed", String(tx.fit));
   send(63, tx.grid === "GRID" ? -1 : tx.grid ? divBeats(tx.grid) : 0);
   $("textgrid").value = tx.grid ?? "";
-  $("textreset").textContent = tx.resetNote < 0 ? "off" : String(tx.resetNote);
+  setText($("textreset"), tx.resetNote < 0 ? "off" : String(tx.resetNote));
   $("textresetoff").hidden = tx.resetNote < 0;
   $("textplay").setAttribute("aria-pressed", String(tx.restartPlay));
   $("tbreathbox").hidden = !tx.grid;
-  $("textgate").textContent = Math.round(tx.gate * 100) + "%";
+  setText($("textgate"), Math.round(tx.gate * 100) + "%");
   $("textgate").classList.toggle("on", tx.gate < 1);
   const press = (attr, v) => document.querySelectorAll(`[${attr}]`).forEach((b) => b.setAttribute("aria-pressed", String(b.getAttribute(attr) === String(v))));
   press("data-tstep", tx.step);
@@ -1686,13 +1690,13 @@ function sendText(final = true) {
   press("data-tonce", +tx.once);
   $("clockrate").hidden = tx.step !== 1;
   $("lenbox").hidden = !(tx.step === 1 && tx.say === 0);
-  $("textlen").textContent = Math.round(tx.len * 100) + "%";
-  $("loophz").textContent = tx.rate.toFixed(tx.rate < 10 ? 1 : 0) + "/s";
+  setText($("textlen"), Math.round(tx.len * 100) + "%");
+  setText($("loophz"), tx.rate.toFixed(tx.rate < 10 ? 1 : 0) + "/s");
   $("loophz").hidden = !!tx.sync;
   $("loopdiv").hidden = !tx.sync;
   if (tx.sync) $("loopdiv").value = tx.sync;
   $("loopsync").setAttribute("aria-pressed", String(!!tx.sync));
-  $("speech").textContent = "×" + tx.speech.toFixed(2);
+  setText($("speech"), "×" + tx.speech.toFixed(2));
   $("speech").classList.toggle("on", tx.speech !== 1);
   countUnits();
   if (final && textOn) sing($("text").value);
@@ -1972,7 +1976,7 @@ function applyState(st) {
   sendSeq();
   spaceOn = st.space;
   $("spaceon").setAttribute("aria-pressed", String(spaceOn));
-  $("spaceon").textContent = spaceOn ? "ON" : "OFF";
+  setText($("spaceon"), spaceOn ? "ON" : "OFF");
   setSpace();
   setOsc(String(st.source));
   horn = Float32Array.from(st.horn);
@@ -2018,8 +2022,8 @@ function save() {
 function showSlots() {
   for (const k of ["A", "B"]) $("slot" + k).setAttribute("aria-pressed", String(slots.active === k));
   const other = slots.active === "A" ? "B" : "A";
-  $("preset-slot").textContent = " " + slots.active;
-  $("copyab").textContent = `${slots.active}→${other}`;
+  setText($("preset-slot"), " " + slots.active);
+  setText($("copyab"), `${slots.active}→${other}`);
   $("copyab").dataset.tip = `Copy ${slots.active} → ${other}\nThis side's settings onto the other.`;
 }
 function load(st, what) {
@@ -2234,7 +2238,7 @@ function showTip(el) {
   const [name, ...rest] = el.dataset.tip.split("\n");
   tipEl.replaceChildren();
   const b = document.createElement("b");
-  b.textContent = name;
+  setText(b, name);
   tipEl.append(b);
   if (rest.length) tipEl.append(rest.join(" "));
   tipEl.hidden = false;

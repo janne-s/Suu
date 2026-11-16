@@ -85,6 +85,19 @@ ok("host OPEN and pulse not echoed", !(await sent()).some((m) => m.type === "set
 await page.selectOption("#seqopen", "4");
 await frames();
 ok("OPEN + IN reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq_open" && m.value === 4));
+const rebuilt: string[] = await page.evaluate(async () => {
+  const hit = new Set<string>();
+  const mo = new MutationObserver((ms) => { for (const m of ms) { const e = (m.target.nodeType === 1 ? m.target : m.target.parentElement) as Element; if (m.type !== "attributes" && e && !e.matches('output[for="tilt"]')) hit.add(e.id || e.tagName); } });
+  mo.observe(document.body, { subtree: true, childList: true, characterData: true });
+  for (let t = 0; t < 20; t++) {
+    (window as any).onPluginMessage({ type: "params", values: { tilt: 300 + 10 * t } });
+    await new Promise((r) => setTimeout(r, 16));
+  }
+  mo.disconnect();
+  return [...hit];
+});
+ok("host changes rewrite only what they change (WebKit loses a click on a replaced text)", rebuilt.length === 0, rebuilt.join(" "));
+await sent();
 const hqBefore = await page.getAttribute("#hq", "aria-pressed");
 await page.click("#hq");
 await tell({ type: "params", values: { tilt: 500 } });
