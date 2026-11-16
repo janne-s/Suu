@@ -1956,7 +1956,7 @@ const store = {
     }
   },
   save(text) {
-    if (inPlugin) return;
+    if (inPlugin) return plugin.ready && sendToPlugin({ type: "slots", json: text });
     try {
       localStorage.setItem(this.key, text);
     } catch {}
@@ -2400,6 +2400,14 @@ if (inPlugin) {
       }
       plugin.words = st.text.words;
       applyHost(st, m.values);
+      try {
+        const saved = m.slots ? JSON.parse(m.slots) : {};
+        slots.active = saved.active === "B" ? "B" : "A";
+        slots.A = saved.A ?? null;
+        slots.B = saved.B ?? null;
+      } catch {}
+      showSlots();
+      savedText = "";
       plugin.ui = JSON.stringify(getState());
       plugin.ready = true;
       status(m.synth ? "Suu Synth" : "Suu");

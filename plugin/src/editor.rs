@@ -55,6 +55,7 @@ enum Message {
     Words { text: String },
     Horn { areas: Vec<f64>, wrap: bool },
     Ui { json: String },
+    Slots { json: String },
     Typing { on: bool },
     Keys,
     Snapshot,
@@ -266,6 +267,7 @@ fn init_message(gui: &mut Gui, params: &SuuParams, synth: bool) -> Value {
     let words = params.words.read().map(|w| w.clone()).unwrap_or_default();
     let horn = params.horn.read().map(|h| h.clone()).unwrap_or_default();
     let ui = params.ui.read().map(|u| u.clone()).unwrap_or_default();
+    let slots = params.slots.read().map(|u| u.clone()).unwrap_or_default();
     json!({
         "type": "init",
         "synth": synth,
@@ -274,6 +276,7 @@ fn init_message(gui: &mut Gui, params: &SuuParams, synth: bool) -> Value {
         "horn": if horn.areas.len() == suu::HORN_POINTS { Some(horn.areas) } else { None },
         "hornWrap": horn.wrap,
         "ui": if ui.is_empty() { None } else { Some(ui) },
+        "slots": if slots.is_empty() { None } else { Some(slots) },
     })
 }
 
@@ -381,6 +384,11 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                     }
                     Message::Ui { json } => {
                         if let Ok(mut u) = params.ui.write() {
+                            *u = json;
+                        }
+                    }
+                    Message::Slots { json } => {
+                        if let Ok(mut u) = params.slots.write() {
                             *u = json;
                         }
                     }

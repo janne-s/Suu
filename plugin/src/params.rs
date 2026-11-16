@@ -457,6 +457,8 @@ pub struct SuuParams {
     pub horn: Arc<RwLock<HornState>>,
     #[persist = "ui"]
     pub ui: Arc<RwLock<String>>,
+    #[persist = "slots"]
+    pub slots: Arc<RwLock<String>>,
 
     // ------------------------------------------------ source
     #[id = "wave"]
@@ -660,6 +662,7 @@ impl SuuParams {
             words: Arc::new(RwLock::new(DEFAULT_WORDS.to_string())),
             horn: Arc::new(RwLock::new(HornState::default())),
             ui: Arc::new(RwLock::new(String::new())),
+            slots: Arc::new(RwLock::new(String::new())),
 
             wave: EnumParam::new("Wave", if synth { Wave::Supersaw } else { Wave::Off }),
             osc: db(FloatParam::new("Osc", 0.0, FloatRange::Linear { min: -60.0, max: 12.0 }).with_step_size(0.1), -59.95),
