@@ -334,6 +334,7 @@ fn init_message(gui: &mut Gui, params: &SuuParams, synth: bool) -> Value {
     json!({
         "type": "init",
         "synth": synth,
+        "version": env!("CARGO_PKG_VERSION"),
         "values": gui.values(),
         "words": words,
         "horn": if horn.areas.len() == suu::HORN_POINTS { Some(horn.areas) } else { None },

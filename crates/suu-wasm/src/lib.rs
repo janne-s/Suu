@@ -104,6 +104,12 @@ fn set(p: &mut Params, id: u32, v: f64) {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn suu_version() -> u32 {
+    let part = |s: &str| s.parse::<u32>().unwrap_or(0);
+    part(env!("CARGO_PKG_VERSION_MAJOR")) * 10000 + part(env!("CARGO_PKG_VERSION_MINOR")) * 100 + part(env!("CARGO_PKG_VERSION_PATCH"))
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn suu_alloc(n: usize) -> *mut u8 {
     let mut v = Vec::<u8>::with_capacity(n.max(1));
     let p = v.as_mut_ptr();

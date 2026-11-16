@@ -2095,11 +2095,17 @@ $("presetfile").onchange = (e) => {
   addEventListener("pagehide", save);
 }
 
+function showVersion(v) {
+  setText($("version"), "Version " + v);
+}
+
 // ---------------------------------------------------------------- the mouth before audio starts
 (async () => {
   if (inPlugin) return;
   try {
     const { exports: x } = await WebAssembly.instantiate(await wasmModule, {});
+    const v = x.suu_version();
+    showVersion(`${Math.floor(v / 10000)}.${Math.floor(v / 100) % 100}.${v % 100}`);
     if (ui) return;
     const h = x.suu_new(48000);
     for (const r of rows) x.suu_set(h, r.param, r.base);
@@ -2453,6 +2459,7 @@ if (inPlugin) {
         st.hornWrap = m.hornWrap;
       }
       plugin.words = st.text.words;
+      if (m.version) showVersion(m.version);
       applyHost(st, m.values, true);
       try {
         const saved = m.slots ? JSON.parse(m.slots) : {};

@@ -316,6 +316,7 @@ ok("STEREO on and it still sounds", (await page.textContent("#stereoon")) === "O
 await page.click("#stereoon");
 ok("no MPE button on the web", !(await page.isVisible("#mpe-toggle")));
 ok("PRESET closes", !(await page.isVisible("#preset-panel")));
+ok("the version in the info", /^Version \d+\.\d+\.\d+$/.test((await page.textContent("#version")) ?? ""), (await page.textContent("#version")) ?? "");
 await page.click("#pulse-more");
 ok("▾ opens PULSE", await page.isVisible("#pulse-panel") && (await page.textContent('output[for="pulseWidth"]')) === "50%");
 await page.mouse.click(5, 300);
