@@ -145,8 +145,13 @@ bun run e2e        # headless Chrome, with bun run web running
 
 ## Limits
 
-English text only. Mono. The page is tested in Chrome and Safari, the
-plug-in in Ableton Live on macOS (Apple silicon only for now).
+- English text only.
+- One note at a time.
+- A stereo input is mixed to mono. The output is stereo only with **Stereo**
+  on.
+- The page is tested in Chrome and Safari.
+- The plug-in is VST3 and CLAP for macOS on Apple silicon, tested in Ableton
+  Live. No AU and no Windows build yet.
 
 ## Credits
 
