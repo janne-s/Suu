@@ -316,6 +316,13 @@ ok("STEREO on and it still sounds", (await page.textContent("#stereoon")) === "O
 await page.click("#stereoon");
 ok("no MPE button on the web", !(await page.isVisible("#mpe-toggle")));
 ok("PRESET closes", !(await page.isVisible("#preset-panel")));
+await page.click("#pulse-more");
+ok("▾ opens PULSE", await page.isVisible("#pulse-panel") && (await page.textContent('output[for="pulseWidth"]')) === "50%");
+await page.mouse.click(5, 300);
+ok("PULSE closes", !(await page.isVisible("#pulse-panel")));
+await page.click('[data-seqin="1"]');
+ok("SEQ × IN on", (await page.getAttribute('[data-seqin="1"]', "aria-pressed")) === "true" && (await page.getAttribute('[data-seqin="0"]', "aria-pressed")) === "false");
+await page.click('[data-seqin="0"]');
 ok("ASPIR, FRIC and SIBIL at 100%", (await Promise.all(["aspiration", "frication", "sibilance"].map((k) => page.textContent(`output[for="${k}"]`)))).every((t) => t === "100%"));
 await page.click("#hq");
 ok("quality steps to LEAN", (await page.textContent("#hq")) === "LEAN");

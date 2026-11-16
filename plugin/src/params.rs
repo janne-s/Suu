@@ -15,7 +15,21 @@ pub enum Wave {
     #[id = "supersaw"]
     Supersaw,
     #[id = "square"]
+    #[name = "Pulse"]
     Square,
+}
+
+#[derive(Enum, Debug, PartialEq, Clone, Copy)]
+pub enum SeqIn {
+    #[id = "seq"]
+    #[name = "Seq"]
+    Seq,
+    #[id = "and"]
+    #[name = "× In"]
+    And,
+    #[id = "or"]
+    #[name = "+ In"]
+    Or,
 }
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
@@ -559,6 +573,18 @@ pub struct SuuParams {
     pub stereo_phase: FloatParam,
     #[id = "stereo_mirror"]
     pub stereo_mirror: BoolParam,
+    #[id = "pulse_width"]
+    pub pulse_width: FloatParam,
+    #[id = "pwm_depth"]
+    pub pwm_depth: FloatParam,
+    #[id = "pwm_rate"]
+    pub pwm_rate: FloatParam,
+    #[id = "pwm_sync"]
+    pub pwm_sync: EnumParam<Sync>,
+    #[id = "seq_in"]
+    pub seq_in: EnumParam<SeqIn>,
+    #[id = "seq_vowel"]
+    pub seq_vowel: FloatParam,
     #[id = "pressure_to"]
     pub pressure_to: EnumParam<ExprTo>,
     #[id = "pressure_depth"]
@@ -719,6 +745,12 @@ impl SuuParams {
             stereo_canon: IntParam::new("Stereo Canon", 0, IntRange::Linear { min: 0, max: 16 }),
             stereo_phase: percent(FloatParam::new("Stereo Phase", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
             stereo_mirror: BoolParam::new("Stereo Mirror", false),
+            pulse_width: percent(FloatParam::new("Pulse Width", 0.5, FloatRange::Linear { min: 0.05, max: 0.95 })),
+            pwm_depth: percent(FloatParam::new("PWM Depth", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            pwm_rate: hz(FloatParam::new("PWM Rate", 0.5, log_range(0.02, 20.0, 0.632)), 0.0),
+            pwm_sync: EnumParam::new("PWM Sync", Sync::Off),
+            seq_in: EnumParam::new("Sequencer Gate", SeqIn::Seq),
+            seq_vowel: percent(FloatParam::new("Sequencer Vowel", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
             pressure_to: EnumParam::new("Pressure To", ExprTo::Breath),
             pressure_depth: percent(FloatParam::new("Pressure Depth", 0.5, FloatRange::Linear { min: -1.0, max: 1.0 })),
             slide_to: EnumParam::new("Slide To", ExprTo::VowelY),
@@ -780,7 +812,7 @@ impl SuuParams {
                 Wave::Off => Source::Off,
                 Wave::Saw => Source::Saw,
                 Wave::Supersaw => Source::Supersaw,
-                Wave::Square => Source::Square,
+                Wave::Square => Source::Pulse,
             },
             osc_db: self.osc.value() as f64,
             input_db: self.input.value() as f64,
@@ -860,6 +892,16 @@ impl SuuParams {
             stereo_canon: self.stereo_canon.value() as f64,
             stereo_phase: self.stereo_phase.value() as f64,
             stereo_mirror: self.stereo_mirror.value(),
+            pulse_width: self.pulse_width.value() as f64,
+            pwm_depth: self.pwm_depth.value() as f64,
+            pwm_rate_hz: self.pwm_rate.value() as f64,
+            pwm_sync: self.pwm_sync.value().beats(),
+            seq_gate: match self.seq_in.value() {
+                SeqIn::Seq => suu::SeqGate::Seq,
+                SeqIn::And => suu::SeqGate::AndIn,
+                SeqIn::Or => suu::SeqGate::OrIn,
+            },
+            seq_vowel: self.seq_vowel.value() as f64,
             pressure_to: self.pressure_to.value().core(),
             pressure_depth: self.pressure_depth.value() as f64,
             slide_to: self.slide_to.value().core(),

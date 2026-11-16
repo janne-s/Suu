@@ -1,4 +1,4 @@
-use suu::{GlideDir, MAX_BLOCK, Mod, Mouth, Params, PitchFrom, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
+use suu::{GlideDir, MAX_BLOCK, Mod, Mouth, Params, PitchFrom, SeqGate, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
 
 pub struct Handle {
     suu: Suu,
@@ -11,7 +11,7 @@ pub struct Handle {
 
 fn set(p: &mut Params, id: u32, v: f64) {
     match id {
-        0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Square, _ => Source::Supersaw },
+        0 => p.source = match v as i32 { 0 => Source::Off, 1 => Source::Saw, 3 => Source::Pulse, _ => Source::Supersaw },
         1 => p.note = v,
         2 => p.gate = v > 0.5,
         3 => p.drive_db = v,
@@ -91,6 +91,12 @@ fn set(p: &mut Params, id: u32, v: f64) {
         80 => p.stereo_canon = v,
         81 => p.stereo_phase = v,
         82 => p.stereo_mirror = v > 0.5,
+        83 => p.pulse_width = v,
+        84 => p.pwm_depth = v,
+        85 => p.pwm_rate_hz = v,
+        86 => p.pwm_sync = v,
+        87 => p.seq_gate = match v as i32 { 1 => SeqGate::AndIn, 2 => SeqGate::OrIn, _ => SeqGate::Seq },
+        88 => p.seq_vowel = v,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}

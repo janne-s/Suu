@@ -110,7 +110,14 @@ pub enum Source {
     Off,
     Saw,
     Supersaw,
-    Square,
+    Pulse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SeqGate {
+    Seq,
+    AndIn,
+    OrIn,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -197,6 +204,12 @@ pub struct Params {
     pub stereo_canon: f64,
     pub stereo_phase: f64,
     pub stereo_mirror: bool,
+    pub pulse_width: f64,
+    pub pwm_depth: f64,
+    pub pwm_rate_hz: f64,
+    pub pwm_sync: f64,
+    pub seq_gate: SeqGate,
+    pub seq_vowel: f64,
 }
 
 pub const EXPR_BREATH: i32 = N_MOD as i32;
@@ -306,6 +319,12 @@ impl Default for Params {
             stereo_canon: 0.0,
             stereo_phase: 0.0,
             stereo_mirror: false,
+            pulse_width: 0.5,
+            pwm_depth: 0.0,
+            pwm_rate_hz: 0.5,
+            pwm_sync: 0.0,
+            seq_gate: SeqGate::Seq,
+            seq_vowel: 1.0,
         }
     }
 }
@@ -406,6 +425,9 @@ impl Seq {
     }
 }
 
+const PWM_SWING: f64 = 0.45;
+const PWM_MIN: f64 = 0.02;
+
 const SAW_CENTS: [f64; 5] = [0.0, -14.0, 14.0, -7.0, 7.0];
 
 fn poly_blep(t: f64, dt: f64) -> f64 {
@@ -437,14 +459,14 @@ impl Osc {
         }
         y
     }
-    fn next(&mut self, src: Source, dt: f64) -> f64 {
+    fn next(&mut self, src: Source, dt: f64, width: f64) -> f64 {
         match src {
             Source::Saw | Source::Off => Self::saw(&mut self.phase[0], dt),
-            Source::Square => {
+            Source::Pulse => {
                 let p = &mut self.phase[0];
-                let mut y = if *p < 0.5 { 1.0 } else { -1.0 };
+                let mut y = if *p < width { 1.0 } else { -1.0 } - (2.0 * width - 1.0);
                 y += poly_blep(*p, dt);
-                y -= poly_blep((*p + 0.5) % 1.0, dt);
+                y -= poly_blep((*p + (1.0 - width)) % 1.0, dt);
                 *p += dt;
                 if *p >= 1.0 {
                     *p -= 1.0;
@@ -812,6 +834,7 @@ pub struct Suu {
     eff: [f64; N_MOD],
     applied: [f64; N_MOD],
     seq_pad: Option<(f64, f64)>,
+    pwm_phase: f64,
     g2p: Option<EnglishG2P>,
     plan: TextPlan,
     cursor: usize,
@@ -934,6 +957,7 @@ impl Suu {
             eff: [0.0; N_MOD],
             applied: [f64::NAN; N_MOD],
             seq_pad: None,
+            pwm_phase: 0.0,
             g2p: None,
             plan: TextPlan::empty(),
             cursor: 0,
@@ -1040,6 +1064,11 @@ impl Suu {
         q.damping = clamp(q.damping, 0.1, 20.0);
         q.sub_hz = clamp(q.sub_hz, 30.0, 400.0);
         q.out_db = clamp(q.out_db, -40.0, 20.0);
+        q.pulse_width = clamp(q.pulse_width, 0.05, 0.95);
+        q.pwm_depth = clamp(q.pwm_depth, 0.0, 1.0);
+        q.pwm_rate_hz = clamp(q.pwm_rate_hz, 0.01, 40.0);
+        q.pwm_sync = clamp(q.pwm_sync, 0.0, 64.0);
+        q.seq_vowel = clamp(q.seq_vowel, 0.0, 1.0);
         q.note = clamp(q.note, 12.0, 108.0);
         q.bpm = clamp(q.bpm, 30.0, 300.0);
         q.glide_s = clamp(q.glide_s, 0.0, 4.0);
@@ -1302,7 +1331,11 @@ impl Suu {
     fn bases(&self) -> [f64; N_MOD] {
         let p = self.p;
         let pad = if p.vowel_in { self.in_pad } else { None };
-        let (x, y) = pad.or(self.seq_pad).unwrap_or((p.vowel_x, p.vowel_y));
+        let (bx, by) = pad.unwrap_or((p.vowel_x, p.vowel_y));
+        let (x, y) = match self.seq_pad {
+            Some((sx, sy)) => (bx + p.seq_vowel * (sx - bx), by + p.seq_vowel * (sy - by)),
+            None => (bx, by),
+        };
         [x, y, p.round, p.nasal, p.inject, p.damping, p.morph, p.shift, p.open]
     }
 
@@ -1967,7 +2000,17 @@ impl Suu {
         if self.seq.playing {
             self.advance_seq();
             self.note_now = self.base_note() + self.seq.note;
-            self.gate_now = self.seq.gate_open;
+            self.gate_now = match self.p.seq_gate {
+                SeqGate::Seq => self.seq.gate_open,
+                SeqGate::AndIn => {
+                    self.run_env_gate();
+                    self.seq.gate_open && self.env_open
+                }
+                SeqGate::OrIn => {
+                    self.run_env_gate();
+                    self.seq.gate_open || self.env_open
+                }
+            };
         } else {
             self.note_now = self.base_note();
             self.run_env_gate();
@@ -2207,7 +2250,7 @@ impl Suu {
         let p = self.p;
         let peak = self.in_peak;
         self.in_peak = 0.0;
-        if !p.env_gate {
+        if !p.env_gate && !(self.seq.playing && p.seq_gate != SeqGate::Seq) {
             (self.env_open, self.env_below) = (false, 0.0);
             return;
         }
@@ -2242,6 +2285,7 @@ impl Suu {
         let track = p.pitch_from != PitchFrom::Note || p.vowel_in;
         let vowel = p.vowel_in;
         let period_at = (self.pos % CTRL) as usize;
+        let pwm_dt = if p.pwm_sync > 0.0 { p.bpm / 60.0 / p.pwm_sync } else { p.pwm_rate_hz } / fs;
         for i in 0..n {
             if track {
                 self.tracker.push(input[i] as f64);
@@ -2258,7 +2302,13 @@ impl Suu {
                 self.osc_hz = midi_to_hz(self.pitch);
             }
             let input_src = p.source == Source::Off;
-            let osc = if input_src { 0.0 } else { self.osc.next(p.source, self.osc_hz / fs) * 0.5 * osc_g };
+            let width = if p.pwm_depth > 0.0 {
+                self.pwm_phase = (self.pwm_phase + pwm_dt) % 1.0;
+                clamp(p.pulse_width + p.pwm_depth * PWM_SWING * sin(2.0 * PI * self.pwm_phase), PWM_MIN, 1.0 - PWM_MIN)
+            } else {
+                p.pulse_width
+            };
+            let osc = if input_src { 0.0 } else { self.osc.next(p.source, self.osc_hz / fs, width) * 0.5 * osc_g };
             let raw = osc + input[i] as f64 * input_g;
             self.snap_ring[self.snap_w] = raw as f32;
             self.snap_w = (self.snap_w + 1) & (SNAP_RING - 1);

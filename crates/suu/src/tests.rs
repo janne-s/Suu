@@ -1993,3 +1993,75 @@ fn closing_with_damping_and_no_whistle_does_not_click() {
     assert!(step < 0.2, "largest step between samples {step:.3} (0.71 when the whistle loss stepped once per control period)");
     assert!(peak < 0.6, "peak {peak:.3} (0.75, the limiter, before)");
 }
+
+#[test]
+fn pulse_at_half_width_is_the_old_square_and_width_sets_the_duty() {
+    let dt = 110.0 / 48000.0;
+    let (mut o, mut p) = (Osc::new(), 0.0f64);
+    for _ in 0..48000 {
+        let mut y = if p < 0.5 { 1.0 } else { -1.0 };
+        y += poly_blep(p, dt);
+        y -= poly_blep((p + 0.5) % 1.0, dt);
+        p += dt;
+        if p >= 1.0 {
+            p -= 1.0;
+        }
+        assert_eq!(o.next(Source::Pulse, dt, 0.5).to_bits(), y.to_bits());
+    }
+    for w in [0.1, 0.25, 0.75, 0.9] {
+        let mut o = Osc::new();
+        let y: Vec<f64> = (0..48000).map(|_| o.next(Source::Pulse, dt, w)).collect();
+        let mean = y.iter().sum::<f64>() / y.len() as f64;
+        let high = y.iter().filter(|v| **v > 0.0).count() as f64 / y.len() as f64;
+        assert!(mean.abs() < 0.01, "width {w}: mean {mean}");
+        assert!((high - w).abs() < 0.01, "width {w}: high {high}");
+    }
+}
+
+#[test]
+fn pwm_swings_the_width_at_its_rate() {
+    let mut s = Suu::new(48000.0);
+    s.set_params(Params { gate: true, source: Source::Pulse, pwm_depth: 1.0, pwm_rate_hz: 2.0, ..Params::default() });
+    run(&mut s, 128, 48000);
+    assert!(s.pwm_phase.min(1.0 - s.pwm_phase) < 1e-6, "two whole swings in a second: phase {}", s.pwm_phase);
+    s.set_params(Params { pwm_sync: 1.0, bpm: 120.0, ..s.params() });
+    run(&mut s, 128, 12000);
+    assert!((s.pwm_phase - 0.5).abs() < 1e-6, "♪ a beat at 120: half a swing in a quarter second, phase {}", s.pwm_phase);
+}
+
+#[test]
+fn the_input_can_join_the_sequencer_gate() {
+    let sounding = |gate: SeqGate, steps_on: bool, loud: bool| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { seq_gate: gate, env_thresh_db: -30.0, ..Params::default() });
+        for i in 0..STEPS {
+            s.set_step(i, Step { on: steps_on, note: 0, tie: false, vowel: -1, accent: false, len: 1.0 });
+        }
+        s.set_playing(true);
+        let level = if loud { 0.3f32 } else { 0.0 };
+        let input: Vec<f32> = (0..48000).map(|i| level * (i as f32 * 0.05).sin()).collect();
+        let mut out = vec![0f32; 48000];
+        for (o, x) in out.chunks_mut(128).zip(input.chunks(128)) {
+            s.process(x, o);
+        }
+        (out[24000..].iter().map(|v| v * v).sum::<f32>() / 24000.0).sqrt() > 1e-3
+    };
+    assert!(sounding(SeqGate::Seq, true, false));
+    assert!(!sounding(SeqGate::AndIn, true, false), "× In: a step waits for the input");
+    assert!(sounding(SeqGate::AndIn, true, true));
+    assert!(sounding(SeqGate::OrIn, true, false));
+    assert!(!sounding(SeqGate::Seq, false, true));
+    assert!(!sounding(SeqGate::AndIn, false, true));
+    assert!(sounding(SeqGate::OrIn, false, true), "+ In: the input opens the sound between the steps");
+}
+
+#[test]
+fn the_steps_vowel_moves_the_mouth_by_its_amount() {
+    let mut s = Suu::new(48000.0);
+    s.seq_pad = Some((1.0, 1.0));
+    for (amount, want) in [(0.0, (0.2, 0.4)), (0.5, (0.6, 0.7)), (1.0, (1.0, 1.0))] {
+        s.set_params(Params { vowel_x: 0.2, vowel_y: 0.4, seq_vowel: amount, ..Params::default() });
+        let b = s.bases();
+        assert!((b[0] - want.0).abs() < 1e-9 && (b[1] - want.1).abs() < 1e-9, "amount {amount}: {:?}", (b[0], b[1]));
+    }
+}

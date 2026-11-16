@@ -60,11 +60,18 @@ Sixteen steps, each with a note, vowel, accent ◆ and length. Drag a step up or
 down for its note, click to turn it on, Shift-click to tie, click the vowel
 to change it. **Gate** scales every step's length alike.
 
+- **Seq**, **× In**, **+ In**: what opens the sound while the sequencer plays.
+  Seq: the steps alone. × In: a step sounds only while the input is above
+  the gate's threshold. + In: the input also opens it between the steps.
+- **Vow**: how far the steps' vowels move the mouth from the pad's vowel.
+
 ## Sound
 
-- **Osc** and **In** — The oscillator (supersaw, saw, square or off) and an
+- **Osc** and **In** — The oscillator (supersaw, saw, pulse or off) and an
   input (a file or the mic; in the plug-in, the track) sound together, each at
-  its level. Keys, Hold and the sequencer gate both.
+  its level. Keys, Hold and the sequencer gate both. ▾ next to the
+  oscillators sets the pulse's Width (50% is a square) and how it swings:
+  Depth, and Rate or ♪.
 - **Body** — Size of the mouth (0.4–4×), Breath (lung pressure for the
   consonants and folds) and Follow (how far it follows the sound). The
   quality button steps through **HQ**, **Lean** (two to three times lighter)

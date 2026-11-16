@@ -82,6 +82,11 @@ const KNOBS = {
     ["revMix", "REVERB", 0, 1, 0.3, pct, null, "space"],
     ["revSize", "LENGTH", 0.3, 6, 2.2, (v) => v.toFixed(1) + " s", null, "space"],
   ],
+  "k-pulse": [
+    ["pulseWidth", "WIDTH", 0.05, 0.95, 0.5, pct, null, 83],
+    ["pwmDepth", "DEPTH", 0, 1, 0, pct, null, 84],
+    ["pwmRate", "RATE", 0.02, 20, 0.5, (v) => (v < 1 ? v.toFixed(2) : v.toFixed(1)) + " Hz", "log", 85],
+  ],
   "k-out": [
     ["mix", "MIX", 0, 1, 1, pct, null, 16],
     ["out", "OUTPUT", -40, 20, 0, (v) => v.toFixed(1) + " dB", null, 17],
@@ -123,10 +128,13 @@ const KNOB_TIPS = {
   sustain: "Sustain\nThe level it holds while the note is on.",
   release: "Release\nHow long it takes to fall silent after the note ends. ♪: a note value.",
   coarse: "Tune (coarse)\nTransposes the pitch in semitones: the note's, or the input's (PITCH IN).",
+  pulseWidth: "Width\nThe pulse's high part: 50% is a square, narrower is thinner.",
+  pwmDepth: "Depth\nHow far the width swings.",
+  pwmRate: "Rate\nHow fast the width swings. ♪: one swing per note value.",
   steady: "Steady\nWith PITCH IN: a new pitch is taken once the input has stayed on it this long. Quick changes and slides between notes are skipped. ♪: a note value.",
   out: "Output\nOutput level.",
 };
-const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 }, steady: { div: "1/16", id: 55 } };
+const SYNCABLE = { delayTime: { div: "1/8." }, glide: { div: "1/16", id: 21 }, envRelease: { div: "1/8", id: 42 }, attack: { div: "1/16", id: 46 }, decay: { div: "1/8", id: 48 }, release: { div: "1/8", id: 51 }, steady: { div: "1/16", id: 55 }, pwmRate: { div: "1/2", id: 86, showDiv: true } };
 
 const state = {};
 const controls = new Map();
@@ -148,7 +156,7 @@ function update(key, v, final = true) {
   const n = toNorm(c, v);
   c.input.value = n;
   c.input.style.setProperty("--turn", `${270 * n}deg`);
-  c.output.textContent = c.fmt(c.sync ? eff(key) : v);
+  c.output.textContent = c.sync && SYNCABLE[key].showDiv ? c.sync : c.fmt(c.sync ? eff(key) : v);
   c.cell.classList.toggle("beyond", !!c.anat && (v < c.anat[0] - 1e-9 || v > c.anat[1] + 1e-9));
   c.cell.dataset.tip = KNOB_TIPS[key] ?? c.label;
   if (c.target === "space") setSpace();
@@ -1180,6 +1188,22 @@ $("jump").ondblclick = () => setJump(0, jumpFold);
 for (const b of document.querySelectorAll("[data-jump]")) b.onclick = () => setJump(jump, b.dataset.jump === "1");
 setScale(scale);
 setJump(jump, jumpFold);
+function showPulsePanel(open) {
+  const panel = $("pulse-panel");
+  if (open) {
+    const r = $("pulse-more").getBoundingClientRect();
+    panel.style.left = Math.max(8, Math.min(r.left, innerWidth - 236)) + "px";
+  }
+  panel.hidden = !open;
+  $("pulse-more").setAttribute("aria-expanded", String(open));
+}
+$("pulse-more").onclick = (e) => {
+  e.stopPropagation();
+  showPulsePanel($("pulse-panel").hidden);
+};
+addEventListener("pointerdown", (e) => {
+  if (!$("pulse-panel").hidden && !$("pulse-panel").contains(e.target) && e.target !== $("pulse-more")) showPulsePanel(false);
+});
 function showPitchPanel(open) {
   const panel = $("pitch-panel");
   if (open) {
@@ -1407,7 +1431,23 @@ function sendStep(i) {
   const s = steps[i];
   post({ type: "step", i, on: s.on, note: s.note, tie: s.tie, vowel: s.vowel, accent: s.accent, len: s.len });
 }
-let seqGate = 1;
+let seqGate = 1, seqIn = 0, seqVowel = 1;
+function setSeqIn(v) {
+  seqIn = v;
+  send(87, v);
+  document.querySelectorAll("[data-seqin]").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.seqin === v)));
+}
+function setSeqVowel(v) {
+  seqVowel = Math.round(clamp(v, 0, 1) * 100) / 100;
+  send(88, seqVowel);
+  $("seqvowel").textContent = "VOW " + Math.round(seqVowel * 100) + "%";
+  $("seqvowel").classList.toggle("on", seqVowel !== 1);
+}
+document.querySelectorAll("[data-seqin]").forEach((b) => (b.onclick = () => setSeqIn(+b.dataset.seqin)));
+dragValue($("seqvowel"), () => seqVowel, (v) => setSeqVowel(v), 1 / 200);
+$("seqvowel").ondblclick = () => setSeqVowel(1);
+setSeqIn(0);
+setSeqVowel(1);
 function sendSeq() {
   post({ type: "seq", len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: seqGate });
   $("seqgate").textContent = Math.round(seqGate * 100) + "%";
@@ -1768,7 +1808,7 @@ function getState() {
     stereoMirror,
     knobs,
     motion,
-    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, steps: steps.map((s) => ({ ...s })) },
+    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, gateIn: seqIn, vowel: seqVowel, steps: steps.map((s) => ({ ...s })) },
     text: { words: $("text").value, ...tx },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
@@ -1839,6 +1879,8 @@ function readState(raw) {
     rate: [1, 2, 4, 8, 16, 32].includes(seq.rate) ? seq.rate : d.seq.rate,
     length: Math.round(num(seq.length, d.seq.length, 1, 16)),
     gate: num(seq.gate, d.seq.gate, 0, 2),
+    gateIn: Math.round(num(seq.gateIn, d.seq.gateIn, 0, 2)),
+    vowel: num(seq.vowel, d.seq.vowel, 0, 1),
     steps: d.seq.steps.map((ds, i) => {
       const s = obj(seq.steps?.[i], `step ${i + 1}`);
       return { on: bool(s.on, ds.on), note: Math.round(num(s.note, ds.note, -24, 24)), tie: bool(s.tie, ds.tie), vowel: Math.round(num(s.vowel, ds.vowel, -1, 4)), accent: bool(s.accent, ds.accent), len: num(s.len, ds.len, 0.05, 1) };
@@ -1920,6 +1962,8 @@ function applyState(st) {
   $("rate").value = String(st.seq.rate);
   $("seqlen").value = String(st.seq.length);
   seqGate = st.seq.gate;
+  setSeqIn(st.seq.gateIn);
+  setSeqVowel(st.seq.vowel);
   st.seq.steps.forEach((s, i) => {
     steps[i] = { ...s };
     sendStep(i);
@@ -2073,7 +2117,12 @@ $("presetfile").onchange = (e) => {
 const TIPS = {
   '[data-osc="2"]': "Supersaw\nFive detuned saws: the built-in synth, played by keys and steps.",
   '[data-osc="1"]': "Saw\nOne saw: bright, every harmonic.",
-  '[data-osc="3"]': "Square\nOdd harmonics only: hollow.",
+  '[data-osc="3"]': "Pulse\nAt 50% width a square, odd harmonics only: hollow. ▾ sets the width and its movement.",
+  "#pulse-more": "Pulse\nThe pulse's width and how it moves.",
+  '[data-seqin="0"]': "Seq\nThe steps alone open the sound.",
+  '[data-seqin="1"]': "× In\nA step sounds only while the input is above the gate's threshold.",
+  '[data-seqin="2"]': "+ In\nThe input also opens the sound between the steps.",
+  "#seqvowel": "Vowel\nHow far the steps' vowels move the mouth from the pad's vowel. Double-click: 100%.",
   '[data-osc="0"]': "Off\nNo oscillator: only the input and the folds.",
   '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. The folder beside it, or a drop anywhere, loads another.",
   "#pickfile": "Choose file\nLoad an audio file (or drop one anywhere).",
@@ -2231,12 +2280,12 @@ const PMAP = [];
     else st.knobs[key] = v;
   });
   add("wave", (st) => st.source, (st, v) => (st.source = Math.round(v)));
-  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["coarse", "coarse"], ["steady", "steady"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"], ["aspiration", "aspiration"], ["frication", "frication"], ["sibilance", "sibilance"], ["whistle", "whistle"], ["stereo_spread", "stereoSpread"], ["stereo_vowel", "stereoVowel"], ["stereo_width", "stereoWidth"], ["move", "move"], ["stereo_canon", "stereoCanon"], ["stereo_phase", "stereoPhase"]]) knob(id, key);
+  for (const [id, key] of [["env_threshold", "envThresh"], ["env_release", "envRelease"], ["attack", "attack"], ["decay", "decay"], ["sustain", "sustain"], ["release", "release"], ["coarse", "coarse"], ["steady", "steady"], ["osc", "osc"], ["input", "input"], ["folds", "folds"], ["reson", "reson"], ["glide", "glide"], ["size", "size"], ["breath", "breath"], ["follow", "follow"], ["drive", "drive"], ["tilt", "tilt"], ["sub", "sub"], ["sub_hz", "subhz"], ["mix", "mix"], ["output", "out"], ["aspiration", "aspiration"], ["frication", "frication"], ["sibilance", "sibilance"], ["whistle", "whistle"], ["stereo_spread", "stereoSpread"], ["stereo_vowel", "stereoVowel"], ["stereo_width", "stereoWidth"], ["move", "move"], ["stereo_canon", "stereoCanon"], ["stereo_phase", "stereoPhase"], ["pulse_width", "pulseWidth"], ["pwm_depth", "pwmDepth"], ["pwm_rate", "pwmRate"]]) knob(id, key);
   add("glide_sync", (st) => (typeof st.knobs.glide === "object" ? divIndex(st.knobs.glide.sync) : 0), (st, v) => {
     const val = knobVal(st.knobs.glide);
     st.knobs.glide = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
   });
-  for (const [id, key] of [["env_release_sync", "envRelease"], ["steady_sync", "steady"], ["attack_sync", "attack"], ["decay_sync", "decay"], ["release_sync", "release"]])
+  for (const [id, key] of [["env_release_sync", "envRelease"], ["steady_sync", "steady"], ["attack_sync", "attack"], ["decay_sync", "decay"], ["release_sync", "release"], ["pwm_sync", "pwmRate"]])
     add(id, (st) => (typeof st.knobs[key] === "object" ? divIndex(st.knobs[key].sync) : 0), (st, v) => {
       const val = knobVal(st.knobs[key]);
       st.knobs[key] = v > 0 ? { v: val, sync: PDIVS[Math.round(v)] } : val;
@@ -2247,6 +2296,8 @@ const PMAP = [];
   add("lofi", (st) => +st.lofi, (st, v) => (st.lofi = v > 0.5));
   add("stereo", (st) => +st.stereo, (st, v) => (st.stereo = v > 0.5));
   add("stereo_mirror", (st) => +st.stereoMirror, (st, v) => (st.stereoMirror = v > 0.5));
+  add("seq_in", (st) => st.seq.gateIn, (st, v) => (st.seq.gateIn = Math.round(v)));
+  add("seq_vowel", (st) => st.seq.vowel, (st, v) => (st.seq.vowel = v));
   add("pressure_to", (st) => st.mpe.pressureTo + 1, (st, v) => (st.mpe.pressureTo = Math.round(v) - 1));
   add("pressure_depth", (st) => st.mpe.pressureDepth, (st, v) => (st.mpe.pressureDepth = v));
   add("slide_to", (st) => st.mpe.slideTo + 1, (st, v) => (st.mpe.slideTo = Math.round(v) - 1));
