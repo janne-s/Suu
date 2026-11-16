@@ -198,6 +198,7 @@ struct Gui {
     generation: u64,
     ui_seq: u64,
     ui_sent: (Vec<f32>, f64),
+    key_sent: i32,
     text_shown: Option<(bool, String)>,
     dialog: Option<Dialog>,
     asking: bool,
@@ -355,6 +356,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
         generation: 0,
         ui_seq: 0,
         ui_sent: (Vec::new(), f64::NAN),
+        key_sent: i32::MIN,
         text_shown: None,
         dialog: None,
         asking: false,
@@ -414,6 +416,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                         gui.generation = generation;
                         gui.text_shown = None;
                         gui.ui_sent = (Vec::new(), f64::NAN);
+                        gui.key_sent = i32::MIN;
                         page.send_json(init_message(gui, &params, synth));
                     }
                     Message::Set { id, value } => {
@@ -495,6 +498,7 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                         }
                         shared.words_changed.store(true, Ordering::Release);
                         shared.horn_reset.store(true, Ordering::Release);
+                        shared.keys_reset.store(true, Ordering::Release);
                         page.send_json(init_message(gui, &params, synth));
                         gui.text_shown = None;
                     }
@@ -554,6 +558,11 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                     page.send_json(json!({ "type": "ui", "ui": ui, "bpm": bpm }));
                     gui.ui_sent = (ui, bpm);
                 }
+            }
+            let key = shared.key.load(Ordering::Relaxed);
+            if gui.ready && key != gui.key_sent {
+                gui.key_sent = key;
+                page.send_json(json!({ "type": "key", "note": key }));
             }
             let snap = shared.snap_state.load(Ordering::Acquire);
             if snap >= 2 {

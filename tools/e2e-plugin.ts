@@ -98,6 +98,11 @@ const rebuilt: string[] = await page.evaluate(async () => {
 });
 ok("host changes rewrite only what they change (WebKit loses a click on a replaced text)", rebuilt.length === 0, rebuilt.join(" "));
 await sent();
+await tell({ type: "key", note: 67 });
+ok("the header shows the played key", (await page.inputValue("#notename")) === "7" && (await page.textContent("#rootoct")) === "4");
+ok("showing the key does not move the root", !(await sent()).some((m) => m.type === "set" && m.id === "root"));
+await tell({ type: "key", note: -1 });
+ok("no key: the header shows the root again", (await page.inputValue("#notename")) !== "7" || (await page.textContent("#rootoct")) !== "4");
 const hqBefore = await page.getAttribute("#hq", "aria-pressed");
 await page.click("#hq");
 await tell({ type: "params", values: { tilt: 500 } });

@@ -43,6 +43,8 @@ pub struct Shared {
     snap: [AtomicU32; suu::HORN_POINTS],
     learn: AtomicBool,
     learned: AtomicI32,
+    key: AtomicI32,
+    keys_reset: AtomicBool,
 }
 
 impl Default for Shared {
@@ -58,6 +60,8 @@ impl Default for Shared {
             horn_reset: AtomicBool::new(false),
             snap_state: AtomicU8::new(0),
             snap: core::array::from_fn(|_| AtomicU32::new(0)),
+            key: AtomicI32::new(-1),
+            keys_reset: AtomicBool::new(false),
             learn: AtomicBool::new(false),
             learned: AtomicI32::new(-1),
         }
@@ -525,6 +529,11 @@ impl<K: Kind> SuuPlugin<K> {
         if shared.words_changed.swap(false, Ordering::AcqRel) {
             self.planned_text = None;
         }
+        if shared.keys_reset.swap(false, Ordering::AcqRel) {
+            self.keys = Keys::new();
+            self.last_key = None;
+        }
+        shared.key.store(self.keys.top().or(self.last_key).map_or(-1, |k| k.0 as i32), Ordering::Relaxed);
         let Some(suu) = self.suu.as_mut() else { return };
         if shared.horn_reset.swap(false, Ordering::AcqRel) {
             suu.set_profile(&suu::default_horn(), false);
@@ -601,6 +610,7 @@ impl<K: Kind> SuuPlugin<K> {
             NoteEvent::MidiPitchBend { channel, value, .. } => self.bend[channel as usize & 15] = (value - 0.5) * 2.0,
             NoteEvent::MidiChannelPressure { channel, pressure, .. } | NoteEvent::PolyPressure { channel, pressure, .. } => self.pressure[channel as usize & 15] = pressure,
             NoteEvent::MidiCC { channel, cc: 74, value, .. } => self.slide[channel as usize & 15] = value,
+            NoteEvent::MidiCC { cc: 120 | 123, .. } => self.keys = Keys::new(),
             NoteEvent::PolyBrightness { channel, brightness, .. } => self.slide[channel as usize & 15] = brightness,
             _ => {}
         }
@@ -644,6 +654,9 @@ impl<K: Kind> Plugin for SuuPlugin<K> {
         if self.suu.is_none() || n > self.input.len() {
             for ch in buffer.as_slice() {
                 ch.fill(0.0);
+            }
+            while let Some(e) = context.next_event() {
+                self.note_event(e);
             }
             return ProcessStatus::Normal;
         }

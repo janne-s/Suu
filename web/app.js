@@ -6,7 +6,7 @@ const color = (n) => colors.get(n) ?? (colors.set(n, css.getPropertyValue(n).tri
 let dirty = true;
 
 const inPlugin = typeof window.sendToPlugin === "function";
-const plugin = { ready: false, quiet: false, host: {}, words: null, horn: "", ui: "", frame: 0, typing: false };
+const plugin = { key: -1, ready: false, quiet: false, host: {}, words: null, horn: "", ui: "", frame: 0, typing: false };
 let ctx, node, srcNode, fileBuf, micStream, analyser, fx = {};
 const wasmModule = inPlugin ? null : WebAssembly.compileStreaming(fetch("suu.wasm"));
 function post(m, transfer) {
@@ -1141,7 +1141,7 @@ function note(midi) {
 }
 function showRoot() {
   const t = pitchFrom && ui && ui.length > 23 + UI_AREAS ? ui[23 + UI_AREAS] : 0;
-  const m = t > 0 ? Math.round(t) : lastNote;
+  const m = t > 0 ? Math.round(t) : inPlugin && plugin.key >= 0 ? plugin.key : lastNote;
   $("notename").value = String(((m % 12) + 12) % 12);
   setText($("rootoct"), String(Math.floor(m / 12) - 1));
 }
@@ -2476,6 +2476,9 @@ if (inPlugin) {
       onWorklet({ type: "text", syllables: m.syllables });
     } else if (m.type === "snapshot") {
       onSnapshot(m.values);
+    } else if (m.type === "key") {
+      plugin.key = m.note;
+      showRoot();
     } else if (m.type === "learned") {
       setLearning(false);
       status(`reset note: ${m.note}`);

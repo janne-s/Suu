@@ -276,3 +276,14 @@ fn stereo_comes_from_the_worker_and_splits_the_sides() {
     }
     assert!(differ > 1e-3, "left and right differ: {differ}");
 }
+
+#[test]
+fn all_notes_off_frees_a_key_left_on() {
+    let mut p = SuuSynth::default();
+    assert!(p.setup(FS, 512));
+    let cc = |timing: u32, cc: u8| NoteEvent::MidiCC { timing, channel: 0, cc, value: 0.0 };
+    let events = [on(4800, 55), on(9600, 55), off(14400, 55), cc(28800, 123)];
+    let out = run(&mut p, 48000, 64, &events, |_| 0.0);
+    assert!(rms(&out[20000..28000]) > 0.01, "one note-off for two note-ons leaves the key down");
+    assert!(rms(&out[40000..48000]) < 1e-4, "All Notes Off lets it go");
+}
