@@ -16,6 +16,8 @@ pub struct ArticSpec {
     pub hz: f64,
 }
 
+const MAX_WDT: f64 = 0.5;
+
 const fn spec(min: f64, max: f64, hz: f64) -> ArticSpec {
     ArticSpec { min, max, hz }
 }
@@ -188,10 +190,15 @@ impl ArticulatorBank {
             self.effective.set(k, tgt);
             let w = self.omega[i] * sp;
             // semi-implicit Euler on x'' = w²(T − x) − 2w x'  (stable for w·dt < 1)
-            let x = self.x.get(k);
-            let acc = w * w * (tgt - x) - 2.0 * w * self.v[i];
-            self.v[i] += acc * dt;
-            self.x.set(k, x + self.v[i] * dt);
+            let wdt = w * dt;
+            let n = if wdt > MAX_WDT { (wdt / MAX_WDT) as usize + 1 } else { 1 };
+            let h = dt / n as f64;
+            for _ in 0..n {
+                let x = self.x.get(k);
+                let acc = w * w * (tgt - x) - 2.0 * w * self.v[i];
+                self.v[i] += acc * h;
+                self.x.set(k, x + self.v[i] * h);
+            }
         }
     }
 }

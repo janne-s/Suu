@@ -638,7 +638,7 @@ function drawMouth() {
     const [lipAp, lipWidth, lipProt, jaw, , tbY, velum, lipArea, env] = ui.slice(8, 17);
     const unit = Math.min(w, h) / 9;
     const cx = w / 2, cy = h * 0.5;
-    const width = 4.6 * (0.78 + 0.45 * lipWidth) * (1 - 0.38 * clamp(lipProt, 0, 1));
+    const width = 4.6 * (0.78 + 0.45 * clamp(lipWidth, 0, 1)) * (1 - 0.38 * clamp(lipProt, 0, 1));
     const open = clamp((4 * Math.max(0, lipArea)) / (Math.PI * width), 0, 4);
     const round = clamp(lipProt, 0, 1);
     const thick = 0.75 + 0.5 * round;

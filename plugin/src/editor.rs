@@ -97,10 +97,70 @@ impl HasDisplayHandle for Parent {
     }
 }
 
-fn dialog(window: &impl HasRawWindowHandle) -> AsyncFileDialog {
-    match Parent::of(window) {
-        Some(parent) => AsyncFileDialog::new().set_parent(&parent),
+enum Ask {
+    Open,
+    Save(String, Vec<u8>),
+}
+
+type Asked = Arc<Mutex<Option<Dialog>>>;
+
+fn start_dialog(parent: Option<&Parent>, ask: Ask) -> Dialog {
+    let d = match parent {
+        Some(parent) => AsyncFileDialog::new().set_parent(parent),
         None => AsyncFileDialog::new(),
+    };
+    let mut dialog = match ask {
+        Ask::Open => Dialog::Open(Box::pin(d.add_filter("Suu preset", &["json"]).pick_file())),
+        Ask::Save(name, bytes) => Dialog::Save(Box::pin(d.set_file_name(&name).save_file()), bytes),
+    };
+    let (Dialog::Open(chosen) | Dialog::Save(chosen, _)) = &mut dialog;
+    let _ = chosen.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    dialog
+}
+
+#[cfg(target_os = "macos")]
+fn ask_dialog(window: &impl HasRawWindowHandle, ask: Ask, asked: &Asked) {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    let view = match window.raw_window_handle() {
+        raw_window_handle_05::RawWindowHandle::AppKit(handle) => handle.ns_view as *mut Object,
+        _ => std::ptr::null_mut(),
+    };
+    if !view.is_null() {
+        let _: *mut Object = unsafe { msg_send![view, retain] };
+    }
+    let job = Box::new(DialogJob { view, ask, asked: asked.clone() });
+    unsafe { dispatch_async_f(&_dispatch_main_q, Box::into_raw(job).cast(), dialog_job) };
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ask_dialog(window: &impl HasRawWindowHandle, ask: Ask, asked: &Asked) {
+    let dialog = start_dialog(Parent::of(window).as_ref(), ask);
+    if let Ok(mut slot) = asked.lock() {
+        *slot = Some(dialog);
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct DialogJob {
+    view: *mut objc::runtime::Object,
+    ask: Ask,
+    asked: Asked,
+}
+
+#[cfg(target_os = "macos")]
+extern "C" fn dialog_job(job: *mut std::ffi::c_void) {
+    use objc::runtime::Object;
+    use objc::{msg_send, sel, sel_impl};
+    let job = unsafe { Box::from_raw(job.cast::<DialogJob>()) };
+    let DialogJob { view, ask, asked } = *job;
+    let parent = NonNull::new(view.cast()).map(|v| Parent(RawWindowHandle::AppKit(AppKitWindowHandle::new(v))));
+    let dialog = start_dialog(parent.as_ref(), ask);
+    if !view.is_null() {
+        let () = unsafe { msg_send![view as *mut Object, release] };
+    }
+    if let Ok(mut slot) = asked.lock() {
+        *slot = Some(dialog);
     }
 }
 
@@ -140,6 +200,8 @@ struct Gui {
     ui_sent: (Vec<f32>, f64),
     text_shown: Option<(bool, String)>,
     dialog: Option<Dialog>,
+    asking: bool,
+    asked: Asked,
     frame: u64,
     keys_held: Option<Instant>,
     keys_pending: Arc<AtomicBool>,
@@ -295,6 +357,8 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
         ui_sent: (Vec::new(), f64::NAN),
         text_shown: None,
         dialog: None,
+        asking: false,
+        asked: Arc::new(Mutex::new(None)),
         frame: 0,
         keys_held: None,
         keys_pending: Arc::new(AtomicBool::new(false)),
@@ -316,6 +380,13 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
             let Ok(mut gui) = gui.lock() else { return };
             let gui = &mut *gui;
             gui.frame += 1;
+            if gui.asking
+                && let Ok(mut slot) = gui.asked.try_lock()
+                && let Some(d) = slot.take()
+            {
+                gui.dialog = Some(d);
+                gui.asking = false;
+            }
             if let Some(d) = gui.dialog.as_mut()
                 && settle(d, page)
             {
@@ -399,8 +470,9 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                     Message::Resize { width, height } => page.resize(window, width.max(SMALLEST_WINDOW.0), height.max(SMALLEST_WINDOW.1)),
                     Message::Log { text } => log(&text),
                     Message::Save { name, text } => {
-                        if gui.dialog.is_none() {
-                            gui.dialog = Some(Dialog::Save(Box::pin(dialog(window).set_file_name(&name).save_file()), text.into_bytes()));
+                        if gui.dialog.is_none() && !gui.asking {
+                            gui.asking = true;
+                            ask_dialog(window, Ask::Save(name, text.into_bytes()), &gui.asked);
                         }
                     }
                     Message::Reset => {
@@ -427,8 +499,9 @@ pub fn create(params: Arc<SuuParams>, shared: Arc<Shared>, synth: bool) -> Optio
                         gui.text_shown = None;
                     }
                     Message::Open => {
-                        if gui.dialog.is_none() {
-                            gui.dialog = Some(Dialog::Open(Box::pin(dialog(window).add_filter("Suu preset", &["json"]).pick_file())));
+                        if gui.dialog.is_none() && !gui.asking {
+                            gui.asking = true;
+                            ask_dialog(window, Ask::Open, &gui.asked);
                         }
                     }
                 }

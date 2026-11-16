@@ -1932,3 +1932,39 @@ fn breath_buzz(lofi: bool, rate: f64) {
     assert!(rms < -40.0, "the near-silent preset stays near silent: {rms:.1} dB (was -26.5 with the buzz)");
     assert!(buzz < around + 15.0, "no strong line at {rate} Hz (36 dB above its surroundings with the bug): {buzz:.1} dB against {around:.1} dB beside it");
 }
+
+#[test]
+fn fast_mouth_moves_stay_stable_at_every_quality() {
+    for (hq, lofi) in [(true, false), (false, false), (false, true)] {
+        for size in [0.4, 1.0, 2.5] {
+            for stereo in [false, true] {
+                let mut s = Suu::new(48000.0);
+                s.load_dict("WOW  W AW1\nYEAH  Y AE1\nSEE  S IY1\nTAKE  T EY1 K\n");
+                s.set_params(Params { gate: true, hq, lofi, stereo, glide_s: 0.0, speech: 4.0, text_step: TextStep::Clock, text_rate_hz: 12.0, ..Params::default() });
+                s.set_size(size);
+                if let Some(w) = s.wants_twin() {
+                    let _ = s.set_twin(Mouth::build(&s.mouth_seed(w)));
+                }
+                s.set_text("wow yeah see take");
+                for t in 0..9 {
+                    s.set_mod(t, Mod { depth: 1.0, rate_hz: 9.0, sync: 0.0, shape: Shape::Square, smooth: 0.0 });
+                }
+                let (inp, mut l, mut r) = ([0f32; 128], [0f32; 128], [0f32; 128]);
+                let mut peak = 0f32;
+                for b in 0..800 {
+                    if b % 15 == 0 {
+                        let v = ((b / 15) % 2) as f64;
+                        s.set_params(Params { vowel_x: v, vowel_y: 1.0 - v, ..s.params() });
+                    }
+                    s.process_stereo(&inp, &mut l, &mut r);
+                    for v in l.iter().chain(&r) {
+                        assert!(v.is_finite(), "hq {hq} lofi {lofi} size {size} stereo {stereo}: NaN at block {b}");
+                        peak = peak.max(v.abs());
+                    }
+                }
+                assert!(s.voice.artic.v.iter().all(|v| v.abs() < 1e4), "hq {hq} lofi {lofi} size {size}: the articulators ran away");
+                assert!(peak <= 1.0, "hq {hq} lofi {lofi} size {size} stereo {stereo}: peak {peak}");
+            }
+        }
+    }
+}
