@@ -78,13 +78,13 @@ ok("MPE: a new target reaches the plug-in", s.some((m) => m.type === "set" && m.
 await page.keyboard.press("Escape");
 await tell({ type: "params", values: { move: 2, stereo_canon: 3, stereo_phase: 0.25, stereo_mirror: 1 } });
 ok("MOVE, CANON, PHASE and MIRROR shown", (await page.textContent('output[for="move"]')) === "200%" && (await page.textContent('output[for="stereoCanon"]')) === "+3" && (await page.textContent('output[for="stereoPhase"]')) === "90°" && (await page.getAttribute("#stereomirror", "aria-pressed")) === "true");
-await tell({ type: "params", values: { seq_in: 1, seq_vowel: 0.5, pulse_width: 0.3, pwm_depth: 0.4, pwm_sync: 0 } });
+await tell({ type: "params", values: { seq_open: 1, seq_vowel: 0.5, pulse_width: 0.3, pwm_depth: 0.4, pwm_sync: 0 } });
 await frames();
-ok("SEQ × IN, VOWEL 50% and the pulse shown", (await page.getAttribute('[data-seqin="1"]', "aria-pressed")) === "true" && (await page.textContent("#seqvowel")) === "VOW 50%" && (await page.textContent('output[for="pulseWidth"]')) === "30%" && (await page.textContent('output[for="pwmDepth"]')) === "40%");
-ok("host SEQ IN and pulse not echoed", !(await sent()).some((m) => m.type === "set"));
-await page.click('[data-seqin="2"]');
+ok("OPEN × KEYS, VOW 50% and the pulse shown", (await page.inputValue("#seqopen")) === "1" && (await page.textContent("#seqvowel")) === "50%" && (await page.textContent('output[for="pulseWidth"]')) === "30%" && (await page.textContent('output[for="pwmDepth"]')) === "40%");
+ok("host OPEN and pulse not echoed", !(await sent()).some((m) => m.type === "set"));
+await page.selectOption("#seqopen", "4");
 await frames();
-ok("+ IN reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq_in" && m.value === 2));
+ok("OPEN + IN reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq_open" && m.value === 4));
 const hqBefore = await page.getAttribute("#hq", "aria-pressed");
 await page.click("#hq");
 await tell({ type: "params", values: { tilt: 500 } });

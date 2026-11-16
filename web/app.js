@@ -1431,22 +1431,23 @@ function sendStep(i) {
   const s = steps[i];
   post({ type: "step", i, on: s.on, note: s.note, tie: s.tie, vowel: s.vowel, accent: s.accent, len: s.len });
 }
-let seqGate = 1, seqIn = 0, seqVowel = 1;
-function setSeqIn(v) {
-  seqIn = v;
+let seqGate = 1, seqOpen = 0, seqVowel = 1;
+function setSeqOpen(v) {
+  seqOpen = v;
   send(87, v);
-  document.querySelectorAll("[data-seqin]").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.seqin === v)));
+  $("seqopen").value = String(v);
+  $("seqopen").classList.toggle("on", v !== 0);
 }
 function setSeqVowel(v) {
   seqVowel = Math.round(clamp(v, 0, 1) * 100) / 100;
   send(88, seqVowel);
-  $("seqvowel").textContent = "VOW " + Math.round(seqVowel * 100) + "%";
+  $("seqvowel").textContent = Math.round(seqVowel * 100) + "%";
   $("seqvowel").classList.toggle("on", seqVowel !== 1);
 }
-document.querySelectorAll("[data-seqin]").forEach((b) => (b.onclick = () => setSeqIn(+b.dataset.seqin)));
+$("seqopen").onchange = () => setSeqOpen(+$("seqopen").value);
 dragValue($("seqvowel"), () => seqVowel, (v) => setSeqVowel(v), 1 / 200);
 $("seqvowel").ondblclick = () => setSeqVowel(1);
-setSeqIn(0);
+setSeqOpen(0);
 setSeqVowel(1);
 function sendSeq() {
   post({ type: "seq", len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: seqGate });
@@ -1808,7 +1809,7 @@ function getState() {
     stereoMirror,
     knobs,
     motion,
-    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, gateIn: seqIn, vowel: seqVowel, steps: steps.map((s) => ({ ...s })) },
+    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, open: seqOpen, vowel: seqVowel, steps: steps.map((s) => ({ ...s })) },
     text: { words: $("text").value, ...tx },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
@@ -1879,7 +1880,7 @@ function readState(raw) {
     rate: [1, 2, 4, 8, 16, 32].includes(seq.rate) ? seq.rate : d.seq.rate,
     length: Math.round(num(seq.length, d.seq.length, 1, 16)),
     gate: num(seq.gate, d.seq.gate, 0, 2),
-    gateIn: Math.round(num(seq.gateIn, d.seq.gateIn, 0, 2)),
+    open: Math.round(num(seq.open, d.seq.open, 0, 4)),
     vowel: num(seq.vowel, d.seq.vowel, 0, 1),
     steps: d.seq.steps.map((ds, i) => {
       const s = obj(seq.steps?.[i], `step ${i + 1}`);
@@ -1962,7 +1963,7 @@ function applyState(st) {
   $("rate").value = String(st.seq.rate);
   $("seqlen").value = String(st.seq.length);
   seqGate = st.seq.gate;
-  setSeqIn(st.seq.gateIn);
+  setSeqOpen(st.seq.open);
   setSeqVowel(st.seq.vowel);
   st.seq.steps.forEach((s, i) => {
     steps[i] = { ...s };
@@ -2119,9 +2120,7 @@ const TIPS = {
   '[data-osc="1"]': "Saw\nOne saw: bright, every harmonic.",
   '[data-osc="3"]': "Pulse\nAt 50% width a square, odd harmonics only: hollow. ▾ sets the width and its movement.",
   "#pulse-more": "Pulse\nThe pulse's width and how it moves.",
-  '[data-seqin="0"]': "Seq\nThe steps alone open the sound.",
-  '[data-seqin="1"]': "× In\nA step sounds only while the input is above the gate's threshold.",
-  '[data-seqin="2"]': "+ In\nThe input also opens the sound between the steps.",
+  "#seqopen": "Open\nWhat opens the sound while the sequencer plays. SEQ: the steps alone. × KEYS: the steps while a key is held; the first key starts the pattern. + KEYS: keys also between the steps. × IN: the steps while the input is above the gate's threshold. + IN: the input also between the steps.",
   "#seqvowel": "Vowel\nHow far the steps' vowels move the mouth from the pad's vowel. Double-click: 100%.",
   '[data-osc="0"]': "Off\nNo oscillator: only the input and the folds.",
   '[data-in="file"]': "File\nAn audio file, looped, mixed with the oscillator. Click again: off. The folder beside it, or a drop anywhere, loads another.",
@@ -2296,7 +2295,7 @@ const PMAP = [];
   add("lofi", (st) => +st.lofi, (st, v) => (st.lofi = v > 0.5));
   add("stereo", (st) => +st.stereo, (st, v) => (st.stereo = v > 0.5));
   add("stereo_mirror", (st) => +st.stereoMirror, (st, v) => (st.stereoMirror = v > 0.5));
-  add("seq_in", (st) => st.seq.gateIn, (st, v) => (st.seq.gateIn = Math.round(v)));
+  add("seq_open", (st) => st.seq.open, (st, v) => (st.seq.open = Math.round(v)));
   add("seq_vowel", (st) => st.seq.vowel, (st, v) => (st.seq.vowel = v));
   add("pressure_to", (st) => st.mpe.pressureTo + 1, (st, v) => (st.mpe.pressureTo = Math.round(v) - 1));
   add("pressure_depth", (st) => st.mpe.pressureDepth, (st, v) => (st.mpe.pressureDepth = v));

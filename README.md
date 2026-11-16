@@ -60,9 +60,13 @@ Sixteen steps, each with a note, vowel, accent ◆ and length. Drag a step up or
 down for its note, click to turn it on, Shift-click to tie, click the vowel
 to change it. **Gate** scales every step's length alike.
 
-- **Seq**, **× In**, **+ In**: what opens the sound while the sequencer plays.
-  Seq: the steps alone. × In: a step sounds only while the input is above
-  the gate's threshold. + In: the input also opens it between the steps.
+- **Open**: what opens the sound while the sequencer plays.
+  - **Seq**: the steps alone.
+  - **× Keys**: the steps while a key is held; the first key starts the
+    pattern. Keys transpose it.
+  - **+ Keys**: keys also between the steps.
+  - **× In**: the steps while the input is above the gate's threshold.
+  - **+ In**: the input also between the steps.
 - **Vow**: how far the steps' vowels move the mouth from the pad's vowel.
 
 ## Sound

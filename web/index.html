@@ -88,10 +88,11 @@
 <section class="panel sequencer" aria-label="Sequencer">
   <div class="seq-controls">
     <button id="play" class="primary"></button>
-    <label class="labeled">RATE<select id="rate" class="field"><option value="1">1/4</option><option value="2">1/8</option><option value="4" selected>1/16</option><option value="8">1/32</option><option value="16">1/64</option><option value="32">1/128</option></select></label>
-    <label class="labeled">STEPS<input id="seqlen" class="field" type="number" min="1" max="16" value="16"></label>
-    <label class="labeled">GATE<span id="seqgate" class="field drag" tabindex="0" aria-label="Gate, × every step's length"></span></label>
-    <div class="seq-in" role="group" aria-label="The sequencer with the input"><button data-seqin="0">SEQ</button><button data-seqin="1">× IN</button><button data-seqin="2">+ IN</button><span id="seqvowel" class="field drag" tabindex="0" aria-label="How far the steps' vowels move the mouth"></span></div>
+    <label class="cell">RATE<select id="rate" class="field"><option value="1">1/4</option><option value="2">1/8</option><option value="4" selected>1/16</option><option value="8">1/32</option><option value="16">1/64</option><option value="32">1/128</option></select></label>
+    <label class="cell">STEPS<input id="seqlen" class="field" type="number" min="1" max="16" value="16"></label>
+    <label class="cell">GATE<span id="seqgate" class="field drag" tabindex="0" aria-label="Gate, × every step's length"></span></label>
+    <label class="cell wide">OPEN<select id="seqopen" class="field" aria-label="What opens the sound while the sequencer plays"><option value="0">SEQ</option><option value="1">× KEYS</option><option value="2">+ KEYS</option><option value="3">× IN</option><option value="4">+ IN</option></select></label>
+    <label class="cell">VOW<span id="seqvowel" class="field drag" tabindex="0" aria-label="How far the steps' vowels move the mouth"></span></label>
   </div>
   <div id="steps" class="steps"></div>
 </section>

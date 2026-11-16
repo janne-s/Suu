@@ -62,7 +62,7 @@ pulse_width
 pwm_depth
 pwm_rate
 pwm_sync
-seq_in
+seq_open
 seq_vowel
 pressure_to
 pressure_depth

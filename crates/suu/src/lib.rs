@@ -116,6 +116,8 @@ pub enum Source {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SeqGate {
     Seq,
+    AndKeys,
+    OrKeys,
     AndIn,
     OrIn,
 }
@@ -835,6 +837,8 @@ pub struct Suu {
     applied: [f64; N_MOD],
     seq_pad: Option<(f64, f64)>,
     pwm_phase: f64,
+    keys_were: bool,
+    step_keyed: bool,
     g2p: Option<EnglishG2P>,
     plan: TextPlan,
     cursor: usize,
@@ -958,6 +962,8 @@ impl Suu {
             applied: [f64::NAN; N_MOD],
             seq_pad: None,
             pwm_phase: 0.0,
+            keys_were: false,
+            step_keyed: false,
             g2p: None,
             plan: TextPlan::empty(),
             cursor: 0,
@@ -1597,6 +1603,7 @@ impl Suu {
             let prev = self.seq.steps[(self.seq.step + self.seq.len - 1) % self.seq.len];
             self.retrig = !(prev.tie && prev.on && self.seq.gate_open);
             self.seq.gate_open = true;
+            self.step_keyed = self.p.gate;
             self.accent = st.accent;
             if st.vowel >= 0 {
                 self.seq_pad = Some(STEP_PAD[st.vowel as usize]);
@@ -1997,11 +2004,20 @@ impl Suu {
                 self.in_pad = Some((px + (x - px) * k, py + (y - py) * k));
             }
         }
-        if self.seq.playing {
+        let keys_down = self.p.gate && !self.keys_were;
+        self.keys_were = self.p.gate;
+        if self.seq.playing && self.p.seq_gate == SeqGate::AndKeys && keys_down {
+            self.set_playing(false);
+            self.set_playing(true);
+        } else if self.seq.playing {
             self.advance_seq();
+        }
+        if self.seq.playing {
             self.note_now = self.base_note() + self.seq.note;
             self.gate_now = match self.p.seq_gate {
                 SeqGate::Seq => self.seq.gate_open,
+                SeqGate::AndKeys => self.seq.gate_open && self.step_keyed,
+                SeqGate::OrKeys => self.seq.gate_open || self.p.gate,
                 SeqGate::AndIn => {
                     self.run_env_gate();
                     self.seq.gate_open && self.env_open
@@ -2250,7 +2266,7 @@ impl Suu {
         let p = self.p;
         let peak = self.in_peak;
         self.in_peak = 0.0;
-        if !p.env_gate && !(self.seq.playing && p.seq_gate != SeqGate::Seq) {
+        if !p.env_gate && !(self.seq.playing && matches!(p.seq_gate, SeqGate::AndIn | SeqGate::OrIn)) {
             (self.env_open, self.env_below) = (false, 0.0);
             return;
         }

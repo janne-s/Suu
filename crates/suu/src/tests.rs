@@ -2065,3 +2065,31 @@ fn the_steps_vowel_moves_the_mouth_by_its_amount() {
         assert!((b[0] - want.0).abs() < 1e-9 && (b[1] - want.1).abs() < 1e-9, "amount {amount}: {:?}", (b[0], b[1]));
     }
 }
+
+#[test]
+fn keys_can_join_the_sequencer_gate() {
+    let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+    let seq = |gate: SeqGate, steps_on: bool| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { seq_gate: gate, ..Params::default() });
+        for i in 0..STEPS {
+            s.set_step(i, Step { on: steps_on, note: 0, tie: false, vowel: -1, accent: false, len: 1.0 });
+        }
+        s.set_playing(true);
+        s
+    };
+    let mut s = seq(SeqGate::AndKeys, true);
+    let quiet = run(&mut s, 128, 24000);
+    assert!(rms(&quiet[12000..]) < 1e-4, "× Keys: no key, no sound");
+    s.set_params(Params { gate: true, ..s.params() });
+    run(&mut s, 128, 128);
+    assert_eq!(s.seq_state().0, 0, "× Keys: the first key starts the pattern over");
+    let held = run(&mut s, 128, 24000);
+    assert!(rms(&held[12000..]) > 1e-3, "× Keys: a held key lets the steps sound");
+    let mut s = seq(SeqGate::OrKeys, false);
+    assert!(rms(&run(&mut s, 128, 24000)[12000..]) < 1e-4);
+    s.set_params(Params { gate: true, ..s.params() });
+    assert!(rms(&run(&mut s, 128, 24000)[12000..]) > 1e-3, "+ Keys: a key sounds between the steps");
+    let mut s = seq(SeqGate::Seq, true);
+    assert!(rms(&run(&mut s, 128, 24000)[12000..]) > 1e-3, "Seq: the steps alone");
+}

@@ -20,16 +20,22 @@ pub enum Wave {
 }
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
-pub enum SeqIn {
+pub enum SeqOpen {
     #[id = "seq"]
     #[name = "Seq"]
     Seq,
-    #[id = "and"]
+    #[id = "and_keys"]
+    #[name = "× Keys"]
+    AndKeys,
+    #[id = "or_keys"]
+    #[name = "+ Keys"]
+    OrKeys,
+    #[id = "and_in"]
     #[name = "× In"]
-    And,
-    #[id = "or"]
+    AndIn,
+    #[id = "or_in"]
     #[name = "+ In"]
-    Or,
+    OrIn,
 }
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
@@ -581,8 +587,8 @@ pub struct SuuParams {
     pub pwm_rate: FloatParam,
     #[id = "pwm_sync"]
     pub pwm_sync: EnumParam<Sync>,
-    #[id = "seq_in"]
-    pub seq_in: EnumParam<SeqIn>,
+    #[id = "seq_open"]
+    pub seq_open: EnumParam<SeqOpen>,
     #[id = "seq_vowel"]
     pub seq_vowel: FloatParam,
     #[id = "pressure_to"]
@@ -749,7 +755,7 @@ impl SuuParams {
             pwm_depth: percent(FloatParam::new("PWM Depth", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
             pwm_rate: hz(FloatParam::new("PWM Rate", 0.5, log_range(0.02, 20.0, 0.632)), 0.0),
             pwm_sync: EnumParam::new("PWM Sync", Sync::Off),
-            seq_in: EnumParam::new("Sequencer Gate", SeqIn::Seq),
+            seq_open: EnumParam::new("Sequencer Opens", SeqOpen::Seq),
             seq_vowel: percent(FloatParam::new("Sequencer Vowel", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
             pressure_to: EnumParam::new("Pressure To", ExprTo::Breath),
             pressure_depth: percent(FloatParam::new("Pressure Depth", 0.5, FloatRange::Linear { min: -1.0, max: 1.0 })),
@@ -896,10 +902,12 @@ impl SuuParams {
             pwm_depth: self.pwm_depth.value() as f64,
             pwm_rate_hz: self.pwm_rate.value() as f64,
             pwm_sync: self.pwm_sync.value().beats(),
-            seq_gate: match self.seq_in.value() {
-                SeqIn::Seq => suu::SeqGate::Seq,
-                SeqIn::And => suu::SeqGate::AndIn,
-                SeqIn::Or => suu::SeqGate::OrIn,
+            seq_gate: match self.seq_open.value() {
+                SeqOpen::Seq => suu::SeqGate::Seq,
+                SeqOpen::AndKeys => suu::SeqGate::AndKeys,
+                SeqOpen::OrKeys => suu::SeqGate::OrKeys,
+                SeqOpen::AndIn => suu::SeqGate::AndIn,
+                SeqOpen::OrIn => suu::SeqGate::OrIn,
             },
             seq_vowel: self.seq_vowel.value() as f64,
             pressure_to: self.pressure_to.value().core(),

@@ -95,7 +95,7 @@ fn set(p: &mut Params, id: u32, v: f64) {
         84 => p.pwm_depth = v,
         85 => p.pwm_rate_hz = v,
         86 => p.pwm_sync = v,
-        87 => p.seq_gate = match v as i32 { 1 => SeqGate::AndIn, 2 => SeqGate::OrIn, _ => SeqGate::Seq },
+        87 => p.seq_gate = match v as i32 { 1 => SeqGate::AndKeys, 2 => SeqGate::OrKeys, 3 => SeqGate::AndIn, 4 => SeqGate::OrIn, _ => SeqGate::Seq },
         88 => p.seq_vowel = v,
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
