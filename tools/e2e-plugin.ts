@@ -85,6 +85,12 @@ ok("host SEQ IN and pulse not echoed", !(await sent()).some((m) => m.type === "s
 await page.click('[data-seqin="2"]');
 await frames();
 ok("+ IN reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "seq_in" && m.value === 2));
+const hqBefore = await page.getAttribute("#hq", "aria-pressed");
+await page.click("#hq");
+await tell({ type: "params", values: { tilt: 500 } });
+await frames();
+s = await sent();
+ok("a click is not lost to a host change in the same frame", s.some((m) => m.type === "set" && (m.id === "hq" || m.id === "lofi")), JSON.stringify(s.filter((m) => m.type === "set")) + " " + hqBefore);
 ok("PRESET names the side in the plug-in", (await page.innerText("#preset-toggle")).trim() === "PRESET A", await page.innerText("#preset-toggle"));
 await tell({ type: "params", values: { scale_1: 1, scale_2: 0, jump: 7, jump_mode: 1 } });
 ok("SCALE: C♯ off shown", (await page.getAttribute('[data-pc="1"]', "aria-pressed")) === "false" && (await page.getAttribute('[data-pc="0"]', "aria-pressed")) === "true");

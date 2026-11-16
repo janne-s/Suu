@@ -2366,7 +2366,7 @@ function hornKey(st) {
   return JSON.stringify([st.horn, st.hornWrap]);
 }
 
-function applyHost(st, values) {
+function applyHost(st, values, all = false) {
   for (const m of PMAP) if (m.set && m.id in values) m.set(st, values[m.id]);
   plugin.quiet = true;
   try {
@@ -2377,8 +2377,8 @@ function applyHost(st, values) {
     plugin.quiet = false;
   }
   const now = getState();
-  for (const m of PMAP) plugin.host[m.id] = m.get(now);
-  plugin.horn = hornKey(now);
+  for (const m of PMAP) if (all || m.id in values) plugin.host[m.id] = m.get(now);
+  if (all) plugin.horn = hornKey(now);
 }
 
 const textField = (el) => el?.tagName === "INPUT" && (el.type === "text" || el.type === "number") && !el.readOnly;
@@ -2450,7 +2450,7 @@ if (inPlugin) {
         st.hornWrap = m.hornWrap;
       }
       plugin.words = st.text.words;
-      applyHost(st, m.values);
+      applyHost(st, m.values, true);
       try {
         const saved = m.slots ? JSON.parse(m.slots) : {};
         slots.active = saved.active === "B" ? "B" : "A";
