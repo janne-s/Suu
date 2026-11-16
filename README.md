@@ -151,7 +151,7 @@ bun run e2e        # headless Chrome, with bun run web running
   on.
 - The page is tested in Chrome and Safari.
 - The plug-in is VST3 and CLAP for macOS on Apple silicon, tested in Ableton
-  Live. No AU and no Windows build yet.
+  Live.
 
 ## Credits
 
