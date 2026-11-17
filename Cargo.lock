@@ -16,7 +16,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "chimera"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "libm",
@@ -141,14 +141,14 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "suu"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "chimera",
 ]
 
 [[package]]
 name = "suu-wasm"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "suu",
 ]

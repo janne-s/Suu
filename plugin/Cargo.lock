@@ -479,7 +479,7 @@ checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "chimera"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "libm",
  "serde",
@@ -2885,14 +2885,14 @@ dependencies = [
 
 [[package]]
 name = "suu"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "chimera",
 ]
 
 [[package]]
 name = "suu_fx"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "nih_plug",
  "suu_plugin",
@@ -2900,7 +2900,7 @@ dependencies = [
 
 [[package]]
 name = "suu_plugin"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "chimera",
  "crossbeam-channel",
@@ -2918,7 +2918,7 @@ dependencies = [
 
 [[package]]
 name = "suu_synth"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "nih_plug",
  "suu_plugin",
