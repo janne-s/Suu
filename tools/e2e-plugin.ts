@@ -79,6 +79,30 @@ ok("MPE: a new target reaches the plug-in", s.some((m) => m.type === "set" && m.
 await page.keyboard.press("Escape");
 await tell({ type: "params", values: { move: 2, stereo_canon: 3, stereo_phase: 0.25, stereo_mirror: 1 } });
 ok("MOVE, CANON, PHASE and MIRROR shown", (await page.textContent('output[for="move"]')) === "200%" && (await page.textContent('output[for="stereoCanon"]')) === "+3" && (await page.textContent('output[for="stereoPhase"]')) === "90°" && (await page.getAttribute("#stereomirror", "aria-pressed")) === "true");
+await tell({ type: "params", values: { seq_sync: 1, seq_offset: 0 } });
+await frames();
+ok("SYNC +0 shown", (await page.inputValue("#seqsync")) === "0", await page.inputValue("#seqsync"));
+await tell({ type: "params", values: { seq_sync: 1, seq_offset: 3 } });
+await frames();
+ok("SYNC +3 shown", (await page.inputValue("#seqsync")) === "3");
+await tell({ type: "params", values: { seq_sync: 0 } });
+await frames();
+ok("SYNC OFF shown", (await page.inputValue("#seqsync")) === "-1");
+ok("host SYNC not echoed", !(await sent()).some((m) => m.type === "set"));
+await page.selectOption("#seqsync", "2");
+await frames();
+{
+  const s = await sent();
+  ok("SYNC +2 reaches the host", s.some((m) => m.type === "set" && m.id === "seq_offset" && m.value === 2) && s.some((m) => m.type === "set" && m.id === "seq_sync" && m.value === 1), JSON.stringify(s.filter((m) => m.type === "set")));
+}
+await tell({ type: "params", values: { in_shape: 3 } });
+await frames();
+ok("VOC shown", (await page.textContent("#inshape")) === "VOC");
+ok("host input shape not echoed", !(await sent()).some((m) => m.type === "set"));
+await page.click("#inshape");
+await page.mouse.move(5, 300);
+await frames();
+ok("RAW reaches the host", (await sent()).some((m) => m.type === "set" && m.id === "in_shape" && m.value === 0));
 await tell({ type: "params", values: { seq_open: 1, seq_vowel: 0.5, pulse_width: 0.3, pwm_depth: 0.4, pwm_sync: 0 } });
 await frames();
 ok("OPEN × KEYS, VOW 50% and the pulse shown", (await page.inputValue("#seqopen")) === "1" && (await page.textContent("#seqvowel")) === "50%" && (await page.textContent('output[for="pulseWidth"]')) === "30%" && (await page.textContent('output[for="pwmDepth"]')) === "40%");

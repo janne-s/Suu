@@ -1,5 +1,5 @@
 use chimera::anatomy::human::{ArticKey, ArticPatch, BODY_MALE, BodyMix, HumanBody, N_ARTIC};
-use chimera::math::{PI, clamp, cos, exp, js_max, midi_to_hz, pow, sin};
+use chimera::math::{PI, clamp, cos, exp, js_max, midi_to_hz, pow, sin, sqrt};
 use chimera::phonetics::Syllable;
 use chimera::phonetics::english::EnglishG2P;
 use chimera::phonetics::planner::vowel_artic;
@@ -12,8 +12,10 @@ use chimera::voice::human_voice::{HumanVoice, SourcePatch};
 
 #[cfg(test)]
 mod tests;
+mod shape;
 mod track;
 mod vowel;
+use shape::{Edge, Loudness, Vocoder, Whitener};
 use track::PitchTracker;
 use vowel::VowelTracker;
 pub use vowel::pad_of;
@@ -21,6 +23,9 @@ pub use vowel::pad_of;
 pub const MAX_BLOCK: usize = 256;
 const CTRL: u64 = 32;
 const FADE: u32 = 1024;
+const TWIN_BALANCE_S: f64 = 0.3;
+const TWIN_BALANCE_MIN: f64 = 0.25;
+const TWIN_BALANCE_MAX: f64 = 4.0;
 pub const STEPS: usize = 16;
 
 const CORNERS: [&str; 4] = ["i", "u", "æ", "ɑ"];
@@ -114,6 +119,14 @@ pub enum Source {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InShape {
+    Raw,
+    Flat,
+    Edge,
+    Voc,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SeqGate {
     Seq,
     AndKeys,
@@ -127,6 +140,7 @@ pub struct Params {
     pub source: Source,
     pub osc_db: f64,
     pub input_db: f64,
+    pub in_shape: InShape,
     pub note: f64,
     pub gate: bool,
     pub drive_db: f64,
@@ -212,6 +226,8 @@ pub struct Params {
     pub pwm_sync: f64,
     pub seq_gate: SeqGate,
     pub seq_vowel: f64,
+    pub seq_sync: bool,
+    pub seq_offset: f64,
 }
 
 pub const EXPR_BREATH: i32 = N_MOD as i32;
@@ -242,6 +258,7 @@ impl Default for Params {
             source: Source::Supersaw,
             osc_db: 0.0,
             input_db: 0.0,
+            in_shape: InShape::Raw,
             note: 45.0,
             gate: false,
             drive_db: 0.0,
@@ -327,6 +344,8 @@ impl Default for Params {
             pwm_sync: 0.0,
             seq_gate: SeqGate::Seq,
             seq_vowel: 1.0,
+            seq_sync: true,
+            seq_offset: 0.0,
         }
     }
 }
@@ -822,6 +841,7 @@ pub struct Suu {
     twin_retired: Option<Box<HumanVoice>>,
     twin_scale: f64,
     twin_mix: f64,
+    twin_balance: (f64, f64),
     twin_quality: Quality,
     twin_applied: [f64; N_MOD + 1],
     eff_twin: [f64; N_MOD],
@@ -869,6 +889,10 @@ pub struct Suu {
     fold_env: f64,
     in_env: f64,
     in_peak: f64,
+    whitener: Whitener,
+    edge: Edge,
+    vocoder: Vocoder,
+    loudness: Loudness,
     env_open: bool,
     env_below: f64,
     tracker: PitchTracker,
@@ -947,6 +971,7 @@ impl Suu {
             twin_retired: None,
             twin_scale: 0.0,
             twin_mix: 0.0,
+            twin_balance: (0.0, 0.0),
             twin_quality: Quality::Hq,
             twin_applied: [f64::NAN; N_MOD + 1],
             eff_twin: [0.0; N_MOD],
@@ -994,6 +1019,10 @@ impl Suu {
             fold_env: 0.0,
             in_env: 0.0,
             in_peak: 0.0,
+            whitener: Whitener::new(fs),
+            edge: Edge::new(fs),
+            vocoder: Vocoder::new(fs),
+            loudness: Loudness::new(fs),
             env_open: false,
             env_below: 0.0,
             tracker: PitchTracker::new(fs),
@@ -1075,6 +1104,7 @@ impl Suu {
         q.pwm_rate_hz = clamp(q.pwm_rate_hz, 0.01, 40.0);
         q.pwm_sync = clamp(q.pwm_sync, 0.0, 64.0);
         q.seq_vowel = clamp(q.seq_vowel, 0.0, 1.0);
+        q.seq_offset = clamp(q.seq_offset, 0.0, (STEPS - 1) as f64).round();
         q.note = clamp(q.note, 12.0, 108.0);
         q.bpm = clamp(q.bpm, 30.0, 300.0);
         q.glide_s = clamp(q.glide_s, 0.0, 4.0);
@@ -1539,6 +1569,9 @@ impl Suu {
         self.seq.step = 0;
         self.seq.cycles = 0;
         self.seen_cycles = 0;
+        if let Some((step, t)) = self.song_step() {
+            (self.seq.step, self.seq.t) = (step, t);
+        }
         if on {
             self.fired = 0;
             self.once_pending = true;
@@ -1617,9 +1650,34 @@ impl Suu {
         clamp(self.seq.steps[self.seq.step].len * self.seq.gate_scale, 0.0, 1.0)
     }
 
+    fn song_step(&self) -> Option<(usize, f64)> {
+        if !self.p.seq_sync || self.song.is_none() {
+            return None;
+        }
+        let at = self.beats_now() * self.seq.div - self.p.seq_offset;
+        let whole = at.floor();
+        let step = (whole as i64).rem_euclid(self.seq.len as i64) as usize;
+        Some((step, (at - whole) * self.step_samples()))
+    }
+
     fn advance_seq(&mut self) {
         let len = self.step_samples();
         self.seq.t += CTRL as f64;
+        if let Some((step, t)) = self.song_step() {
+            if step != self.seq.step {
+                if step < self.seq.step {
+                    self.seq.cycles += 1;
+                }
+                (self.seq.step, self.seq.t) = (step, t);
+                self.trigger();
+            } else {
+                self.seq.t = t;
+                if self.seq.gate_open && t >= self.gate_len() * len && !self.seq.steps[step].tie {
+                    self.seq.gate_open = false;
+                }
+            }
+            return;
+        }
         if self.seq.t >= len {
             self.seq.t -= len;
             self.seq.step = (self.seq.step + 1) % self.seq.len;
@@ -2324,8 +2382,17 @@ impl Suu {
             } else {
                 p.pulse_width
             };
-            let osc = if input_src { 0.0 } else { self.osc.next(p.source, self.osc_hz / fs, width) * 0.5 * osc_g };
-            let raw = osc + input[i] as f64 * input_g;
+            let voc = p.in_shape == InShape::Voc;
+            let wave = if input_src && !voc { 0.0 } else { self.osc.next(if input_src { Source::Saw } else { p.source }, self.osc_hz / fs, width) };
+            let osc = if input_src || voc { 0.0 } else { wave * 0.5 * osc_g };
+            let x_in = input[i] as f64;
+            let shaped = match p.in_shape {
+                InShape::Raw => x_in,
+                InShape::Flat => self.loudness.matched(x_in, self.whitener.push(x_in)),
+                InShape::Edge => self.loudness.matched(x_in, self.edge.push(x_in)),
+                InShape::Voc => self.loudness.matched(x_in, self.vocoder.push(wave, x_in)),
+            };
+            let raw = osc + shaped * input_g;
             self.snap_ring[self.snap_w] = raw as f32;
             self.snap_w = (self.snap_w + 1) & (SNAP_RING - 1);
             let [a_step, d_coef, r_coef] = self.adsr_step;
@@ -2410,6 +2477,7 @@ impl Suu {
         let twin_on = self.twin.is_some();
         let goal = if p.stereo && twin_on { 1.0 } else { 0.0 };
         let (step, a) = (1.0 / FADE as f64, 0.5 + 0.5 * p.stereo_width);
+        let bal_k = 1.0 - exp(-1.0 / (TWIN_BALANCE_S * fs));
         for i in 0..n {
             let d = self.dry[i] as f64;
             self.sub1 = cs * self.sub1 + (1.0 - cs) * d;
@@ -2418,7 +2486,12 @@ impl Suu {
             let o = (p.mix * wet + (1.0 - p.mix) * d) * g * self.amp[i] as f64;
             if twin_on {
                 self.twin_mix = if goal > self.twin_mix { (self.twin_mix + step).min(goal) } else { (self.twin_mix - step).max(goal) };
-                let r = (p.mix * (self.wet_twin[i] as f64 + p.sub_level * self.sub2) + (1.0 - p.mix) * d) * g * self.amp[i] as f64;
+                let (wl, wr) = (self.wet[i] as f64, self.wet_twin[i] as f64);
+                let (bl, br) = &mut self.twin_balance;
+                *bl += (wl * wl - *bl) * bal_k;
+                *br += (wr * wr - *br) * bal_k;
+                let even = if *br > 1e-12 { clamp(sqrt(*bl / *br), TWIN_BALANCE_MIN, TWIN_BALANCE_MAX) } else { 1.0 };
+                let r = (p.mix * (wr * even + p.sub_level * self.sub2) + (1.0 - p.mix) * d) * g * self.amp[i] as f64;
                 let r = o + self.twin_mix * (r - o);
                 out[off + i] = (a * o + (1.0 - a) * r) as f32;
                 self.out_twin[i] = (a * r + (1.0 - a) * o) as f32;

@@ -2093,3 +2093,210 @@ fn keys_can_join_the_sequencer_gate() {
     let mut s = seq(SeqGate::Seq, true);
     assert!(rms(&run(&mut s, 128, 24000)[12000..]) > 1e-3, "Seq: the steps alone");
 }
+
+// ---- input shapes
+
+fn dark_tone(n: usize, f0: f64) -> Vec<f32> {
+    (0..n)
+        .map(|i| {
+            let t = i as f64 / 48000.0;
+            (1..40).map(|h| (2.0 * PI * f0 * h as f64 * t + 1.7 * h as f64).sin() / (h * h) as f64).sum::<f64>() as f32 * 0.4
+        })
+        .collect()
+}
+
+fn goertzel_pow(x: &[f32], f: f64) -> f64 {
+    let w = 2.0 * PI * f / 48000.0;
+    let c = 2.0 * w.cos();
+    let (mut s1, mut s2) = (0.0, 0.0);
+    for (i, v) in x.iter().enumerate() {
+        let win = 0.5 - 0.5 * (2.0 * PI * i as f64 / x.len() as f64).cos();
+        let s0 = *v as f64 * win + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    (s1 * s1 + s2 * s2 - c * s1 * s2).max(1e-30)
+}
+
+fn shaped(p: Params, input: &[f32], block: usize) -> Vec<f32> {
+    let mut s = Suu::new(48000.0);
+    s.set_params(Params { gate: true, mix: 0.0, tilt_hz: 0.0, ..p });
+    let mut out = vec![0f32; input.len()];
+    for (o, x) in out.chunks_mut(block).zip(input.chunks(block)) {
+        s.process(x, o);
+    }
+    out
+}
+
+fn rms_of(x: &[f32]) -> f64 {
+    (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+}
+
+#[test]
+fn flat_and_edge_brighten_a_dark_input_and_keep_its_level() {
+    let x = dark_tone(48000, 110.0);
+    let off = Params { source: Source::Off, ..Params::default() };
+    let raw = shaped(off, &x, 128)[24000..].to_vec();
+    let tone = |y: &[f32]| 10.0 * (goertzel_pow(y, 2200.0) / goertzel_pow(y, 110.0)).log10();
+    let wet = |p: Params| {
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, ..p });
+        let mut out = vec![0f32; x.len()];
+        for (o, c) in out.chunks_mut(128).zip(x.chunks(128)) {
+            s.process(c, o);
+        }
+        rms_of(&out[24000..])
+    };
+    let raw_wet = wet(off);
+    for shape in [InShape::Flat, InShape::Edge] {
+        let y = shaped(Params { in_shape: shape, ..off }, &x, 128)[24000..].to_vec();
+        let level = 20.0 * (wet(Params { in_shape: shape, ..off }) / raw_wet).log10();
+        assert!(tone(&y) > tone(&raw) + 20.0, "{shape:?}: 20th harmonic {:.1} dB vs raw {:.1} dB", tone(&y), tone(&raw));
+        assert!(level.abs() < 6.0, "{shape:?}: through the mouth {level:.1} dB from RAW");
+    }
+}
+
+#[test]
+fn edge_keeps_the_input_pitch_and_aliases_no_more_than_the_saw() {
+    let x: Vec<f32> = (0..48000).map(|i| (0.5 * (2.0 * PI * 440.0 * i as f64 / 48000.0).sin()) as f32).collect();
+    let alias = |y: &[f32]| {
+        let (mut h, mut o) = (0.0, 0.0);
+        let mut f = 220.0;
+        while f < 23000.0 {
+            let k = f / 440.0;
+            let p = goertzel_pow(y, f);
+            if (k - k.round()).abs() * 440.0 < 15.0 {
+                h += p;
+            } else {
+                o += p;
+            }
+            f += 5.0;
+        }
+        10.0 * (o / h).log10()
+    };
+    let edge = shaped(Params { source: Source::Off, in_shape: InShape::Edge, ..Params::default() }, &x, 128)[24000..].to_vec();
+    let saw = shaped(Params { source: Source::Saw, input_db: -60.0, note: 69.0, glide_s: 0.0, ..Params::default() }, &x, 128)[24000..].to_vec();
+    assert!(autocorr(&edge, (48000.0f64 / 440.0).round() as usize) > 0.9);
+    assert!(alias(&edge) < alias(&saw) + 1.0, "edge {:.1} dB, saw {:.1} dB", alias(&edge), alias(&saw));
+}
+
+#[test]
+fn voc_sounds_the_played_note_whatever_the_input() {
+    let mut r = 0x9e37_79b9u32;
+    let noise: Vec<f32> = (0..48000)
+        .map(|i| {
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            let burst = if i % 6000 < 1500 { 1.0 } else { 0.1 };
+            (r as f64 / u32::MAX as f64 - 0.5) as f32 * 0.6 * burst
+        })
+        .collect();
+    for (note, hz) in [(57.0, 220.0), (64.0, 329.63)] {
+        let p = Params { source: Source::Saw, in_shape: InShape::Voc, note, glide_s: 0.0, ..Params::default() };
+        let y = shaped(p, &noise, 128)[24000..].to_vec();
+        let lag = (48000.0 / hz as f64).round() as usize;
+        let a = autocorr(&y, lag);
+        assert!(a > 0.5, "note {note}: periodicity at {hz} Hz {a:.2}");
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, ..p });
+        let mut out = vec![0f32; noise.len()];
+        for (o, c) in out.chunks_mut(128).zip(noise.chunks(128)) {
+            s.process(c, o);
+        }
+        assert!(peak(&out) < 1.0 && rms_of(&out) > 1e-3, "through the mouth: peak {} rms {}", peak(&out), rms_of(&out));
+    }
+    let off = shaped(Params { source: Source::Off, in_shape: InShape::Voc, note: 57.0, glide_s: 0.0, ..Params::default() }, &noise, 128)[24000..].to_vec();
+    assert!(autocorr(&off, 218) > 0.5, "OSC OFF still has a saw in VOC");
+    let silent = shaped(Params { source: Source::Saw, in_shape: InShape::Voc, ..Params::default() }, &vec![0f32; 24000], 128);
+    assert!(rms_of(&silent[12000..]) < 1e-6, "no input, no sound");
+}
+
+#[test]
+fn input_shapes_are_block_size_independent_and_do_not_allocate() {
+    let x = dark_tone(24000, 97.0);
+    for shape in [InShape::Flat, InShape::Edge, InShape::Voc] {
+        let p = Params { source: Source::Saw, in_shape: shape, ..Params::default() };
+        assert_eq!(shaped(p, &x, 128), shaped(p, &x, 37), "{shape:?}");
+        let mut s = Suu::new(48000.0);
+        s.set_params(Params { gate: true, ..p });
+        let mut out = vec![0f32; 256];
+        s.process(&x[..256], &mut out);
+        let before = alloc_count::count();
+        for c in x.chunks(256).skip(1) {
+            s.process(c, &mut out[..c.len()]);
+        }
+        assert_eq!(alloc_count::count() - before, 0, "{shape:?}");
+    }
+}
+
+// ---- sequencer sync and stereo balance
+
+fn seq_at(sync: bool, offset: f64, beats: f64) -> Suu {
+    let mut s = Suu::new(48000.0);
+    s.set_params(Params { bpm: 120.0, seq_sync: sync, seq_offset: offset, ..Params::default() });
+    s.set_seq(16, 4.0, 1.0);
+    s.set_song_position(Some(beats));
+    let mut out = vec![0f32; 32];
+    s.process(&vec![0f32; 32], &mut out);
+    s
+}
+
+#[test]
+fn the_sequencer_joins_the_song_where_it_is() {
+    let mut s = seq_at(true, 0.0, 2.3);
+    s.set_playing(true);
+    assert_eq!(s.seq_state().0, 9, "beat 2.3 at sixteenths is step 9");
+    let mut s = seq_at(true, 3.0, 2.3);
+    s.set_playing(true);
+    assert_eq!(s.seq_state().0, 6, "three steps later in the bar");
+    let mut s = seq_at(false, 0.0, 2.3);
+    s.set_playing(true);
+    assert_eq!(s.seq_state().0, 0, "SYNC off starts from the first step");
+}
+
+#[test]
+fn the_sequencer_follows_the_song_after_changes() {
+    let mut s = seq_at(true, 0.0, 0.0);
+    s.set_playing(true);
+    let block = 480;
+    let (input, mut out) = (vec![0f32; block], vec![0f32; block]);
+    let mut beats = 0.0;
+    for i in 0..400 {
+        if i == 100 {
+            s.set_seq(16, 2.0, 1.0);
+        }
+        if i == 200 {
+            s.set_params(Params { bpm: 97.0, ..s.params() });
+        }
+        if i == 300 {
+            beats = 33.0;
+        }
+        s.set_song_position(Some(beats));
+        s.process(&input, &mut out);
+        beats += block as f64 / 48000.0 * s.params().bpm / 60.0;
+        let div = if i >= 100 { 2.0 } else { 4.0 };
+        let want = ((beats * div - 1e-6).floor() as i64).rem_euclid(16) as usize;
+        let near = (beats * div).fract() > 0.1 && (beats * div).fract() < 0.9;
+        if near {
+            assert_eq!(s.seq_state().0, want, "block {i}: beat {beats:.3}");
+        }
+    }
+}
+
+#[test]
+fn stereo_mouths_play_at_the_same_level() {
+    let x = dark_tone(96000, 110.0);
+    let mut s = Suu::new(48000.0);
+    s.set_params(Params { source: Source::Off, gate: true, stereo: true, ..Params::default() });
+    let (mut l, mut r) = (vec![0f32; x.len()], vec![0f32; x.len()]);
+    for ((c, lo), ro) in x.chunks(128).zip(l.chunks_mut(128)).zip(r.chunks_mut(128)) {
+        if let Some(w) = s.wants_twin() {
+            let _ = s.set_twin(Mouth::build(&s.mouth_seed(w)));
+        }
+        let _ = s.take_retired();
+        s.process_stereo(c, lo, ro);
+    }
+    let diff = 20.0 * (rms_of(&l[48000..]) / rms_of(&r[48000..])).log10();
+    assert!(diff.abs() < 0.5, "left is {diff:.1} dB from right");
+}

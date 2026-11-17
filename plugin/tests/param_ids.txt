@@ -64,6 +64,9 @@ pwm_rate
 pwm_sync
 seq_open
 seq_vowel
+in_shape
+seq_sync
+seq_offset
 pressure_to
 pressure_depth
 slide_to

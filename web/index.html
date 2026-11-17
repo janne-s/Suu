@@ -93,13 +93,14 @@
     <label class="cell">GATE<span id="seqgate" class="field drag" tabindex="0" aria-label="Gate, × every step's length"></span></label>
     <label class="cell wide">OPEN<select id="seqopen" class="field" aria-label="What opens the sound while the sequencer plays"><option value="0">SEQ</option><option value="1">× KEYS</option><option value="2">+ KEYS</option><option value="3">× IN</option><option value="4">+ IN</option></select></label>
     <label class="cell">VOW<span id="seqvowel" class="field drag" tabindex="0" aria-label="How far the steps' vowels move the mouth"></span></label>
+    <label class="cell plugin-only">SYNC<select id="seqsync" class="field" aria-label="The steps follow the host's song position, from this step"><option value="-1">OFF</option></select></label>
   </div>
   <div id="steps" class="steps"></div>
 </section>
 
 <div class="stages">
   <div class="stage-row">
-    <section class="stage" style="--n: 4"><h2>SOURCE</h2><div id="k-source" class="knobs"></div></section>
+    <section class="stage" style="--n: 4"><h2>SOURCE <button id="inshape" class="tiny" aria-pressed="false">RAW</button></h2><div id="k-source" class="knobs"></div></section>
     <section class="stage" style="--n: 4"><h2>TONE</h2><div id="k-drive" class="knobs"></div></section>
     <section class="stage" style="--n: 3"><h2>BODY <button id="hq" class="tiny" aria-pressed="true">HQ</button></h2><div id="k-mouth" class="knobs"></div></section>
     <section class="stage" style="--n: 5"><h2>AIR</h2><div id="k-air" class="knobs"></div></section>

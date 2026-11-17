@@ -39,6 +39,22 @@ pub enum SeqOpen {
 }
 
 #[derive(Enum, Debug, PartialEq, Clone, Copy)]
+pub enum InShapeP {
+    #[id = "raw"]
+    #[name = "Raw"]
+    Raw,
+    #[id = "flat"]
+    #[name = "Flat"]
+    Flat,
+    #[id = "edge"]
+    #[name = "Edge"]
+    Edge,
+    #[id = "voc"]
+    #[name = "Voc"]
+    Voc,
+}
+
+#[derive(Enum, Debug, PartialEq, Clone, Copy)]
 pub enum GateMode {
     #[id = "env"]
     #[name = "ENV"]
@@ -591,6 +607,12 @@ pub struct SuuParams {
     pub seq_open: EnumParam<SeqOpen>,
     #[id = "seq_vowel"]
     pub seq_vowel: FloatParam,
+    #[id = "in_shape"]
+    pub in_shape: EnumParam<InShapeP>,
+    #[id = "seq_sync"]
+    pub seq_sync: BoolParam,
+    #[id = "seq_offset"]
+    pub seq_offset: IntParam,
     #[id = "pressure_to"]
     pub pressure_to: EnumParam<ExprTo>,
     #[id = "pressure_depth"]
@@ -757,6 +779,9 @@ impl SuuParams {
             pwm_sync: EnumParam::new("PWM Sync", Sync::Off),
             seq_open: EnumParam::new("Sequencer Opens", SeqOpen::Seq),
             seq_vowel: percent(FloatParam::new("Sequencer Vowel", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })),
+            in_shape: EnumParam::new("Input Shape", InShapeP::Raw),
+            seq_sync: BoolParam::new("Sequencer Sync", true),
+            seq_offset: IntParam::new("Sequencer Offset", 0, IntRange::Linear { min: 0, max: STEPS as i32 - 1 }).with_unit(" steps"),
             pressure_to: EnumParam::new("Pressure To", ExprTo::Breath),
             pressure_depth: percent(FloatParam::new("Pressure Depth", 0.5, FloatRange::Linear { min: -1.0, max: 1.0 })),
             slide_to: EnumParam::new("Slide To", ExprTo::VowelY),
@@ -822,6 +847,12 @@ impl SuuParams {
             },
             osc_db: self.osc.value() as f64,
             input_db: self.input.value() as f64,
+            in_shape: match self.in_shape.value() {
+                InShapeP::Raw => suu::InShape::Raw,
+                InShapeP::Flat => suu::InShape::Flat,
+                InShapeP::Edge => suu::InShape::Edge,
+                InShapeP::Voc => suu::InShape::Voc,
+            },
             note,
             gate,
             drive_db: self.drive.value() as f64,
@@ -910,6 +941,8 @@ impl SuuParams {
                 SeqOpen::OrIn => suu::SeqGate::OrIn,
             },
             seq_vowel: self.seq_vowel.value() as f64,
+            seq_sync: self.seq_sync.value(),
+            seq_offset: self.seq_offset.value() as f64,
             pressure_to: self.pressure_to.value().core(),
             pressure_depth: self.pressure_depth.value() as f64,
             slide_to: self.slide_to.value().core(),

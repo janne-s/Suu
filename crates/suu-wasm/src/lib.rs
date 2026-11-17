@@ -1,4 +1,4 @@
-use suu::{GlideDir, MAX_BLOCK, Mod, Mouth, Params, PitchFrom, SeqGate, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
+use suu::{GlideDir, InShape, MAX_BLOCK, Mod, Mouth, Params, PitchFrom, SeqGate, Shape, Source, Step, Suu, TextSay, TextStep, TextUnit};
 
 pub struct Handle {
     suu: Suu,
@@ -97,6 +97,9 @@ fn set(p: &mut Params, id: u32, v: f64) {
         86 => p.pwm_sync = v,
         87 => p.seq_gate = match v as i32 { 1 => SeqGate::AndKeys, 2 => SeqGate::OrKeys, 3 => SeqGate::AndIn, 4 => SeqGate::OrIn, _ => SeqGate::Seq },
         88 => p.seq_vowel = v,
+        90 => p.seq_sync = v > 0.5,
+        91 => p.seq_offset = v,
+        89 => p.in_shape = match v as i32 { 1 => InShape::Flat, 2 => InShape::Edge, 3 => InShape::Voc, _ => InShape::Raw },
         43 => p.pitch_from = match v as i32 { 1 => PitchFrom::Input, 2 => PitchFrom::InputSnap, _ => PitchFrom::Note },
         35 => p.glide_dir = match v as i32 { 1 => GlideDir::Up, 2 => GlideDir::Down, _ => GlideDir::Both },
         _ => {}

@@ -950,6 +950,7 @@ function pushAll() {
   send(68, lofi ? 1 : 0);
   send(74, stereoOn ? 1 : 0);
   send(82, stereoMirror ? 1 : 0);
+  send(89, inShape);
   send(57, grid ? divBeats(grid) : 0);
   send(61, gridBreath);
   send(62, gridSmooth);
@@ -1027,6 +1028,15 @@ function setStereo(on) {
   send(74, on ? 1 : 0);
 }
 $("stereoon").onclick = () => setStereo(!stereoOn);
+const IN_SHAPES = ["RAW", "FLAT", "EDGE", "VOC"];
+let inShape = 0;
+function setInShape(v) {
+  inShape = v;
+  $("inshape").setAttribute("aria-pressed", String(v !== 0));
+  setText($("inshape"), IN_SHAPES[v]);
+  send(89, v);
+}
+$("inshape").onclick = () => setInShape((inShape + 1) % IN_SHAPES.length);
 let stereoMirror = false;
 function setMirror(on) {
   stereoMirror = on;
@@ -1449,10 +1459,25 @@ function setSeqVowel(v) {
   $("seqvowel").classList.toggle("on", seqVowel !== 1);
 }
 $("seqopen").onchange = () => setSeqOpen(+$("seqopen").value);
+let seqSync = true, seqOffset = 0;
+for (let i = 0; i < 16; i++) $("seqsync").append(new Option("+" + i, String(i)));
+function setSeqSync(on, offset) {
+  seqSync = on;
+  seqOffset = offset;
+  send(90, on ? 1 : 0);
+  send(91, offset);
+  $("seqsync").value = String(on ? offset : -1);
+  $("seqsync").classList.toggle("on", !on || offset !== 0);
+}
+$("seqsync").onchange = () => {
+  const v = +$("seqsync").value;
+  setSeqSync(v >= 0, v >= 0 ? v : seqOffset);
+};
 dragValue($("seqvowel"), () => seqVowel, (v) => setSeqVowel(v), 1 / 200);
 $("seqvowel").ondblclick = () => setSeqVowel(1);
 setSeqOpen(0);
 setSeqVowel(1);
+setSeqSync(true, 0);
 function sendSeq() {
   post({ type: "seq", len: clamp(+$("seqlen").value || 16, 1, 16), div: +$("rate").value, gate: seqGate });
   setText($("seqgate"), Math.round(seqGate * 100) + "%");
@@ -1811,9 +1836,10 @@ function getState() {
     space: spaceOn,
     stereo: stereoOn,
     stereoMirror,
+    inShape,
     knobs,
     motion,
-    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, open: seqOpen, vowel: seqVowel, steps: steps.map((s) => ({ ...s })) },
+    seq: { rate: +$("rate").value, length: clamp(+$("seqlen").value || 16, 1, 16), gate: seqGate, open: seqOpen, vowel: seqVowel, sync: seqSync, offset: seqOffset, steps: steps.map((s) => ({ ...s })) },
     text: { words: $("text").value, ...tx },
     horn: Array.from(horn, (a) => Math.round(a * 1000) / 1000),
     hornWrap,
@@ -1850,6 +1876,7 @@ function readState(raw) {
     lofi: bool(r.lofi, d.lofi),
     stereo: bool(r.stereo, d.stereo),
     stereoMirror: bool(r.stereoMirror, d.stereoMirror),
+    inShape: [0, 1, 2, 3].includes(r.inShape) ? r.inShape : d.inShape,
     mpe: (() => {
       const m = obj(r.mpe, "mpe"), to = (x, dv) => (Number.isInteger(x) && x >= -1 && x <= 10 ? x : dv);
       return { pressureTo: to(m.pressureTo, d.mpe.pressureTo), pressureDepth: num(m.pressureDepth, d.mpe.pressureDepth, -1, 1), slideTo: to(m.slideTo, d.mpe.slideTo), slideDepth: num(m.slideDepth, d.mpe.slideDepth, -1, 1), bend: Math.round(num(m.bend, d.mpe.bend, 0, 48)) };
@@ -1886,6 +1913,8 @@ function readState(raw) {
     gate: num(seq.gate, d.seq.gate, 0, 2),
     open: Math.round(num(seq.open, d.seq.open, 0, 4)),
     vowel: num(seq.vowel, d.seq.vowel, 0, 1),
+    sync: bool(seq.sync, d.seq.sync),
+    offset: Math.round(num(seq.offset, d.seq.offset, 0, 15)),
     steps: d.seq.steps.map((ds, i) => {
       const s = obj(seq.steps?.[i], `step ${i + 1}`);
       return { on: bool(s.on, ds.on), note: Math.round(num(s.note, ds.note, -24, 24)), tie: bool(s.tie, ds.tie), vowel: Math.round(num(s.vowel, ds.vowel, -1, 4)), accent: bool(s.accent, ds.accent), len: num(s.len, ds.len, 0.05, 1) };
@@ -1946,6 +1975,7 @@ function applyState(st) {
   Object.assign(mpe, st.mpe);
   setStereo(st.stereo);
   setMirror(st.stereoMirror);
+  setInShape(st.inShape);
   showMpe();
   setGrid(st.grid);
   setGridMore(st.gridBreath, st.gridSmooth);
@@ -1969,6 +1999,7 @@ function applyState(st) {
   seqGate = st.seq.gate;
   setSeqOpen(st.seq.open);
   setSeqVowel(st.seq.vowel);
+  setSeqSync(st.seq.sync, st.seq.offset);
   st.seq.steps.forEach((s, i) => {
     steps[i] = { ...s };
     sendStep(i);
@@ -2130,6 +2161,7 @@ const TIPS = {
   '[data-osc="1"]': "Saw\nOne saw: bright, every harmonic.",
   '[data-osc="3"]': "Pulse\nAt 50% width a square, odd harmonics only: hollow. ▾ sets the width and its movement.",
   "#pulse-more": "Pulse\nThe pulse's width and how it moves.",
+  "#seqsync": "Sync\nThe steps follow the host's song position, so starting or changing the pattern mid-song stays on the beat. +0: the first step on the bar's first sixteenth (or the rate's step); +n: n steps later. OFF: the pattern starts from its first step when PLAY is pressed.",
   "#seqopen": "Open\nWhat opens the sound while the sequencer plays. SEQ: the steps alone. × KEYS: the steps while a key is held; the first key starts the pattern. + KEYS: keys also between the steps. × IN: the steps while the input is above the gate's threshold. + IN: the input also between the steps.",
   "#seqvowel": "Vowel\nHow far the steps' vowels move the mouth from the pad's vowel. Double-click: 100%.",
   '[data-osc="0"]': "Off\nNo oscillator: only the input and the folds.",
@@ -2164,6 +2196,7 @@ const TIPS = {
   "#slotA": "A\nOne of two full settings to compare; switching keeps the other.",
   "#slotB": "B\nOne of two full settings to compare; switching keeps the other.",
   "#init": "Init\nThis side back to the initial settings.",
+  "#inshape": "Raw / Flat / Edge / Voc\nRAW: the input as it is. FLAT: the input's own colour flattened, so the mouth's vowels come through sharp. EDGE: a saw that follows each cycle of the input. VOC: the oscillator at the played note takes the input's rhythm and colour (a saw when OSC is off); the oscillator is heard only through it.",
   "#stereomirror": "Mirror\nThe right mouth's horn turned round, lips to throat.",
   "#stereoon": "Stereo\nA second mouth on the right. Twice the CPU.",
   "#mpe-toggle": "MPE\nWhat a key's pressure and slide move, and the pitch bend range.",
@@ -2305,8 +2338,11 @@ const PMAP = [];
   add("lofi", (st) => +st.lofi, (st, v) => (st.lofi = v > 0.5));
   add("stereo", (st) => +st.stereo, (st, v) => (st.stereo = v > 0.5));
   add("stereo_mirror", (st) => +st.stereoMirror, (st, v) => (st.stereoMirror = v > 0.5));
+  add("in_shape", (st) => st.inShape, (st, v) => (st.inShape = Math.round(v)));
   add("seq_open", (st) => st.seq.open, (st, v) => (st.seq.open = Math.round(v)));
   add("seq_vowel", (st) => st.seq.vowel, (st, v) => (st.seq.vowel = v));
+  add("seq_sync", (st) => +st.seq.sync, (st, v) => (st.seq.sync = v > 0.5));
+  add("seq_offset", (st) => st.seq.offset, (st, v) => (st.seq.offset = Math.round(v)));
   add("pressure_to", (st) => st.mpe.pressureTo + 1, (st, v) => (st.mpe.pressureTo = Math.round(v) - 1));
   add("pressure_depth", (st) => st.mpe.pressureDepth, (st, v) => (st.mpe.pressureDepth = v));
   add("slide_to", (st) => st.mpe.slideTo + 1, (st, v) => (st.mpe.slideTo = Math.round(v) - 1));
